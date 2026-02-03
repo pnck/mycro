@@ -71,6 +71,19 @@ class Macro:
     }
     
     MOD_KEYS = [Keycode.CONTROL, Keycode.SHIFT, Keycode.ALT, Keycode.GUI]
+
+    DIGIT_KEYS = {
+        "0": Keycode.ZERO,
+        "1": Keycode.ONE,
+        "2": Keycode.TWO,
+        "3": Keycode.THREE,
+        "4": Keycode.FOUR,
+        "5": Keycode.FIVE,
+        "6": Keycode.SIX,
+        "7": Keycode.SEVEN,
+        "8": Keycode.EIGHT,
+        "9": Keycode.NINE,
+    }
     
     MOUSE_BTNS = {"l": 1, "left": 1, "r": 2, "right": 2, "m": 4, "middle": 4}
     
@@ -187,6 +200,25 @@ class Macro:
         if mask & 0x04: mods.append("ALT")
         if mask & 0x08: mods.append("GUI")
         return "+".join(mods) if mods else "NONE"
+
+    def _char_keycode(self, ch):
+        if len(ch) != 1:
+            return None
+        if _is_alpha(ch):
+            return getattr(Keycode, ch.upper())
+        if ch in self.DIGIT_KEYS:
+            return self.DIGIT_KEYS[ch]
+        return None
+
+    def _resolve_key(self, name, pos):
+        if name in self.KEYS:
+            return self.KEYS[name]
+        if len(name) == 1:
+            key = self._char_keycode(name)
+            if key is None:
+                raise MacroError(f"Unknown key: {name}", pos)
+            return key
+        raise MacroError(f"Unknown key: {name}", pos)
     
     def _emit(self, *args):
         if len(self._bc) >= MAX_BYTECODE - 10:
@@ -249,12 +281,8 @@ class Macro:
         # First part
         if name in self.MODS:
             mods |= self.MODS[name]
-        elif name in self.KEYS:
-            key = self.KEYS[name]
-        elif len(name) == 1:
-            key = ord(name.upper())
         else:
-            raise MacroError(f"Unknown key: {name}", pos)
+            key = self._resolve_key(name, pos)
         
         # Handle + chains: \ctrl+\shift+c
         while self._peek() == "+":
@@ -269,12 +297,8 @@ class Macro:
             
             if next_name in self.MODS:
                 mods |= self.MODS[next_name]
-            elif next_name in self.KEYS:
-                key = self.KEYS[next_name]
-            elif len(next_name) == 1:
-                key = ord(next_name.upper())
             else:
-                raise MacroError(f"Unknown key: {next_name}", self._pos)
+                key = self._resolve_key(next_name, self._pos)
         
         # Skip empty {} separator
         if self._peek() == "{" and self._pos + 1 < self._len and self._text[self._pos + 1] == "}":
@@ -296,146 +320,126 @@ class Macro:
         if not name:
             raise MacroError("Expected command name", pos)
         
-        # \delay{0.1}
-        if name == "delay":
-            arg = self._read_braces()
-            if arg is None:
-                raise MacroError("delay requires {value}", self._pos)
-            try:
-                ms = int(float(arg) * 1000)
-                ms = max(1, min(65535, ms))
-                self._emit(OP_DELAY)
-                self._emit_u16(ms)
-            except:
-                raise MacroError("Invalid delay value", pos)
-            return
-        
-        # \rep{count}{body}
-        if name == "rep":
-            arg = self._read_braces()
-            if arg is None:
-                raise MacroError("rep requires {count}", self._pos)
-            try:
-                count = int(arg)
-                count = max(1, min(255, count))
-            except:
-                raise MacroError("Invalid rep count", pos)
-            
-            body = self._read_braces()
-            if body is None:
-                raise MacroError("rep requires {body}", self._pos)
-            
-            # Compile body
-            sub = Macro(self.keyboard, self.layout, self.mouse)
-            sub_bc, err = sub.compile(body)
-            if err:
-                raise MacroError(f"In rep body: {err}", pos)
-            
-            # Remove trailing OP_END
-            sub_bc = sub_bc[:-1]
-            body_len = len(sub_bc) + 1  # +1 for LOOP_END
-            
-            self._emit(OP_LOOP, count)
-            self._emit_u16(body_len)
-            self._emit(sub_bc)
-            self._emit(OP_LOOP_END)
-            return
-        
-        # \kdown{key} - key down
-        if name == "kdown":
-            arg = self._read_braces()
-            if arg is None:
-                raise MacroError("kdown requires {key}", self._pos)
-            arg = arg.strip().lower()
-            if arg in self.KEYS:
-                self._emit(OP_KEY_DOWN, self.KEYS[arg])
-            elif len(arg) == 1:
-                self._emit(OP_KEY_DOWN, ord(arg.upper()))
-            else:
-                raise MacroError(f"Unknown key: {arg}", pos)
-            return
-        
-        # \kup{key} or \kup{} - key up (empty = release all)
-        if name == "kup":
-            arg = self._read_braces()
-            if arg is None:
-                raise MacroError("kup requires {key} or {}", self._pos)
-            arg = arg.strip().lower()
-            if not arg:
-                self._emit(OP_KEY_UP, 0)  # release all
-            elif arg in self.KEYS:
-                self._emit(OP_KEY_UP, self.KEYS[arg])
-            elif len(arg) == 1:
-                self._emit(OP_KEY_UP, ord(arg.upper()))
-            else:
-                raise MacroError(f"Unknown key: {arg}", pos)
-            return
-        
-        # \click{btn} or \click{btn,count}
-        if name == "click":
-            arg = self._read_braces()
-            if arg is None:
-                raise MacroError("click requires {btn} or {btn,count}", self._pos)
-            parts = arg.split(",")
-            btn = self.MOUSE_BTNS.get(parts[0].strip().lower(), 1)
-            count = 1
-            if len(parts) >= 2:
-                try:
-                    count = int(parts[1].strip())
-                    count = max(1, min(255, count))
-                except:
-                    raise MacroError("Invalid click count", pos)
-            self._emit(OP_MCLICK, btn, count)
-            return
-        
-        # \move{dx,dy} or \move{dx}
-        if name == "move":
-            arg = self._read_braces()
-            if arg is None:
-                raise MacroError("move requires {dx,dy}", self._pos)
-            parts = arg.split(",")
-            try:
-                dx = int(parts[0].strip())
-            except:
-                raise MacroError("Invalid move dx", pos)
-            dy = 0
-            if len(parts) >= 2:
-                try:
-                    dy = int(parts[1].strip())
-                except:
-                    raise MacroError("Invalid move dy", pos)
-            
-            # Emit in chunks of 127
-            while dx != 0 or dy != 0:
-                mx = max(-127, min(127, dx))
-                my = max(-127, min(127, dy))
-                self._emit(OP_MMOVE)
-                self._emit_i8(mx)
-                self._emit_i8(my)
-                dx -= mx
-                dy -= my
-            return
-        
-        # \mdown{btn} - mouse button down
-        if name == "mdown":
-            arg = self._read_braces()
-            if arg is None:
-                raise MacroError("mdown requires {btn}", self._pos)
-            btn = self.MOUSE_BTNS.get(arg.strip().lower(), 1)
-            self._emit(OP_MDOWN, btn)
-            return
-        
-        # \mup{btn} - mouse button up
-        if name == "mup":
-            arg = self._read_braces()
-            if arg is None:
-                raise MacroError("mup requires {btn}", self._pos)
-            btn = self.MOUSE_BTNS.get(arg.strip().lower(), 1)
-            self._emit(OP_MUP, btn)
+        handler = getattr(self, "_cmd_" + name, None)
+        if handler:
+            handler(pos)
             return
         
         # Otherwise it's a key or combo: \enter, \ctrl+c
         self._parse_key_or_combo(name)
+
+    def _cmd_delay(self, pos):
+        arg = self._read_braces()
+        if arg is None:
+            raise MacroError("delay requires {value}", self._pos)
+        try:
+            ms = int(float(arg) * 1000)
+            ms = max(1, min(65535, ms))
+            self._emit(OP_DELAY)
+            self._emit_u16(ms)
+        except:
+            raise MacroError("Invalid delay value", pos)
+
+    def _cmd_rep(self, pos):
+        arg = self._read_braces()
+        if arg is None:
+            raise MacroError("rep requires {count}", self._pos)
+        try:
+            count = int(arg)
+            count = max(1, min(255, count))
+        except:
+            raise MacroError("Invalid rep count", pos)
+        
+        body = self._read_braces()
+        if body is None:
+            raise MacroError("rep requires {body}", self._pos)
+        
+        # Compile body
+        sub = Macro(self.keyboard, self.layout, self.mouse)
+        sub_bc, err = sub.compile(body)
+        if err:
+            raise MacroError(f"In rep body: {err}", pos)
+        
+        # Remove trailing OP_END
+        sub_bc = sub_bc[:-1]
+        body_len = len(sub_bc) + 1  # +1 for LOOP_END
+        
+        self._emit(OP_LOOP, count)
+        self._emit_u16(body_len)
+        self._emit(sub_bc)
+        self._emit(OP_LOOP_END)
+
+    def _cmd_kdown(self, pos):
+        arg = self._read_braces()
+        if arg is None:
+            raise MacroError("kdown requires {key}", self._pos)
+        arg = arg.strip().lower()
+        self._emit(OP_KEY_DOWN, self._resolve_key(arg, pos))
+
+    def _cmd_kup(self, pos):
+        arg = self._read_braces()
+        if arg is None:
+            raise MacroError("kup requires {key} or {}", self._pos)
+        arg = arg.strip().lower()
+        if not arg:
+            self._emit(OP_KEY_UP, 0)  # release all
+        else:
+            self._emit(OP_KEY_UP, self._resolve_key(arg, pos))
+
+    def _cmd_click(self, pos):
+        arg = self._read_braces()
+        if arg is None:
+            raise MacroError("click requires {btn} or {btn,count}", self._pos)
+        parts = arg.split(",")
+        btn = self.MOUSE_BTNS.get(parts[0].strip().lower(), 1)
+        count = 1
+        if len(parts) >= 2:
+            try:
+                count = int(parts[1].strip())
+                count = max(1, min(255, count))
+            except:
+                raise MacroError("Invalid click count", pos)
+        self._emit(OP_MCLICK, btn, count)
+
+    def _cmd_move(self, pos):
+        arg = self._read_braces()
+        if arg is None:
+            raise MacroError("move requires {dx,dy}", self._pos)
+        parts = arg.split(",")
+        try:
+            dx = int(parts[0].strip())
+        except:
+            raise MacroError("Invalid move dx", pos)
+        dy = 0
+        if len(parts) >= 2:
+            try:
+                dy = int(parts[1].strip())
+            except:
+                raise MacroError("Invalid move dy", pos)
+        
+        # Emit in chunks of 127
+        while dx != 0 or dy != 0:
+            mx = max(-127, min(127, dx))
+            my = max(-127, min(127, dy))
+            self._emit(OP_MMOVE)
+            self._emit_i8(mx)
+            self._emit_i8(my)
+            dx -= mx
+            dy -= my
+
+    def _cmd_mdown(self, pos):
+        arg = self._read_braces()
+        if arg is None:
+            raise MacroError("mdown requires {btn}", self._pos)
+        btn = self.MOUSE_BTNS.get(arg.strip().lower(), 1)
+        self._emit(OP_MDOWN, btn)
+
+    def _cmd_mup(self, pos):
+        arg = self._read_braces()
+        if arg is None:
+            raise MacroError("mup requires {btn}", self._pos)
+        btn = self.MOUSE_BTNS.get(arg.strip().lower(), 1)
+        self._emit(OP_MUP, btn)
     
     def _parse(self):
         """Main parse loop."""
