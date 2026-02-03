@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Macro HID</title>
+<style>
+body{font-family:sans-serif;margin:20px;max-width:900px}
+textarea{font-family:monospace;width:100%;box-sizing:border-box}
+.ref{background:#f5f5f5;padding:10px;margin:10px 0;border-left:3px solid #666}
+.ref summary{cursor:pointer;padding:5px;user-select:none}
+.ref summary:hover{background:#e8e8e8}
+.ref h5{margin:10px 0 5px 0;display:inline-block}
+.ref code{background:#fff;padding:2px 5px;border-radius:3px}
+details{margin:5px 0}
+table{border-collapse:collapse;width:100%;font-size:12px;margin:5px 0}
+th,td{border:1px solid #ddd;padding:4px;text-align:left}
+th{background:#eee}
+code{font-family:monospace;background:#f0f0f0;padding:1px 4px}
+</style>
+</head>
+<body>
+<h2>Macro HID Controller</h2>
+<form id="macroForm" action="/macro" method="POST">
+<textarea id="macroCode" name="code" rows="6" placeholder="Example: Hello World\enter"></textarea><br>
+<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+<input type="submit" value="Execute Macro">
+<button type="button" id="compileBtn">Compile Only</button>
+<label style="font-size:12px">Click hold (ms):
+<input type="number" id="holdMs" name="hold_ms" value="10" min="0" max="1000" style="width:70px">
+</label>
+</div>
+</form>
+<pre id="macroOutput" style="white-space:pre-wrap;background:#f8f8f8;border:1px solid #ddd;padding:8px;margin-top:10px"></pre>
+
+<script>
+const form = document.getElementById("macroForm");
+const codeEl = document.getElementById("macroCode");
+const outEl = document.getElementById("macroOutput");
+const compileBtn = document.getElementById("compileBtn");
+const holdMsEl = document.getElementById("holdMs");
+const executeBtn = form.querySelector("input[type=submit]");
+let inFlight = false;
+
+function post(path) {
+	if (inFlight) return;
+	inFlight = true;
+	if (executeBtn) executeBtn.disabled = true;
+	if (compileBtn) compileBtn.disabled = true;
+	outEl.textContent = "Working...";
+	fetch(path, {
+		method: "POST",
+		headers: {"Content-Type": "application/x-www-form-urlencoded"},
+		body: "code=" + encodeURIComponent(codeEl.value || "") + "&hold_ms=" + encodeURIComponent(holdMsEl.value || "")
+	})
+	.then(r => r.text())
+	.then(t => { outEl.textContent = t; })
+	.catch(e => { outEl.textContent = "Error: " + e; })
+	.finally(() => {
+		inFlight = false;
+		if (executeBtn) executeBtn.disabled = false;
+		if (compileBtn) compileBtn.disabled = false;
+	});
+}
+
+form.addEventListener("submit", (e) => {
+	e.preventDefault();
+	post("/macro");
+});
+
+compileBtn.addEventListener("click", () => post("/compile"));
+</script>
+
+<details class="ref">
+<summary><strong>📖 Quick Reference (click to expand)</strong></summary>
+
+<details open>
+<summary><h5>Text & Escape</h5></summary>
+<table>
+<tr><th>Syntax</th><th>Description</th></tr>
+<tr><td><code>abc 123</code></td><td>Plain text (space/newline become keys)</td></tr>
+<tr><td><code>\\</code></td><td>Backslash</td></tr>
+<tr><td><code>\{</code> <code>\}</code></td><td>Literal braces</td></tr>
+<tr><td><code>\cmd{}</code></td><td>Empty {} separates command from text</td></tr>
+</table>
+</details>
+
+<details>
+<summary><h5>Special Keys</h5></summary>
+<table>
+<tr><th>Command</th><th>Key</th><th>Command</th><th>Key</th></tr>
+<tr><td><code>\enter</code></td><td>Enter</td><td><code>\tab</code></td><td>Tab</td></tr>
+<tr><td><code>\esc</code></td><td>Escape</td><td><code>\space</code></td><td>Space</td></tr>
+<tr><td><code>\bs</code></td><td>Backspace</td><td><code>\del</code></td><td>Delete</td></tr>
+<tr><td><code>\up \down \left \right</code></td><td>Arrow keys</td><td><code>\home \end</code></td><td>Home/End</td></tr>
+<tr><td><code>\pgup \pgdn</code></td><td>Page Up/Down</td><td><code>\ins</code></td><td>Insert</td></tr>
+<tr><td><code>\f1</code> ~ <code>\f12</code></td><td>Function keys</td><td><code>\caps</code></td><td>Caps Lock</td></tr>
+</table>
+</details>
+
+<details>
+<summary><h5>Combinations & Modifiers</h5></summary>
+<table>
+<tr><th>Modifier</th><th>Aliases</th><th>Example</th></tr>
+<tr><td>Ctrl</td><td><code>\ctrl</code> <code>\control</code></td><td><code>\ctrl+c</code> (copy)</td></tr>
+<tr><td>Shift</td><td><code>\shift</code></td><td><code>\shift+a</code> (capital A)</td></tr>
+<tr><td>Alt</td><td><code>\alt</code> <code>\option</code> <code>\opt</code> </td><td><code>\alt+\f4</code> (close window)</td></tr>
+<tr><td>Win/Cmd</td><td><code>\win</code> <code>\cmd</code> <code>\gui</code></td><td><code>\win+r</code> or <code>\cmd+space</code></td></tr>
+</table>
+<p><small><strong>Combo examples:</strong> <code>\ctrl+\shift+t</code> (reopen tab), <code>\alt+tab</code> (switch window)</small></p>
+</details>
+
+<details>
+<summary><h5>Control Commands</h5></summary>
+<table>
+<tr><th>Command</th><th>Description</th></tr>
+<tr><td><code>\delay{0.5}</code></td><td>Set delay (seconds) for following keys</td></tr>
+<tr><td><code>\rep{5}{abc}</code></td><td>Repeat "abc" 5 times</td></tr>
+<tr><td><code>\kdown{ctrl}</code></td><td>Press and hold Ctrl</td></tr>
+<tr><td><code>\kup{ctrl}</code></td><td>Release Ctrl</td></tr>
+<tr><td><code>\kup{}</code></td><td>Release all keys</td></tr>
+</table>
+</details>
+
+<details>
+<summary><h5>Mouse Commands</h5></summary>
+<table>
+<tr><th>Command</th><th>Description</th></tr>
+<tr><td><code>\click{L}</code></td><td>Left click (L/R/M)</td></tr>
+<tr><td><code>\click{R,3}</code></td><td>Right click 3 times</td></tr>
+<tr><td><code>\move{100,-50}</code></td><td>Move mouse (x,y)</td></tr>
+<tr><td><code>\mdown{L}</code></td><td>Press left button (hold)</td></tr>
+<tr><td><code>\mup{L}</code></td><td>Release left button</td></tr>
+</table>
+</details>
+
+<details open>
+<summary><h5>Examples</h5></summary>
+<table>
+<tr><th>Macro</th><th>Description</th></tr>
+<tr><td><code>Hello World\enter</code></td><td>Type text and press Enter</td></tr>
+<tr><td><code>\ctrl+c\delay{0.2}\rep{3}{\ctrl+v}</code></td><td>Copy, wait, paste 3 times</td></tr>
+<tr><td><code>\win+r\delay{0.3}notepad\enter</code></td><td>Open Notepad (Windows)</td></tr>
+<tr><td><code>\cmd+space\delay{0.2}terminal\enter</code></td><td>Open Terminal (macOS)</td></tr>
+<tr><td><code>\mdown{L}\move{100,0}\mup{L}</code></td><td>Drag mouse right 100px</td></tr>
+<tr><td><code>\kdown{ctrl}ccc\kup{}</code></td><td>Hold Ctrl, type "ccc", release</td></tr>
+</table>
+</details>
+
+<p><small>Limits: 1024 bytes bytecode, 2 nesting levels</small></p>
+</details>
+
+<hr>
+<h3>Quick Mouse</h3>
+<form action="/mouse" method="GET" style="display:flex;gap:10px;align-items:center">
+<select name="action">
+<option value="click">Click</option>
+<option value="move">Move</option>
+</select>
+<input type="text" name="p1" value="L" placeholder="Btn/X" style="width:60px">
+<input type="text" name="p2" value="1" placeholder="Cnt/Y" style="width:60px">
+<input type="submit" value="Go">
+</form>
+</body>
+</html>
