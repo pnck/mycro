@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+<meta charset="utf-8">
 <title>Macro HID</title>
 <style>
 body{font-family:sans-serif;margin:20px;max-width:900px}
@@ -19,7 +20,7 @@ code{font-family:monospace;background:#f0f0f0;padding:1px 4px}
 </head>
 <body>
 <h2>Macro HID Controller</h2>
-<form id="macroForm" action="/macro" method="POST">
+<form id="macroForm" action="/macro" method="POST" accept-charset="utf-8">
 <textarea id="macroCode" name="code" rows="6" placeholder="Example: Hello World\enter"></textarea><br>
 <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
 <input type="submit" value="Execute Macro">
@@ -150,7 +151,7 @@ compileBtn.addEventListener("click", () => post("/compile"));
 
 <hr>
 <h3>Quick Mouse</h3>
-<form action="/mouse" method="GET" style="display:flex;gap:10px;align-items:center">
+<form action="/mouse" method="GET" accept-charset="utf-8" style="display:flex;gap:10px;align-items:center">
 <select name="action">
 <option value="click">Click</option>
 <option value="move">Move</option>
