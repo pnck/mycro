@@ -55,12 +55,33 @@ for f in "$MNT/lib/"*.mpy; do
     fi
 done
 
+# --- settings.toml: preserve existing vars; append missing template keys ---
+SETTINGS="$MNT/settings.toml"
+touch "$SETTINGS"
+
+if ! grep -q "MYCRO_WIFI_SSID" "$SETTINGS"; then
+    printf '\n# --- MYCRO ---\n# WiFi credentials use project-specific keys (NOT the built-in\n# CIRCUITPY_WIFI_*: a pre-boot connect failure would hang the device and take\n# away even the CIRCUITPY drive)\n' >> "$SETTINGS"
+fi
+for KEY in MYCRO_WIFI_SSID MYCRO_WIFI_PASSWORD MYCRO_TOKEN; do
+    if ! grep -q "^$KEY" "$SETTINGS"; then
+        echo "$KEY = \"\"" >> "$SETTINGS"
+        echo "  + settings.toml: appended $KEY = \"\" (please configure)"
+    fi
+done
+if grep -q "^CIRCUITPY_WIFI_SSID" "$SETTINGS"; then
+    echo "NOTE: settings.toml still contains CIRCUITPY_WIFI_SSID - the built-in pre-boot WiFi connect stays active;"
+    echo "      comment/remove that line manually to fully avoid boot hangs on network outage (this script never touches existing vars)."
+fi
+
 # Device-side libraries (pinned via circup; see requirements-device.txt)
+# NOTE: on CircuitPython 10.x the firmware ships only the `_asyncio` C core;
+# the user-facing `asyncio` package comes from the bundle library (per the 10.0.0
+# release notes). Missing it causes: ImportError: no module named 'asyncio'.
 # circup install also updates outdated listed libs to the latest
 # firmware-compatible bundle version. Libraries NOT listed here are never
 # touched; audit leftovers with `circup list` / `circup uninstall <name>`.
 if command -v circup >/dev/null 2>&1; then
-    circup install adafruit_hid adafruit_httpserver
+    circup install asyncio adafruit_hid adafruit_httpserver
 else
     echo "WARNING: circup not found — install adafruit_hid + adafruit_httpserver manually" >&2
 fi

@@ -1,5 +1,8 @@
 # Device-side libraries, installed by circup (tools/deploy.sh).
-# Pin versions after first deploy: circup freeze >> this file, then re-verify
-# the form_data no-URL-decode assumption (see src/code.py urldecode note).
+# asyncio is required: CP10 firmware ships only the _asyncio C core;
+# the asyncio package comes from the bundle library (10.0.0 release notes).
+# Library upgrades must re-verify the form_data no-URL-decode assumption
+# (see src/code.py urldecode note).
+asyncio
 adafruit_hid
 adafruit_httpserver
