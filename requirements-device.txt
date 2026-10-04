@@ -1,0 +1,5 @@
+# Device-side libraries, installed by circup (tools/deploy.sh).
+# Pin versions after first deploy: circup freeze >> this file, then re-verify
+# the form_data no-URL-decode assumption (see src/code.py urldecode note).
+adafruit_hid
+adafruit_httpserver
