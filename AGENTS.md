@@ -55,7 +55,7 @@ Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`
 - Control: `\delay{sec}` (single sleep), `\pace{sec}` (interval after each subsequent action), `\rep{N}{body}` (max 2 nesting levels), `\kdown{key}`, `\kup{key}` / `\kup{}` (release all)
 - Mouse: `\click{L|R|M|B|F[,count]}` (B/F = side buttons back/forward; the stock descriptor declares 5 buttons), `\move{dx,dy}`, `\mdown{btn}`, `\mup{btn}`
 
-> Structural capabilities (subroutines/`\wait`/variables) are explicitly NOT in v2; they are deferred to a unified design with the runtime extension mechanism (signal/slot, `\call{ext}` + import) — see the end of ROADMAP 1.3.
+> Structural capabilities (`\def`/variables/`\ifnum`/`\val`/`\wait`/`\call{ext}`) are finalized as **DSL v3** — see the ROADMAP section "DSL v3 — Syntax Extension"; Stages A/B land before Phase 2.
 
 ## 4. Bytecode & VM
 
@@ -82,7 +82,6 @@ Design strengths: compile/execute separation (`/compile` previews the disassembl
 
 - Argument styles not unified (`\kdown{ctrl}` brace style vs `\ctrl+c` chained) — minor; to be settled with later structural capabilities
 - `urldecode` treats UTF-8 bytes as latin-1: non-ASCII input becomes mojibake before failing compilation (misleading error messages)
-- On-device validation pending hardware: long-macro responsiveness / abort without residue / 1h stress / raw socket stability (#10775)
 
 ## 6. CircuitPython Cheat Sheet
 
