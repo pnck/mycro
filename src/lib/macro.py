@@ -1,15 +1,30 @@
-# Macro Interpreter for HID simulation
-# LaTeX-style syntax: \enter \ctrl+c \delay{0.1} \rep{3}{abc}
+# Macro Interpreter for HID simulation — runtime-agnostic compiler + async VM
+# DSL: plain text, \enter, \ctrl+c, \delay{0.1}, \rep{3}{abc}, \kdown/\kup,
+#      \click/\move/\mdown/\mup
+#
+# Hardware access goes through a HID provider object with this interface:
+#   key_press(keycode) / key_release(keycode) / keys_release_all()
+#   char_keycodes(ch) -> tuple of keycodes (incl. modifiers) or None
+#   mouse_press(btn) / mouse_release(btn) / mouse_move(dx, dy)
+# Implementations: lib/hid_adafruit.py (device), tests/mock_hid.py (tests).
 
-import time
-from adafruit_hid.keycode import Keycode
-from adafruit_hid.mouse import Mouse
+import asyncio
+
+from keymap import (
+    ENTER, ESCAPE, BACKSPACE, TAB, SPACE, DELETE,
+    RIGHT_ARROW, LEFT_ARROW, DOWN_ARROW, UP_ARROW,
+    PAGE_UP, PAGE_DOWN, HOME, END, INSERT, CAPS_LOCK,
+    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+    CONTROL, SHIFT, ALT, GUI,
+    BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_ALL,
+    letter_keycode, digit_keycode,
+)
 
 # Opcodes
 OP_CHAR = 0x01  # <ascii>
 OP_KEY = 0x02  # <keycode>
 OP_COMBO = 0x03  # <mod_mask> <keycode>
-OP_DELAY = 0x04  # <ms_lo> <ms_hi>
+OP_DELAY = 0x04  # <ms_lo> <ms_hi> — sleeps once AND sets inter-action delay
 OP_MCLICK = 0x05  # <btn> <count_lo> <count_hi>
 OP_MMOVE = 0x06  # <dx_lo> <dx_hi> <dy_lo> <dy_hi>
 OP_LOOP = 0x10  # <count> <len_lo> <len_hi>
@@ -44,45 +59,34 @@ class MacroError(Exception):
 
 
 class Macro:
-    # Key mappings
     KEYS = {
-        "enter": Keycode.ENTER,
-        "return": Keycode.RETURN,
-        "esc": Keycode.ESCAPE,
-        "escape": Keycode.ESCAPE,
-        "tab": Keycode.TAB,
-        "space": Keycode.SPACE,
-        "bs": Keycode.BACKSPACE,
-        "backspace": Keycode.BACKSPACE,
-        "del": Keycode.DELETE,
-        "delete": Keycode.DELETE,
-        "up": Keycode.UP_ARROW,
-        "down": Keycode.DOWN_ARROW,
-        "left": Keycode.LEFT_ARROW,
-        "right": Keycode.RIGHT_ARROW,
-        "home": Keycode.HOME,
-        "end": Keycode.END,
-        "pgup": Keycode.PAGE_UP,
-        "pgdn": Keycode.PAGE_DOWN,
-        "ins": Keycode.INSERT,
-        "caps": Keycode.CAPS_LOCK,
-        "f1": Keycode.F1,
-        "f2": Keycode.F2,
-        "f3": Keycode.F3,
-        "f4": Keycode.F4,
-        "f5": Keycode.F5,
-        "f6": Keycode.F6,
-        "f7": Keycode.F7,
-        "f8": Keycode.F8,
-        "f9": Keycode.F9,
-        "f10": Keycode.F10,
-        "f11": Keycode.F11,
-        "f12": Keycode.F12,
-        "ctrl": Keycode.CONTROL,
-        "shift": Keycode.SHIFT,
-        "alt": Keycode.ALT,
-        "win": Keycode.GUI,
-        "gui": Keycode.GUI,
+        "enter": ENTER,
+        "return": ENTER,
+        "esc": ESCAPE,
+        "escape": ESCAPE,
+        "tab": TAB,
+        "space": SPACE,
+        "bs": BACKSPACE,
+        "backspace": BACKSPACE,
+        "del": DELETE,
+        "delete": DELETE,
+        "up": UP_ARROW,
+        "down": DOWN_ARROW,
+        "left": LEFT_ARROW,
+        "right": RIGHT_ARROW,
+        "home": HOME,
+        "end": END,
+        "pgup": PAGE_UP,
+        "pgdn": PAGE_DOWN,
+        "ins": INSERT,
+        "caps": CAPS_LOCK,
+        "f1": F1, "f2": F2, "f3": F3, "f4": F4, "f5": F5, "f6": F6,
+        "f7": F7, "f8": F8, "f9": F9, "f10": F10, "f11": F11, "f12": F12,
+        "ctrl": CONTROL,
+        "shift": SHIFT,
+        "alt": ALT,
+        "win": GUI,
+        "gui": GUI,
     }
 
     MODS = {
@@ -97,42 +101,27 @@ class Macro:
         "cmd": 0x08,
     }
 
-    MOD_KEYS = [Keycode.CONTROL, Keycode.SHIFT, Keycode.ALT, Keycode.GUI]
-
-    DIGIT_KEYS = {
-        "0": Keycode.ZERO,
-        "1": Keycode.ONE,
-        "2": Keycode.TWO,
-        "3": Keycode.THREE,
-        "4": Keycode.FOUR,
-        "5": Keycode.FIVE,
-        "6": Keycode.SIX,
-        "7": Keycode.SEVEN,
-        "8": Keycode.EIGHT,
-        "9": Keycode.NINE,
-    }
+    MOD_KEYS = [CONTROL, SHIFT, ALT, GUI]
 
     MOUSE_BTNS = {
-        "l": Mouse.LEFT_BUTTON,
-        "left": Mouse.LEFT_BUTTON,
-        "r": Mouse.RIGHT_BUTTON,
-        "right": Mouse.RIGHT_BUTTON,
-        "m": Mouse.MIDDLE_BUTTON,
-        "middle": Mouse.MIDDLE_BUTTON,
+        "l": BTN_LEFT,
+        "left": BTN_LEFT,
+        "r": BTN_RIGHT,
+        "right": BTN_RIGHT,
+        "m": BTN_MIDDLE,
+        "middle": BTN_MIDDLE,
     }
 
-    def __init__(self, keyboard, layout, mouse):
-        self.keyboard = keyboard
-        self.layout = layout
-        self.mouse = mouse
+    def __init__(self, hid):
+        self.hid = hid
 
-    def compile(self, text):
+    def compile(self, text, _depth=0):
         """Compile macro text to bytecode. Returns (bytecode, error_msg)."""
         self._bc = bytearray()
         self._text = text
         self._pos = 0
         self._len = len(text)
-        self._nest = []  # [(text_pos, bc_pos)]
+        self._depth = _depth
 
         try:
             self._parse()
@@ -191,12 +180,13 @@ class Macro:
             elif op == OP_LOOP:
                 count = bytecode[i + 1]
                 length = bytecode[i + 2] | (bytecode[i + 3] << 8)
-                lines.append(f"{prefix}LOOP x{count} ({length}B) " + "{{")
+                lines.append(f"{prefix}LOOP x{count} ({length}B) " + "{")
                 indent += 1
                 i += 4
             elif op == OP_LOOP_END:
                 indent -= 1
-                lines.append(f"{prefix}" + "}}LOOP_END")
+                prefix = "  " * indent
+                lines.append(prefix + "}LOOP_END")
                 i += 1
             elif op == OP_KEY_DOWN:
                 key_name = self._keycode_name(bytecode[i + 1])
@@ -236,12 +226,17 @@ class Macro:
 
     def _keycode_name(self, code):
         """Reverse lookup keycode name."""
-        for name, kc in self.KEYS.items():
-            if kc == code:
+        # sorted(): deterministic across runtimes -- CircuitPython dicts are
+        # hash-ordered, not insertion-ordered like CPython (enter/return alias)
+        for name in sorted(self.KEYS):
+            if self.KEYS[name] == code:
                 return name.upper()
-        # Try common ASCII codes
-        if code >= 0x04 and code <= 0x1D:  # A-Z
+        if 0x04 <= code <= 0x1D:  # A-Z
             return chr(ord("A") + code - 0x04)
+        if 0x1E <= code <= 0x26:  # 1-9
+            return chr(ord("1") + code - 0x1E)
+        if code == 0x27:
+            return "0"
         return f"0x{code:02X}"
 
     def _mod_names(self, mask):
@@ -261,9 +256,9 @@ class Macro:
         if len(ch) != 1:
             return None
         if _is_alpha(ch):
-            return getattr(Keycode, ch.upper())
-        if ch in self.DIGIT_KEYS:
-            return self.DIGIT_KEYS[ch]
+            return letter_keycode(ch)
+        if ch.isdigit():
+            return digit_keycode(ch)
         return None
 
     def _resolve_key(self, name, pos):
@@ -287,10 +282,6 @@ class Macro:
 
     def _emit_u16(self, v):
         self._emit(v & 0xFF, (v >> 8) & 0xFF)
-
-    def _emit_i8(self, v):
-        v = max(-127, min(127, v))
-        self._emit(v & 0xFF)
 
     def _emit_i16(self, v):
         v = max(-32767, min(32767, v))
@@ -402,7 +393,9 @@ class Macro:
             ms = max(1, min(65535, ms))
             self._emit(OP_DELAY)
             self._emit_u16(ms)
-        except:
+        except MacroError:
+            raise
+        except Exception:
             raise MacroError("Invalid delay value", pos)
 
     def _cmd_rep(self, pos):
@@ -412,16 +405,20 @@ class Macro:
         try:
             count = int(arg)
             count = max(1, min(255, count))
-        except:
+        except Exception:
             raise MacroError("Invalid rep count", pos)
 
         body = self._read_braces()
         if body is None:
             raise MacroError("rep requires {body}", self._pos)
 
+        # B1: enforce nesting limit (recursive compile of body)
+        if self._depth >= MAX_NEST:
+            raise MacroError(f"rep nesting exceeds {MAX_NEST} levels", pos)
+
         # Compile body
-        sub = Macro(self.keyboard, self.layout, self.mouse)
-        sub_bc, err = sub.compile(body)
+        sub = Macro(self.hid)
+        sub_bc, err = sub.compile(body, _depth=self._depth + 1)
         if err:
             raise MacroError(f"In rep body: {err}", pos)
 
@@ -462,7 +459,7 @@ class Macro:
             try:
                 count = int(parts[1].strip())
                 count = max(1, min(65535, count))
-            except:
+            except Exception:
                 raise MacroError("Invalid click count", pos)
         self._emit(OP_MCLICK, btn)
         self._emit_u16(count)
@@ -474,13 +471,13 @@ class Macro:
         parts = arg.split(",")
         try:
             dx = int(parts[0].strip())
-        except:
+        except Exception:
             raise MacroError("Invalid move dx", pos)
         dy = 0
         if len(parts) >= 2:
             try:
                 dy = int(parts[1].strip())
-            except:
+            except Exception:
                 raise MacroError("Invalid move dy", pos)
 
         # Emit in chunks of 32767
@@ -518,7 +515,7 @@ class Macro:
                 next_ch = self._peek()
 
                 # Escape sequences
-                if next_ch in "\\{}":
+                if next_ch is not None and next_ch in "\\{}":
                     self._emit(OP_CHAR, ord(next_ch))
                     self._advance()
                 elif next_ch and _is_alpha(next_ch):
@@ -530,20 +527,20 @@ class Macro:
             # Regular character
             if ch == "\n":
                 # Unix/Mac line ending - emit ENTER
-                self._emit(OP_KEY, Keycode.ENTER)
+                self._emit(OP_KEY, ENTER)
             elif ch == "\r":
                 # Windows CR or old Mac - check if followed by \n
                 if self._pos + 1 < self._len and self._text[self._pos + 1] == "\n":
                     # Windows \r\n - emit ENTER and skip both chars
-                    self._emit(OP_KEY, Keycode.ENTER)
+                    self._emit(OP_KEY, ENTER)
                     self._advance()  # skip \r
                     self._advance()  # skip \n
                     continue
                 else:
                     # Standalone \r - emit ENTER
-                    self._emit(OP_KEY, Keycode.ENTER)
+                    self._emit(OP_KEY, ENTER)
             elif ch == "\t":
-                self._emit(OP_KEY, Keycode.TAB)
+                self._emit(OP_KEY, TAB)
             elif ord(ch) >= 32 and ord(ch) <= 126:
                 self._emit(OP_CHAR, ord(ch))
             else:
@@ -551,13 +548,18 @@ class Macro:
 
             self._advance()
 
-    def execute(self, bytecode, default_delay_ms=50, click_hold_ms=10):
-        """Execute compiled bytecode."""
+    async def execute(self, bytecode, default_delay_ms=50, click_hold_ms=10):
+        """Execute compiled bytecode.
+
+        Any exit path (normal end, unknown opcode, runtime error, cancellation)
+        releases all keys and mouse buttons (B2).
+        """
         bc = bytecode
         n = len(bc)
         ip = 0
         delay_ms = default_delay_ms
         loop_stack = []  # [(ip_start, remaining, saved_delay)]
+        hid = self.hid
 
         def read_u8():
             nonlocal ip
@@ -571,130 +573,111 @@ class Macro:
             ip += 2
             return v
 
-        def read_i8():
-            v = read_u8()
-            return v - 256 if v > 127 else v
-
         def read_i16():
             v = read_u16()
             return v - 65536 if v > 32767 else v
 
-        def do_delay():
-            if delay_ms > 0:
-                time.sleep(delay_ms / 1000.0)
+        async def sleep_ms(ms):
+            if ms > 0:
+                await asyncio.sleep(ms / 1000.0)
 
-        def do_click_hold():
-            if click_hold_ms > 0:
-                time.sleep(click_hold_ms / 1000.0)
-
-        while ip < n:
-            op = read_u8()
-
-            if op == OP_END:
-                break
-
-            elif op == OP_CHAR:
-                ch = chr(read_u8())
-                try:
-                    codes = self.layout.keycodes(ch)
-                except:
-                    codes = None
-                if codes:
-                    for kc in codes:
-                        self.keyboard.press(kc)
-                    do_click_hold()
-                    self.keyboard.release_all()
-                else:
-                    # Fallback: layout.write (no hold control)
-                    self.layout.write(ch, delay=0)
-                    do_click_hold()
-                do_delay()
-
-            elif op == OP_KEY:
-                self.keyboard.press(read_u8())
-                do_click_hold()
-                self.keyboard.release_all()
-                do_delay()
-
-            elif op == OP_COMBO:
-                mods = read_u8()
-                key = read_u8()
-                for i in range(4):
-                    if mods & (1 << i):
-                        self.keyboard.press(self.MOD_KEYS[i])
-                if key:
-                    self.keyboard.press(key)
-                    do_click_hold()
-                    self.keyboard.release(key)
-                self.keyboard.release_all()
-                do_delay()
-
-            elif op == OP_DELAY:
-                delay_ms = read_u16()
-                # Immediately execute this delay
-                time.sleep(delay_ms / 1000.0)
-
-            elif op == OP_MCLICK:
-                btn = read_u8()
-                count = read_u16()
-                for i in range(count):
-                    self.mouse.press(btn)
-                    do_click_hold()
-                    self.mouse.release(btn)
-                    if i < count - 1:
-                        do_delay()
-                do_delay()
-
-            elif op == OP_MMOVE:
-                dx = read_i16()
-                dy = read_i16()
-                self.mouse.move(x=dx, y=dy)
-                do_delay()
-
-            elif op == OP_LOOP:
-                count = read_u8()
-                body_len = read_u16()
-                if count > 1:
-                    loop_stack.append((ip, count - 1, delay_ms))
-
-            elif op == OP_LOOP_END:
-                if loop_stack:
-                    start, remaining, saved_delay = loop_stack[-1]
-                    if remaining > 0:
-                        loop_stack[-1] = (start, remaining - 1, saved_delay)
-                        ip = start
-                    else:
-                        loop_stack.pop()
-                        delay_ms = saved_delay
-
-            elif op == OP_KEY_DOWN:
-                self.keyboard.press(read_u8())
-
-            elif op == OP_KEY_UP:
-                key = read_u8()
-                if key == 0:
-                    self.keyboard.release_all()
-                else:
-                    self.keyboard.release(key)
-
-            elif op == OP_MDOWN:
-                self.mouse.press(read_u8())
-
-            elif op == OP_MUP:
-                self.mouse.release(read_u8())
-
-            else:
-                break  # Unknown opcode
-
-        return True
-
-    def run(self, text, default_delay_ms=50):
-        """Compile and execute macro. Returns (success, message)."""
-        bytecode, err = self.compile(text)
-        if err:
-            return False, f"Compile: {err}"
         try:
-            self.execute(bytecode, default_delay_ms)
-            return True, f"OK: {len(bytecode)}B"
-        except Exception as e:
-            return False, f"Runtime: {e}"
+            while ip < n:
+                op = read_u8()
+
+                if op == OP_END:
+                    break
+
+                elif op == OP_CHAR:
+                    ch = chr(read_u8())
+                    codes = hid.char_keycodes(ch)
+                    if not codes:
+                        raise RuntimeError(f"Unmappable char: {ch!r}")
+                    for kc in codes:
+                        hid.key_press(kc)
+                    await sleep_ms(click_hold_ms)
+                    hid.keys_release_all()
+                    await sleep_ms(delay_ms)
+
+                elif op == OP_KEY:
+                    hid.key_press(read_u8())
+                    await sleep_ms(click_hold_ms)
+                    hid.keys_release_all()
+                    await sleep_ms(delay_ms)
+
+                elif op == OP_COMBO:
+                    mods = read_u8()
+                    key = read_u8()
+                    for i in range(4):
+                        if mods & (1 << i):
+                            hid.key_press(self.MOD_KEYS[i])
+                    if key:
+                        hid.key_press(key)
+                    await sleep_ms(click_hold_ms)
+                    hid.keys_release_all()
+                    await sleep_ms(delay_ms)
+
+                elif op == OP_DELAY:
+                    delay_ms = read_u16()
+                    # Immediately execute this delay
+                    await sleep_ms(delay_ms)
+
+                elif op == OP_MCLICK:
+                    btn = read_u8()
+                    count = read_u16()
+                    for i in range(count):
+                        hid.mouse_press(btn)
+                        await sleep_ms(click_hold_ms)
+                        hid.mouse_release(btn)
+                        if i < count - 1:
+                            await sleep_ms(delay_ms)
+                    await sleep_ms(delay_ms)
+
+                elif op == OP_MMOVE:
+                    dx = read_i16()
+                    dy = read_i16()
+                    hid.mouse_move(dx, dy)
+                    await sleep_ms(delay_ms)
+
+                elif op == OP_LOOP:
+                    count = read_u8()
+                    body_len = read_u16()
+                    if ip + body_len > n:
+                        raise RuntimeError("LOOP body overruns bytecode")
+                    if count > 1:
+                        loop_stack.append((ip, count - 1, delay_ms))
+
+                elif op == OP_LOOP_END:
+                    if loop_stack:
+                        start, remaining, saved_delay = loop_stack[-1]
+                        if remaining > 0:
+                            loop_stack[-1] = (start, remaining - 1, saved_delay)
+                            ip = start
+                        else:
+                            loop_stack.pop()
+                            delay_ms = saved_delay
+
+                elif op == OP_KEY_DOWN:
+                    hid.key_press(read_u8())
+
+                elif op == OP_KEY_UP:
+                    key = read_u8()
+                    if key == 0:
+                        hid.keys_release_all()
+                    else:
+                        hid.key_release(key)
+
+                elif op == OP_MDOWN:
+                    hid.mouse_press(read_u8())
+
+                elif op == OP_MUP:
+                    hid.mouse_release(read_u8())
+
+                else:
+                    raise RuntimeError(f"Unknown opcode 0x{op:02X}")
+
+            return True
+        finally:
+            # B2: never leave keys/buttons pressed, whatever the exit path
+            hid.keys_release_all()
+            hid.mouse_release(BTN_ALL)
