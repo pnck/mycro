@@ -1,0 +1,27 @@
+# ── 开发环境（不入库）──
+claude-code.yml
+.claude/
+
+# ── 设备配置（含 WiFi 凭据，严禁入库）──
+settings.toml
+.env
+*.local.toml
+
+# ── Python / CircuitPython ──
+__pycache__/
+*.py[cod]
+*.mpy
+.venv/
+venv/
+
+# ── 构建与工具产物 ──
+mpy-cross
+*.uf2
+.circup*
+
+# ── 编辑器与操作系统 ──
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*~
