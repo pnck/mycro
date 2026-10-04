@@ -72,18 +72,18 @@
 - [x] `\def{name}[argc]{body}` (argc 0–9); a `\name` call takes argc brace groups; resolution priority: built-in commands → user macros → key names
 - [x] Constraints: top-level only, define-before-use, no redefinition, no clash with built-ins/key names; circular references / wrong argc → compile error; expansion depth counts into MAX_NEST
 
-### Stage B — Variables / conditionals / rendering (bytecode v3)
-- [ ] 16 i32 registers (zeroed at execution start), `\set{x}{i32}` / `\add{x}{i32}`; `0x` hex literals supported
-- [ ] Special read-only: `$ret` (0xFF), `$timeout` (0xFE); signal slots `$ns.field` (READSLOT)
-- [ ] `\ifnum{$a}{op}{b}{then}[{else}]` (op ∈ `= != < <= > >=`; left operand must be a variable, right operand i32 or `$var`; compiles to forward BRA/JMP, zero runtime stack growth)
-- [ ] `\val{name}` (OP_TYPEREG; counts as one pacing action; the argument must be defined, else compile error)
-- [ ] Static checks: reading before `\set` is an error (conservative lexical-order judgement); `\call` arguments checked against the function signature
-- [ ] All value positions accept `$var` interpreted per the position's type (incl. `\kdown{$k}` with a register keycode)
+### Stage B — Variables / conditionals / rendering (bytecode v3) ✅
+- [x] 16 i32 registers (zeroed at execution start), `\set{x}{i32}` / `\add{x}{i32}`; `0x` hex literals supported
+- [x] Special read-only: `$ret` (0xFF), `$timeout` (0xFE); signal slots `$ns.field` (READSLOT, lands in Stage C)
+- [x] `\ifnum{$a}{op}{b}{then}[{else}]` (op ∈ `= != < <= > >=`; left operand must be a variable, right operand i32 or `$var`; compiles to forward BRA/JMP, zero runtime stack growth)
+- [x] `\val{name}` (OP_TYPEREG; counts as one pacing action; the argument must be defined, else compile error)
+- [x] Static checks: reading before `\set` is an error (conservative lexical-order judgement); `\call` arguments checked against the function signature (lands in Stage C)
+- [x] All value positions accept `$var` interpreted per the position's type (incl. `\kdown{$k}` with a register keycode)
 
-### Bytecode v3
-- [ ] Header: MAGIC(0xA5) + VERSION(3) + string table (u8 count; u8 len + bytes; signal/ns/fn/template names, deduplicated)
-- [ ] New opcodes: 0x20 SET, 0x21 ADD (reg, i32); 0x22 BRA (cc, reg, i32, off16), 0x23 JMP (off16); 0x28 READSLOT (reg, sig, field); 0x29 WAIT (sig, timeout_ms u32, 0 = wait forever); 0x2A CALL_EXT (ns, fn, argc, typed args); 0x2B TYPEREG (reg)
-- [ ] Typed-operand rework: MMOVE / SLEEP / PACE / MCLICK.count numeric operands gain a tag prefix (0=imm, 1=reg); tag=0 is wire-identical to v2
+### Bytecode v3 ✅
+- [x] Header: MAGIC(0xA5) + VERSION(3) + string table (u8 count; u8 len + bytes; signal/ns/fn/template names, deduplicated)
+- [x] New opcodes: 0x20 SET, 0x21 ADD (reg, i32); 0x22 BRA (cc, reg, i32, off16), 0x23 JMP (off16); 0x28 READSLOT (reg, sig, field); 0x29 WAIT (sig, timeout_ms u32, 0 = wait forever); 0x2A CALL_EXT (ns, fn, argc, typed args); 0x2B TYPEREG (reg) — 0x28/0x29/0x2A opcode slots assigned here, implementation lands in Stage C
+- [x] Typed-operand rework: MMOVE / SLEEP / PACE / MCLICK.count numeric operands gain a tag prefix (0=imm, 1=reg); tag=0 is wire-identical to v2
 
 ### Stage C — Waiting / runtime extension (syntax frozen, semantics land with the phases)
 - [ ] `\wait{signal}` / `\wait{signal}{sec}`: suspend the coroutine by name (asyncio.Event); runtime event sources register signals and write payload slots; timeout writes `$timeout`; abort can interrupt

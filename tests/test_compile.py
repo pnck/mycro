@@ -9,13 +9,13 @@ from macro import (
 )
 from mock_hid import MockHID
 
-H = bytes([MAGIC, VERSION])  # bytecode header prefix
+H = bytes([MAGIC, VERSION, 0])  # bytecode header prefix (empty string table)
 
 
 def compile_ok(text):
     bc, err = Macro(MockHID()).compile(text)
     assert err is None, f"unexpected compile error: {err}"
-    assert bc[:2] == H, "bytecode must start with the v2 header"
+    assert bc[: len(H)] == H, "bytecode must start with the v3 header"
     return bc
 
 
@@ -73,12 +73,12 @@ def test_empty_braces_separator():
 
 def test_delay_is_one_shot_sleep():
     bc = compile_ok("\\delay{0.5}")
-    assert bc == H + bytes([OP_SLEEP, 500 & 0xFF, 500 >> 8, OP_END])
+    assert bc == H + bytes([OP_SLEEP, 0, 500 & 0xFF, 500 >> 8, OP_END])
 
 
 def test_pace():
     bc = compile_ok("\\pace{0.1}")
-    assert bc == H + bytes([OP_PACE, 100, 0, OP_END])
+    assert bc == H + bytes([OP_PACE, 0, 100, 0, OP_END])
 
 
 # --- DSL v2: line continuation ---
@@ -143,7 +143,7 @@ def test_escaped_brace_in_rep_body():
     bc = compile_ok("\\rep{2}{a\\{b}")
     # body: CHAR a, CHAR {, CHAR b (the \{ must not break depth counting)
     assert bc == H + bytes([
-        OP_LOOP, 2, 7, 0,
+        OP_LOOP, 0, 2, 7, 0,
         OP_CHAR, ord("a"), OP_CHAR, ord("{"), OP_CHAR, ord("b"), OP_LOOP_END,
         OP_END,
     ])
@@ -160,7 +160,7 @@ def test_escaped_closing_brace_does_not_close_arg():
 def test_rep_basic():
     bc = compile_ok("\\rep{3}{ab}")
     assert bc == H + bytes([
-        OP_LOOP, 3, 5, 0,
+        OP_LOOP, 0, 3, 5, 0,
         OP_CHAR, ord("a"), OP_CHAR, ord("b"), OP_LOOP_END,
         OP_END,
     ])
@@ -200,9 +200,9 @@ def test_invalid_char():
 
 def test_mouse_commands():
     bc = compile_ok("\\click{R,3}")
-    assert bc == H + bytes([OP_MCLICK, keymap.BTN_RIGHT, 3, 0, OP_END])
+    assert bc == H + bytes([OP_MCLICK, 0, keymap.BTN_RIGHT, 0, 3, 0, OP_END])
     bc = compile_ok("\\move{100,-50}")
-    assert bc[2] == OP_MMOVE
+    assert bc[3] == OP_MMOVE
     bc = compile_ok("\\mdown{L}\\mup{L}")
     assert keymap.BTN_LEFT in bc
 
@@ -210,12 +210,12 @@ def test_mouse_commands():
 def test_mouse_side_buttons():
     # default CP mouse descriptor declares 5 buttons: back/X1=bit3, forward/X2=bit4
     bc = compile_ok("\\click{back}")
-    assert bc == H + bytes([OP_MCLICK, keymap.BTN_BACK, 1, 0, OP_END])
+    assert bc == H + bytes([OP_MCLICK, 0, keymap.BTN_BACK, 0, 1, 0, OP_END])
     bc = compile_ok("\\click{x2}\\mdown{fwd}\\mup{b}")
     assert bc == H + bytes([
-        OP_MCLICK, keymap.BTN_FORWARD, 1, 0,
-        0x14, keymap.BTN_FORWARD,  # OP_MDOWN
-        0x15, keymap.BTN_BACK,     # OP_MUP
+        OP_MCLICK, 0, keymap.BTN_FORWARD, 0, 1, 0,
+        0x14, 0, keymap.BTN_FORWARD,  # OP_MDOWN
+        0x15, 0, keymap.BTN_BACK,     # OP_MUP
         OP_END,
     ])
 
@@ -223,9 +223,9 @@ def test_mouse_side_buttons():
 def test_kdown_kup():
     bc = compile_ok("\\kdown{ctrl}c\\kup{}")
     assert bc == H + bytes([
-        OP_KEY_DOWN, keymap.CONTROL,
+        OP_KEY_DOWN, 0, keymap.CONTROL,
         OP_CHAR, ord("c"),
-        OP_KEY_UP, 0,
+        OP_KEY_UP, 0, 0,
         OP_END,
     ])
 

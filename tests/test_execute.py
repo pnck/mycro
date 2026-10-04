@@ -105,7 +105,7 @@ def test_loop_count_zero_skips_body():
     hid = MockHID()
     m = Macro(hid)
     body = bytes([OP_CHAR, ord("x")])
-    bc = bytes([MAGIC, VERSION, OP_LOOP, 0, len(body) + 1, 0]) + body + bytes([
+    bc = bytes([MAGIC, VERSION, 0, OP_LOOP, 0, 0, len(body) + 1, 0]) + body + bytes([
         OP_LOOP_END, OP_CHAR, ord("y"), OP_END,
     ])
     asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
@@ -163,7 +163,7 @@ def test_unknown_opcode_raises_and_cleans_up():
     hid = MockHID()
     m = Macro(hid)
     try:
-        asyncio.run(m.execute(bytes([MAGIC, VERSION, 0x77]), default_delay_ms=0, click_hold_ms=0))
+        asyncio.run(m.execute(bytes([MAGIC, VERSION, 0, 0x77]), default_delay_ms=0, click_hold_ms=0))
         raised = False
     except RuntimeError as e:
         raised = "opcode" in str(e)

@@ -31,6 +31,10 @@ class MockHID:
             return (keymap.digit_keycode(ch),)
         if ch == " ":
             return (keymap.SPACE,)
+        if ch == "-":
+            return (keymap.MINUS,)
+        if ch == "=":
+            return (keymap.EQUALS,)
         return None
 
     # --- mouse ---
