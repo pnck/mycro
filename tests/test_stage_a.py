@@ -132,8 +132,25 @@ def test_err_param_out_of_range():
 
 
 def test_err_expansion_depth_limit():
-    # rep in macro in macro in rep would exceed MAX_NEST=2
-    compile_err("\\def{m1}[1]{\\rep{2}{#1}}\\rep{2}{\\rep{2}{\\m1{a}}}")
+    # 4 nested reps then a macro call exceeds MAX_NEST=4
+    compile_err("\\def{m1}[1]{\\rep{2}{#1}}\\rep{2}{\\rep{2}{\\rep{2}{\\rep{2}{\\m1{a}}}}}")
+
+
+def test_deep_mixed_nesting_at_limit():
+    # rep(d0->d1) > macro(d1->d2) > ifnum(d2->d3) > rep(d3->d4): exactly at
+    # MAX_NEST=4, must compile. Nesting is iterative (heap stack), so this
+    # cannot exhaust the tiny device pystack the recursive compiler died on.
+    compile_ok(
+        "\\def{mx}[1]{\\ifnum{$x}{=}{1}{\\rep{2}{#1}}{-}}"
+        "\\set{x}{1}\\rep{1}{\\mx{a}}"
+    )
+
+
+def test_error_wrap_chain_preserved():
+    # nested failure keeps the "In <ctx>: In <ctx>: ..." chain from the
+    # recursive compiler's message shape
+    err = compile_err("\\def{mx}{\\bogus{!}}\\rep{2}{\\mx}")
+    assert err == "In rep body: In macro mx: @6: Unknown key: bogus"
 
 
 def test_err_bad_argc():

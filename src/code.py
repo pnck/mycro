@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import os
 import traceback
 
@@ -8,6 +9,7 @@ from adafruit_httpserver import Request, Response, Server, FileResponse
 
 from lib.hid_adafruit import AdafruitHIDProvider
 from lib.macro import Macro
+from lib.runtime import Runtime
 
 RAW_PORT = 7373  # raw TCP listener stub; message protocol lands in Phase 2
 
@@ -21,9 +23,14 @@ WIFI_PASSWORD = os.getenv("MYCRO_WIFI_PASSWORD") or ""
 # Bearer token from settings.toml; unset = auth disabled (dev mode, warns on serial)
 TOKEN = os.getenv("MYCRO_TOKEN")
 
-# Initialize HID + macro interpreter
+# Initialize HID + macro interpreter with a runtime registry
+# (sys namespace now; net/img land in Phase 2/3)
 hid = AdafruitHIDProvider()
-macro = Macro(hid)
+runtime = Runtime()
+runtime.register_ns("sys", {
+    "free": ([], lambda: gc.mem_free()),
+})
+macro = Macro(hid, runtime)
 
 # Minimum hold time for click (ms)
 click_hold_ms = 10

@@ -166,12 +166,12 @@ def test_rep_basic():
     ])
 
 
-def test_rep_nesting_allowed_to_two_levels():
-    compile_ok("\\rep{2}{a\\rep{2}{b}}")
+def test_rep_nesting_allowed_to_four_levels():
+    compile_ok("\\rep{2}{a\\rep{2}{b\\rep{2}{c\\rep{2}{d}}}}")
 
 
-def test_rep_nesting_beyond_two_levels_rejected():
-    err = compile_err("\\rep{2}{a\\rep{2}{b\\rep{2}{c}}}")
+def test_rep_nesting_beyond_four_levels_rejected():
+    err = compile_err("\\rep{2}{a\\rep{2}{b\\rep{2}{c\\rep{2}{d\\rep{2}{e}}}}}")
     assert "nesting" in err
 
 
@@ -245,13 +245,21 @@ def test_index_html_examples_compile():
         "\\cmd+space\\delay{0.2}terminal\\enter",
         "\\mdown{L}\\move{100,0}\\mup{L}",
         "\\kdown{ctrl}ccc\\kup{}",
+        "\\def{cp}[1]{\\ctrl+#1}\\cp{c}\\cp{v}",
+        "\\set{n}{3}\\rep{$n}{ab\\enter}",
     ]
     for ex in examples:
         compile_ok(ex)
+    # the \call example needs the runtime registry (sys namespace)
+    from runtime import Runtime
+    rt = Runtime()
+    rt.register_ns("sys", {"free": ([], lambda: 0)})
+    bc, err = Macro(MockHID(), rt).compile("\\call{sys.free}\\val{ret}")
+    assert err is None, f"unexpected compile error: {err}"
 
 
 def test_disassemble_canonical_key_names():
     # Aliases (enter/return) must render deterministically on every runtime:
     # CircuitPython dicts are hash-ordered, unlike CPython insertion order
-    bc = compile_ok("\enter")
+    bc = compile_ok("\\enter")
     assert "KEY ENTER" in Macro(MockHID()).disassemble(bc)
