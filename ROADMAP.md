@@ -1,7 +1,7 @@
 # ROADMAP — MYCRO Evolution Plan
 
 > Current state, bug details, and capability research conclusions: see [AGENTS.md](AGENTS.md).
-> Target hardware: ESP32-S3 **with PSRAM** (N8R8 recommended); current runtime CircuitPython 10.x, library versions pinned via circup.
+> Target hardware: ESP32-S3 **with PSRAM** (≥8MB PSRAM recommended — the vision phase needs large buffers); runtime CircuitPython 10.x, library list in requirements-device.txt (per-device version snapshots are kept out of the repo, in private memory).
 > **Architectural discipline (always in effect)**: the compiler/VM/protocol layers must not import any runtime-specific modules; all hardware interaction goes through the HIDProvider abstraction — this carries a possible MicroPython migration in Phase 3 and is also the mock point for unit tests.
 
 ---
@@ -110,7 +110,7 @@
 
 ## Cross-phase items (ongoing)
 
-- **Version pinning**: record firmware / bundle / mpy-cross versions in the repo; library upgrades must re-verify B3's decoding behavior
+- **Version management**: the library list and compatibility constraints (e.g. the form_data no-decode assumption) live in the repo; per-device firmware/library version snapshots live in private memory, not the repo; library upgrades must re-verify the decoding behavior
 - **On-device regression**: run on-device regression at the end of each Phase; no phase counts as done without hardware validation
 - **Documentation sync**: update AGENTS.md at the end of each Phase (architecture changes, new opcodes, protocol summary)
 - **Risks & mitigations**:

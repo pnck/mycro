@@ -81,7 +81,7 @@ fi
 # firmware-compatible bundle version. Libraries NOT listed here are never
 # touched; audit leftovers with `circup list` / `circup uninstall <name>`.
 if command -v circup >/dev/null 2>&1; then
-    circup install asyncio adafruit_hid adafruit_httpserver
+    circup install asyncio adafruit_ticks adafruit_hid adafruit_httpserver
 else
     echo "WARNING: circup not found — install adafruit_hid + adafruit_httpserver manually" >&2
 fi

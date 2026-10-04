@@ -207,6 +207,19 @@ def test_mouse_commands():
     assert keymap.BTN_LEFT in bc
 
 
+def test_mouse_side_buttons():
+    # default CP mouse descriptor declares 5 buttons: back/X1=bit3, forward/X2=bit4
+    bc = compile_ok("\\click{back}")
+    assert bc == H + bytes([OP_MCLICK, keymap.BTN_BACK, 1, 0, OP_END])
+    bc = compile_ok("\\click{x2}\\mdown{fwd}\\mup{b}")
+    assert bc == H + bytes([
+        OP_MCLICK, keymap.BTN_FORWARD, 1, 0,
+        0x14, keymap.BTN_FORWARD,  # OP_MDOWN
+        0x15, keymap.BTN_BACK,     # OP_MUP
+        OP_END,
+    ])
+
+
 def test_kdown_kup():
     bc = compile_ok("\\kdown{ctrl}c\\kup{}")
     assert bc == H + bytes([

@@ -18,7 +18,7 @@ from keymap import (
     PAGE_UP, PAGE_DOWN, HOME, END, INSERT, CAPS_LOCK,
     F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
     CONTROL, SHIFT, ALT, GUI,
-    BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_ALL,
+    BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_BACK, BTN_FORWARD, BTN_ALL,
     letter_keycode, digit_keycode,
 )
 
@@ -117,7 +117,16 @@ class Macro:
         "right": BTN_RIGHT,
         "m": BTN_MIDDLE,
         "middle": BTN_MIDDLE,
+        "b": BTN_BACK,
+        "back": BTN_BACK,
+        "x1": BTN_BACK,
+        "f": BTN_FORWARD,
+        "forward": BTN_FORWARD,
+        "fwd": BTN_FORWARD,
+        "x2": BTN_FORWARD,
     }
+
+    _BTN_NAMES = {1: "L", 2: "R", 4: "M", 8: "B", 16: "F"}
 
     def __init__(self, hid):
         self.hid = hid
@@ -176,11 +185,7 @@ class Macro:
                 lines.append(f"{prefix}PACE {ms}ms")
                 i += 3
             elif op == OP_MCLICK:
-                btn = (
-                    "0LR3M"[bytecode[i + 1]]
-                    if bytecode[i + 1] <= 4
-                    else str(bytecode[i + 1])
-                )
+                btn = self._BTN_NAMES.get(bytecode[i + 1], str(bytecode[i + 1]))
                 count = bytecode[i + 2] | (bytecode[i + 3] << 8)
                 lines.append(f"{prefix}MCLICK {btn} x{count}")
                 i += 4
@@ -214,19 +219,11 @@ class Macro:
                     lines.append(f"{prefix}KEY_UP {key_name}")
                 i += 2
             elif op == OP_MDOWN:
-                btn = (
-                    "0LR3M"[bytecode[i + 1]]
-                    if bytecode[i + 1] <= 4
-                    else str(bytecode[i + 1])
-                )
+                btn = self._BTN_NAMES.get(bytecode[i + 1], str(bytecode[i + 1]))
                 lines.append(f"{prefix}MDOWN {btn}")
                 i += 2
             elif op == OP_MUP:
-                btn = (
-                    "0LR3M"[bytecode[i + 1]]
-                    if bytecode[i + 1] <= 4
-                    else str(bytecode[i + 1])
-                )
+                btn = self._BTN_NAMES.get(bytecode[i + 1], str(bytecode[i + 1]))
                 lines.append(f"{prefix}MUP {btn}")
                 i += 2
             elif op == OP_END:

@@ -52,8 +52,10 @@ SHIFT = 0xE1
 ALT = 0xE2
 GUI = 0xE3
 
-# Mouse button bit masks
+# Mouse button bit masks (default CP mouse descriptor declares 5 buttons)
 BTN_LEFT = 1
 BTN_RIGHT = 2
 BTN_MIDDLE = 4
-BTN_ALL = BTN_LEFT | BTN_RIGHT | BTN_MIDDLE
+BTN_BACK = 8
+BTN_FORWARD = 16
+BTN_ALL = BTN_LEFT | BTN_RIGHT | BTN_MIDDLE | BTN_BACK | BTN_FORWARD
