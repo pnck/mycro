@@ -3,7 +3,7 @@
 import asyncio
 
 import keymap
-from macro import Macro
+from macro import Macro, MAGIC, VERSION, OP_LOOP, OP_LOOP_END, OP_CHAR, OP_END
 from mock_hid import MockHID
 
 
@@ -64,6 +64,60 @@ def test_mouse_click_and_move():
     assert ("mm", 10, -5) in hid.events
 
 
+# --- DSL v2: delay vs pace semantics ---
+
+def test_pace_does_not_sleep_immediately():
+    r"""\pace only changes inter-action delay; it must not block by itself."""
+    import time
+
+    start = time.monotonic()
+    run("\\pace{0.2}a")
+    elapsed = time.monotonic() - start
+    # one 'a' with 200ms pace → ~0.2s total, not 0.4s (old dual semantics)
+    assert 0.18 < elapsed < 0.35
+
+
+def test_delay_is_one_shot():
+    import time
+
+    start = time.monotonic()
+    run("\\delay{0.2}")
+    elapsed = time.monotonic() - start
+    assert 0.18 < elapsed < 0.35
+
+
+# --- DSL v2: bytecode header ---
+
+def test_execute_rejects_wrong_version():
+    hid = MockHID()
+    m = Macro(hid)
+    try:
+        asyncio.run(m.execute(b"\x00\x01\xff", default_delay_ms=0, click_hold_ms=0))
+        raised = False
+    except ValueError as e:
+        raised = "version" in str(e)
+    assert raised
+
+
+# --- unified block offset: LOOP count=0 skips body via len ---
+
+def test_loop_count_zero_skips_body():
+    hid = MockHID()
+    m = Macro(hid)
+    body = bytes([OP_CHAR, ord("x")])
+    bc = bytes([MAGIC, VERSION, OP_LOOP, 0, len(body) + 1, 0]) + body + bytes([
+        OP_LOOP_END, OP_CHAR, ord("y"), OP_END,
+    ])
+    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    chars = [e for e in hid.events if e[0] == "kp"]
+    # only 'y' typed; 'x' skipped
+    assert chars == [("kp", keymap.letter_keycode("y")), ("kra",)] or \
+        ("kp", keymap.letter_keycode("y")) in chars and \
+        ("kp", keymap.letter_keycode("x")) not in chars
+
+
+# --- B2 cleanup guarantees ---
+
 def test_b2_keys_released_on_runtime_error():
     """Unmappable char mid-macro must still release previously pressed keys."""
     hid = MockHID()
@@ -109,7 +163,7 @@ def test_unknown_opcode_raises_and_cleans_up():
     hid = MockHID()
     m = Macro(hid)
     try:
-        asyncio.run(m.execute(b"\x77", default_delay_ms=0, click_hold_ms=0))
+        asyncio.run(m.execute(bytes([MAGIC, VERSION, 0x77]), default_delay_ms=0, click_hold_ms=0))
         raised = False
     except RuntimeError as e:
         raised = "opcode" in str(e)
