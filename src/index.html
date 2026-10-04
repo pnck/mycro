@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Macro HID</title>
+<title>MYCRO</title>
 <style>
 body{font-family:sans-serif;margin:20px;max-width:900px}
 textarea{font-family:monospace;width:100%;box-sizing:border-box}
@@ -19,14 +19,18 @@ code{font-family:monospace;background:#f0f0f0;padding:1px 4px}
 </style>
 </head>
 <body>
-<h2>Macro HID Controller</h2>
+<h2>MYCRO HID Controller</h2>
 <form id="macroForm" action="/macro" method="POST" accept-charset="utf-8">
 <textarea id="macroCode" name="code" rows="6" placeholder="Example: Hello World\enter"></textarea><br>
 <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
 <input type="submit" value="Execute Macro">
 <button type="button" id="compileBtn">Compile Only</button>
+<button type="button" id="abortBtn">Abort</button>
 <label style="font-size:12px">Click hold (ms):
 <input type="number" id="holdMs" name="hold_ms" value="10" min="0" max="1000" style="width:70px">
+</label>
+<label style="font-size:12px">Token:
+<input type="password" id="token" style="width:110px" placeholder="if set on device">
 </label>
 </div>
 </form>
@@ -37,29 +41,52 @@ const form = document.getElementById("macroForm");
 const codeEl = document.getElementById("macroCode");
 const outEl = document.getElementById("macroOutput");
 const compileBtn = document.getElementById("compileBtn");
+const abortBtn = document.getElementById("abortBtn");
 const holdMsEl = document.getElementById("holdMs");
+const tokenEl = document.getElementById("token");
 const executeBtn = form.querySelector("input[type=submit]");
 let inFlight = false;
 
+function headers() {
+	const h = {"Content-Type": "application/x-www-form-urlencoded"};
+	const t = tokenEl.value.trim();
+	if (t) h["Authorization"] = "Bearer " + t;
+	return h;
+}
+
+function setBusy(busy) {
+	inFlight = busy;
+	if (executeBtn) executeBtn.disabled = busy;
+	if (compileBtn) compileBtn.disabled = busy;
+}
+
+function pollStatus() {
+	fetch("/macro/status", {headers: headers()})
+	.then(r => r.text())
+	.then(t => {
+		outEl.textContent = "Status: " + t;
+		if (t.indexOf("running") === 0) setTimeout(pollStatus, 500);
+	})
+	.catch(() => {});
+}
+
 function post(path) {
 	if (inFlight) return;
-	inFlight = true;
-	if (executeBtn) executeBtn.disabled = true;
-	if (compileBtn) compileBtn.disabled = true;
+	setBusy(true);
 	outEl.textContent = "Working...";
 	fetch(path, {
 		method: "POST",
-		headers: {"Content-Type": "application/x-www-form-urlencoded"},
+		headers: headers(),
 		body: "code=" + encodeURIComponent(codeEl.value || "") + "&hold_ms=" + encodeURIComponent(holdMsEl.value || "")
 	})
 	.then(r => r.text())
-	.then(t => { outEl.textContent = t; })
+	.then(t => {
+		outEl.textContent = t;
+		// Macro started in background — watch it until it leaves "running"
+		if (t.indexOf("Started") === 0) setTimeout(pollStatus, 300);
+	})
 	.catch(e => { outEl.textContent = "Error: " + e; })
-	.finally(() => {
-		inFlight = false;
-		if (executeBtn) executeBtn.disabled = false;
-		if (compileBtn) compileBtn.disabled = false;
-	});
+	.finally(() => setBusy(false));
 }
 
 form.addEventListener("submit", (e) => {
@@ -68,6 +95,26 @@ form.addEventListener("submit", (e) => {
 });
 
 compileBtn.addEventListener("click", () => post("/compile"));
+
+abortBtn.addEventListener("click", () => {
+	fetch("/macro/abort", {method: "POST", headers: headers()})
+	.then(r => r.text())
+	.then(t => { outEl.textContent = t; setTimeout(pollStatus, 300); })
+	.catch(e => { outEl.textContent = "Error: " + e; });
+});
+
+// Quick Mouse via fetch so the Bearer token header is included
+const mouseForm = document.getElementById("mouseForm");
+if (mouseForm) {
+	mouseForm.addEventListener("submit", (e) => {
+		e.preventDefault();
+		const q = new URLSearchParams(new FormData(mouseForm));
+		fetch("/mouse?" + q, {headers: headers()})
+		.then(r => r.text())
+		.then(t => { outEl.textContent = t; })
+		.catch(err => { outEl.textContent = "Error: " + err; });
+	});
+}
 </script>
 
 <details class="ref">
@@ -154,7 +201,7 @@ compileBtn.addEventListener("click", () => post("/compile"));
 
 <hr>
 <h3>Quick Mouse</h3>
-<form action="/mouse" method="GET" accept-charset="utf-8" style="display:flex;gap:10px;align-items:center">
+<form id="mouseForm" action="/mouse" method="GET" accept-charset="utf-8" style="display:flex;gap:10px;align-items:center">
 <select name="action">
 <option value="click">Click</option>
 <option value="move">Move</option>

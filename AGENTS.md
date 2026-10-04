@@ -4,77 +4,86 @@ A USB HID keyboard/mouse macro device based on CircuitPython: an ESP32-S3 emulat
 
 See [ROADMAP.md](ROADMAP.md) for the evolution plan. **Architectural discipline: the compiler/VM/protocol layers stay runtime-agnostic; all hardware interaction goes through the HIDProvider abstraction.**
 
-## 1. Files & Deployment Layout
-
-| Repo file | Device path | Role |
-|---|---|---|
-| `code.py` | `/code.py` | Entry point (auto-run by CircuitPython convention): HID + WiFi HTTP service |
-| `macro.py` | **`/lib/macro.py`** ⚠️ | Macro compiler + VM; `code.py` does `from lib.macro import Macro`, so deploy into `lib/` |
-| `index.html` | `/index.html` | Web UI (form + syntax cheat sheet) |
-| — | `/settings.toml` | Device-only: `CIRCUITPY_WIFI_SSID` / `CIRCUITPY_WIFI_PASSWORD` etc. |
-| — | `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/` | Dependency libraries (.mpy) |
-
-A `boot.py` may be added on the device (runs before USB enumeration; can customize HID report descriptors via `usb_hid.enable()`).
-
-## 2. System Architecture
+## 1. Repo Structure & Deployment
 
 ```
-browser ──HTTP──> adafruit_httpserver (code.py)
-                    │  POST /macro   → compile+execute (currently synchronous/blocking)
-                    │  POST /compile → compile only, returns disassembly
-                    │  GET  /mouse   → quick mouse click/move
-                    ▼
-              lib/macro.py: Macro
-                    │  compile(): DSL text → bytecode
-                    │  execute(): VM interprets opcodes, drives HID
-                    ▼
-         adafruit_hid (Keyboard/KeyboardLayoutUS/Mouse) → usb_hid → USB host
+src/
+├── code.py           → /code.py       Entry point: asyncio main loop (HTTP + macro task + raw stub)
+├── index.html        → /index.html    Web UI (form + cheat sheet + Abort/status polling + Token input)
+└── lib/
+    ├── macro.py      → /lib/macro.py  Compiler + VM (pure Python, zero adafruit dependencies)
+    ├── keymap.py     → /lib/keymap.py HID usage ID constants (page 0x07)
+    └── hid_adafruit.py → /lib/hid_adafruit.py  HIDProvider implementation on adafruit_hid
+tests/                  CPython unit tests (MockHID + pytest)
+tools/deploy.sh         Deploy: CIRCUITPY=/mountpoint ./tools/deploy.sh (exact-set sync via on-device manifest + circup lib install)
+requirements-device.txt  Device-side library list (circup version pinning)
 ```
 
-The server listens on `http://<wifi.radio.ipv4_address>:80`; the startup address is printed to serial. The frontend submits with `encodeURIComponent` + `application/x-www-form-urlencoded`.
+Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`. A `boot.py` (runs before USB enumeration) can customize HID report descriptors.
 
-## 3. Macro DSL Syntax (LaTeX-style)
+**settings.toml keys (deploy.sh merges conservatively: existing vars untouched, missing ones appended empty)**:
+- `MYCRO_WIFI_SSID` / `MYCRO_WIFI_PASSWORD` — **deliberately NOT the built-in `CIRCUITPY_WIFI_*`**: the built-in keys make the supervisor connect WiFi before USB MSC initializes, so a network outage hangs the device at boot and takes away even the CIRCUITPY drive. We connect at runtime in code.py; on failure the device degrades to offline mode (USB/serial/HID all work)
+- `MYCRO_TOKEN` — Bearer token; empty/unset = dev mode (serial warning)
+
+**HID abstraction layer**: `Macro(hid)`; provider interface = `key_press/key_release/keys_release_all/char_keycodes/mouse_press/mouse_release/mouse_move`. The device uses `hid_adafruit.py`; unit tests use `tests/mock_hid.py`; a future MicroPython migration only needs a new provider + the code.py platform layer.
+
+## 2. System Architecture (asyncio)
+
+`asyncio.run()` main loop: first `_wifi_connect()` (runtime WiFi connect, 3 attempts with timeout; failure → offline-mode idle loop, USB/serial/HID unaffected — fix settings.toml and reset to retry), then `server.start()` and concurrent drivers:
+- **`_http_loop`**: `server.poll()` HTTP polling
+- **Macro execution task**: `POST /macro` starts in the background via `asyncio.create_task` after compiling; HTTP stays responsive during execution
+- **`_raw_stub`**: raw TCP listener on `:7373` (message protocol arrives in Phase 2; fully exception-isolated — CP espressif asyncio TCP has known risk #10775)
+
+| Endpoint | Role |
+|---|---|
+| GET `/` | index.html |
+| POST `/macro` | Compile and start execution **in the background**; returns `Started: NB` immediately |
+| GET `/macro/status` | `idle` / `running` / `done` / `error <msg>` / `aborted` |
+| POST `/macro/abort` | `task.cancel()`; `execute()`'s finally guarantees all keys/buttons released |
+| POST `/compile` | Compile only, returns the disassembly |
+| GET `/mouse` | Quick mouse (`action=click\|move`, `p1`, `p2`) |
+
+**Auth**: once `MYCRO_TOKEN` is set in settings.toml, all endpoints except `/` require `Authorization: Bearer <token>`; unset = dev mode (serial warning).
+**Input decoding**: the frontend uses `encodeURIComponent` + `x-www-form-urlencoded`; `form_data` does **NOT** URL-decode (verified against the pinned library source), so code.py runs a manual `urldecode` — library upgrades must re-verify this assumption.
+
+## 3. Macro DSL Syntax v2 (LaTeX-style)
 
 - Plain text is typed verbatim (ASCII 32–126 only); `\n`/`\r\n`/`\r` → Enter, `\t` → Tab
 - Escapes: `\\` `\{` `\}`; separate a command from following text with an empty `{}` (`\enter{}abc`)
+- Formatting: `\` + newline = line continuation (drops the newline, no Enter); `\# ...` = comment to end of line (consumes the newline) — long macros can wrap into logical blocks
 - Special keys: `\enter` `\esc` `\tab` `\space` `\bs` `\del` `\up/\down/\left/\right` `\home` `\end` `\pgup` `\pgdn` `\ins` `\caps` `\f1`–`\f12`
 - Combos: `\ctrl+c`, `\ctrl+\shift+t`, `\alt+\f4`; modifier aliases ctrl/control, shift, alt/option/opt, win/gui/cmd
-- Control: `\delay{sec}`, `\rep{N}{body}`, `\kdown{key}`, `\kup{key}` / `\kup{}` (release all)
+- Control: `\delay{sec}` (single sleep), `\pace{sec}` (interval after each subsequent action), `\rep{N}{body}` (max 2 nesting levels), `\kdown{key}`, `\kup{key}` / `\kup{}` (release all)
 - Mouse: `\click{L|R|M[,count]}`, `\move{dx,dy}`, `\mdown{btn}`, `\mup{btn}`
 
-> The DSL v2 syntax overhaul (line continuation `\`+newline, `\#` comments, `\pace` splitting \delay's dual semantics, brace-escape fix, bytecode version header and uniform block offsets) is in ROADMAP 1.3. Structural capabilities (subroutines/`\wait`/variables) are explicitly NOT in v2; they are deferred to a unified design with the runtime extension mechanism (signal/slot, `\call{ext}` + import).
+> Structural capabilities (subroutines/`\wait`/variables) are explicitly NOT in v2; they are deferred to a unified design with the runtime extension mechanism (signal/slot, `\call{ext}` + import) — see the end of ROADMAP 1.3.
 
 ## 4. Bytecode & VM
 
-Operands are little-endian; `MAX_BYTECODE = 4096`.
+Format: `MAGIC(0xA5) + VERSION(2)` two-byte header + opcode sequence; operands little-endian; `MAX_BYTECODE = 4096`. execute/disassemble verify the version header.
 
 | Opcode | Operands | Semantics |
 |---|---|---|
-| 0x01 CHAR | ascii | Mapped via `layout.keycodes()` (Shift handled automatically) |
+| 0x01 CHAR | ascii | Mapped via provider `char_keycodes()` (Shift handled automatically) |
 | 0x02 KEY | keycode | Single key tap |
 | 0x03 COMBO | mod_mask, keycode | mask bit0-3 = Ctrl/Shift/Alt/GUI; keycode=0 means pure modifier |
-| 0x04 DELAY | u16 ms | Sleeps once AND sets the interval after each subsequent action (dual semantics) |
+| 0x04 SLEEP | u16 ms | Single sleep (DSL `\delay`) |
 | 0x05 MCLICK | btn, u16 count | |
 | 0x06 MMOVE | i16 dx, i16 dy | adafruit_hid auto-chunks ±127 |
-| 0x10 LOOP | u8 count, u16 body_len | body inlined at compile time; `loop_stack` holds `(ip, remaining, saved_delay)`; body_len currently unused by the runtime |
+| 0x07 PACE | u16 ms | Set the interval after subsequent actions (DSL `\pace`) |
+| 0x10 LOOP | u8 count, u16 body_len | body inlined at compile time; `loop_stack` holds `(ip, remaining, saved_delay)`; len = body size in bytes (incl. LOOP_END); runtime bounds check; count=0 skips by len |
 | 0x11 LOOP_END | — | Pop stack / jump back |
 | 0x12/0x13 KEY_DOWN/KEY_UP | keycode(0=release all) | |
 | 0x14/0x15 MDOWN/MUP | btn | |
 | 0xFF END | — | |
 
-Design strengths: compile/execute separation (`/compile` previews the disassembly); compact bytecode; loops via jump+stack, no runtime recursion; `layout.keycodes()` correctly handles Shift characters like `!@#`.
+Design strengths: compile/execute separation (`/compile` previews the disassembly); compact bytecode; loops via jump+stack, no runtime recursion; `char_keycodes()` correctly handles Shift characters like `!@#`; execute's finally guarantees all keys/buttons released on every exit path (incl. cancel).
 
-## 5. Known Issues (scheduled in ROADMAP Phase 1.2)
+## 5. Current Limitations
 
-1. **B1**: `MAX_NEST=2` defined but never enforced — `\rep` nesting is actually unlimited; deep nesting can blow the compile recursion stack; the HTML docs claim 2 levels
-2. **B2**: `execute()` does not release keys on exception paths — a throw after `KEY_DOWN` leaves keys stuck; needs try/finally `release_all()`
-3. **B3**: `code.py`'s `htmldecode(urldecode(code))` correctness depends on "adafruit_httpserver's `form_data` does NOT URL-decode" (verified on current main source: splits only, no unquote) — **the library version must be pinned**; `htmldecode` also wrongly converts legitimate `&lt;` literals in macros — misplaced defensiveness, should be removed
-4. **B4**: HTML docs say "1024 bytes / 2 nesting levels", code actually allows 4096 / unlimited
-5. **B5**: dead code `_emit_i8`; OP_CHAR's `layout.write()` fallback is basically unreachable and has inconsistent hold semantics
-6. `_read_braces` does not recognize escapes when counting depth: a body containing `\{` / `\}` / `\\` misreports "Unmatched {" (fixed in ROADMAP 1.3)
-7. OP_LOOP's `body_len` is a dead parameter (read but unused by the runtime) — DSL v2 will generalize it into the uniform jump offset for all block structures (ROADMAP 1.3)
-8. Execution is synchronous/blocking with no abort (solved by ROADMAP 1.4 asyncio); no authentication (any LAN peer can inject keystrokes; 1.4 adds Bearer)
-9. `urldecode` treats UTF-8 bytes as latin-1: non-ASCII input becomes mojibake before failing compilation (misleading error messages)
+- Argument styles not unified (`\kdown{ctrl}` brace style vs `\ctrl+c` chained) — minor; to be settled with later structural capabilities
+- `urldecode` treats UTF-8 bytes as latin-1: non-ASCII input becomes mojibake before failing compilation (misleading error messages)
+- On-device validation pending hardware: long-macro responsiveness / abort without residue / 1h stress / raw socket stability (#10775)
 
 ## 6. CircuitPython Cheat Sheet
 
@@ -82,22 +91,23 @@ Design strengths: compile/execute separation (`/compile` previews the disassembl
 
 **Hardware prerequisite**: `usb_hid` needs native USB OTG → only ESP32-S2/S3 work (classic ESP32 has no native USB; C3 has only USB-Serial-JTAG). Use CircuitPython 10.x firmware; 4MB-flash S2/S3 boards need TinyUF2 ≥ 0.33.0.
 
-**Configuration**: `settings.toml` (8.0+) stores WiFi credentials etc.; networking uses the built-in `wifi` + `socketpool` (the stack runs on the other core; Python is single-threaded cooperative).
+**Configuration**: `settings.toml` (8.0+) stores environment variables; this project uses custom `MYCRO_WIFI_*` keys with a runtime connect (see the pitfall note in §1). Networking uses the built-in `wifi` + `socketpool` (the stack runs on the other core; Python is single-threaded cooperative).
 
 **Library management**: libraries ship as .mpy in the [Adafruit Bundle](https://github.com/adafruit/Adafruit_CircuitPython_Bundle); on PC use `circup install adafruit_hid adafruit_httpserver` (must match the firmware major version).
 
-**Dev workflow**: edit files on the CIRCUITPY drive directly, save to reboot; serial REPL debugging (`tio`/`picocom`; this project prints disassembly to serial); ESP32-S2/S3 support Web Workflow (`CIRCUITPY_WEB_API_PASSWORD`, HTTP REST `/fs/...` for remote file edits); without hardware, run unit tests on CPython with a mock HID object (`Macro` only depends on the keyboard/layout/mouse trio + Keycode constants + `time`).
+**Dev workflow**: local unit tests `pytest tests/` (this repo's dev container uses `/opt/venv/bin/pytest`); deploy `CIRCUITPY=/mountpoint ./tools/deploy.sh`; on device, edit CIRCUITPY drive files directly and save to reboot; serial REPL debugging (`tio`/`picocom`; compiled macro disassembly prints to serial); ESP32-S2/S3 support Web Workflow (`CIRCUITPY_WEB_API_PASSWORD`, HTTP REST `/fs/...` for remote file edits).
 
 **Differences from CPython**: no full stdlib; `str` lacks `isalnum/isalpha` (this project works around it with an `_ALPHA` lookup table); single-precision floats; limited RAM — watch recursion depth; f-strings work.
 
 **Key API facts (verified)**:
-- `adafruit_hid.Mouse.move()` internally chunks movements >±127, so the VM's i16 moves need no manual chunking
-- adafruit_httpserver's `form_data` / `query_params` **do NOT URL-decode** (current main source only splits, never unquotes) — `code.py`'s manual `urldecode` relies on this behavior, hence the version pin
+- `adafruit_hid.Mouse.move()` internally chunks movements >±127 (verified `_limit` exists in the on-device mouse.mpy), so the VM's i16 moves need no manual chunking
+- adafruit_httpserver's `form_data` / `query_params` **do NOT URL-decode** (verified in the on-device request.mpy: utf-8 decode only, no unquote logic) — `code.py`'s manual `urldecode` relies on this behavior, hence the version pin
+- The on-device httpserver is ≥ 4.5.x (has `start()`/`stop()`/`poll()`; code.py's `server.start()` usage verified working); after the first deploy, write the exact versions into requirements-device.txt via `circup freeze`
 - httpserver's main branch already has WebSocket / SSE / Basic/Bearer auth available
 
 ## 7. Extension Capability Conclusions (research settled; adopt directly)
 
-**Coroutines**: CircuitPython ships `asyncio` built in (stable on S3); `server.poll()` is non-blocking and wrappable in a task; once macro execution is async it can run concurrently with HTTP and be aborted via `task.cancel()`. Known risk: hard fault reports for asyncio + native TCP sockets on the espressif port ([#10775](https://github.com/adafruit/circuitpython/issues/10775)) — raw socket features need early on-device validation.
+**Coroutines**: **CircuitPython 10.x firmware ships only the `_asyncio` C core; the user-facing `asyncio` package is provided by the bundle library `adafruit-circuitpython-asyncio`** (the 10.0.0 release notes say "Ensure you are using the latest version of the asyncio CircuitPython library") — `circup install asyncio` is the standard step for ALL boards; the library is officially maintained by Adafruit, CI-tested, based on MicroPython uasyncio, and its Ticks dependency is auto-installed by circup. `server.poll()` is non-blocking and wrappable in a task; once macro execution is async it can run concurrently with HTTP and be aborted via `task.cancel()`. Known risk: hard fault reports for asyncio + native TCP sockets on the espressif port ([#10775](https://github.com/adafruit/circuitpython/issues/10775)) — raw socket features need early on-device validation.
 
 **Networking**: `wifi`/`socketpool`/`ssl` built in; `adafruit_requests` (HTTP client) and `adafruit_minimqtt` (MQTT) ready-made; httpserver supports WebSocket/SSE; S3 has enough RAM for HTTPS.
 
