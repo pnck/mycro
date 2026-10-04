@@ -1,0 +1,27 @@
+# ── Development environment (local only) ──
+claude-code.yml
+.claude/
+
+# ── Device config (contains WiFi credentials, do not commit) ──
+settings.toml
+.env
+*.local.toml
+
+# ── Python / CircuitPython ──
+__pycache__/
+*.py[cod]
+*.mpy
+.venv/
+venv/
+
+# ── Build & tool artifacts ──
+mpy-cross
+*.uf2
+.circup*
+
+# ── Editor & OS ──
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*~
