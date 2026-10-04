@@ -36,6 +36,28 @@ code{font-family:monospace;background:#f0f0f0;padding:1px 4px}
 </form>
 <pre id="macroOutput" style="white-space:pre-wrap;background:#f8f8f8;border:1px solid #ddd;padding:8px;margin-top:10px"></pre>
 
+<hr>
+<h3>Auto Clicker</h3>
+<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+<select id="clType">
+<option value="mouse">Mouse</option>
+<option value="keyboard">Keyboard</option>
+</select>
+<select id="clBtn">
+<option value="L">Left</option>
+<option value="R">Right</option>
+<option value="M">Middle</option>
+<option value="back">Back (X1)</option>
+<option value="forward">Forward (X2)</option>
+</select>
+<input type="text" id="clKey" placeholder="one key: a / 1 / enter / f1..." style="width:180px;display:none">
+<label style="font-size:12px">Count:
+<input type="number" id="clCount" value="10" min="1" max="65279" style="width:80px">
+</label>
+<button type="button" id="clStart">Start</button>
+<button type="button" id="clAbort">Abort</button>
+</div>
+
 <script>
 const form = document.getElementById("macroForm");
 const codeEl = document.getElementById("macroCode");
@@ -70,14 +92,15 @@ function pollStatus() {
 	.catch(() => {});
 }
 
-function post(path) {
+function post(path, codeOverride) {
 	if (inFlight) return;
 	setBusy(true);
 	outEl.textContent = "Working...";
+	const code = (codeOverride !== undefined) ? codeOverride : (codeEl.value || "");
 	fetch(path, {
 		method: "POST",
 		headers: headers(),
-		body: "code=" + encodeURIComponent(codeEl.value || "") + "&hold_ms=" + encodeURIComponent(holdMsEl.value || "")
+		body: "code=" + encodeURIComponent(code) + "&hold_ms=" + encodeURIComponent(holdMsEl.value || "")
 	})
 	.then(r => r.text())
 	.then(t => {
@@ -89,6 +112,13 @@ function post(path) {
 	.finally(() => setBusy(false));
 }
 
+function doAbort() {
+	fetch("/macro/abort", {method: "POST", headers: headers()})
+	.then(r => r.text())
+	.then(t => { outEl.textContent = t; setTimeout(pollStatus, 300); })
+	.catch(e => { outEl.textContent = "Error: " + e; });
+}
+
 form.addEventListener("submit", (e) => {
 	e.preventDefault();
 	post("/macro");
@@ -96,25 +126,73 @@ form.addEventListener("submit", (e) => {
 
 compileBtn.addEventListener("click", () => post("/compile"));
 
-abortBtn.addEventListener("click", () => {
-	fetch("/macro/abort", {method: "POST", headers: headers()})
-	.then(r => r.text())
-	.then(t => { outEl.textContent = t; setTimeout(pollStatus, 300); })
-	.catch(e => { outEl.textContent = "Error: " + e; });
+abortBtn.addEventListener("click", doAbort);
+
+// --- Auto Clicker: reuses the macro engine (compile -> background task -> /macro/abort); no dedicated backend ---
+const clType = document.getElementById("clType");
+const clBtn = document.getElementById("clBtn");
+const clKey = document.getElementById("clKey");
+const clCount = document.getElementById("clCount");
+const clStart = document.getElementById("clStart");
+const clAbort = document.getElementById("clAbort");
+
+const KEY_NAMES = ("enter return esc escape tab space bs backspace del delete up down left right " +
+	"home end pgup pgdn ins caps ctrl shift alt win gui cmd " +
+	"f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12").split(" ");
+
+clType.addEventListener("change", () => {
+	const kb = clType.value === "keyboard";
+	clKey.style.display = kb ? "" : "none";
+	clBtn.style.display = kb ? "none" : "";
 });
 
-// Quick Mouse via fetch so the Bearer token header is included
-const mouseForm = document.getElementById("mouseForm");
-if (mouseForm) {
-	mouseForm.addEventListener("submit", (e) => {
-		e.preventDefault();
-		const q = new URLSearchParams(new FormData(mouseForm));
-		fetch("/mouse?" + q, {headers: headers()})
-		.then(r => r.text())
-		.then(t => { outEl.textContent = t; })
-		.catch(err => { outEl.textContent = "Error: " + err; });
-	});
+// Validate and convert to a macro fragment for exactly ONE key; null on invalid input
+function keyToMacro(k) {
+	k = k.trim().toLowerCase();
+	if (!k) return null;
+	if (k.length === 1) {
+		if (k === "\\") return "\\\\";
+		if (k === "{") return "\\{";
+		if (k === "}") return "\\}";
+		const c = k.charCodeAt(0);
+		if (c >= 32 && c <= 126) return k;  // printable ASCII single char
+		return null;
+	}
+	if (KEY_NAMES.indexOf(k) !== -1) return "\\" + k;  // named key
+	return null;
 }
+
+// \rep is capped at 255 per level; larger counts use two-level nesting (max depth 2) + a remainder level
+function buildRep(n, body) {
+	if (n <= 255) return "\\rep{" + n + "}{" + body + "}";
+	const q = Math.floor(n / 255), r = n % 255;
+	let s = "\\rep{" + q + "}{\\rep{255}{" + body + "}}";
+	if (r) s += "\\rep{" + r + "}{" + body + "}";
+	return s;
+}
+
+clStart.addEventListener("click", () => {
+	let body;
+	if (clType.value === "mouse") {
+		body = "\\click{" + clBtn.value + "}";
+	} else {
+		body = keyToMacro(clKey.value);
+		if (body === null) {
+			outEl.textContent = "Invalid key: exactly ONE key — a single character (a-z, 0-9, symbol) or a key name (enter, esc, f1, ...)";
+			return;
+		}
+	}
+	const n = parseInt(clCount.value, 10);
+	if (!(n >= 1 && n <= 65279)) {
+		outEl.textContent = "Count must be 1..65279";
+		return;
+	}
+	const code = buildRep(n, body);
+	outEl.textContent = "Clicker: " + code;
+	post("/macro", code);
+});
+
+clAbort.addEventListener("click", doAbort);
 </script>
 
 <details class="ref">
@@ -175,7 +253,8 @@ if (mouseForm) {
 <summary><h5>Mouse Commands</h5></summary>
 <table>
 <tr><th>Command</th><th>Description</th></tr>
-<tr><td><code>\click{L}</code></td><td>Left click (L/R/M)</td></tr>
+<tr><td><code>\click{L}</code></td><td>Left click (L/R/M/B/F)</td></tr>
+<tr><td><code>\click{back}</code></td><td>Side button (back/X1, forward/X2)</td></tr>
 <tr><td><code>\click{R,3}</code></td><td>Right click 3 times</td></tr>
 <tr><td><code>\move{100,-50}</code></td><td>Move mouse (x,y)</td></tr>
 <tr><td><code>\mdown{L}</code></td><td>Press left button (hold)</td></tr>
@@ -198,17 +277,5 @@ if (mouseForm) {
 
 <p><small>Limits: 4096 bytes bytecode, max 2 nesting levels</small></p>
 </details>
-
-<hr>
-<h3>Quick Mouse</h3>
-<form id="mouseForm" action="/mouse" method="GET" accept-charset="utf-8" style="display:flex;gap:10px;align-items:center">
-<select name="action">
-<option value="click">Click</option>
-<option value="move">Move</option>
-</select>
-<input type="text" name="p1" value="L" placeholder="Btn/X" style="width:60px">
-<input type="text" name="p2" value="1" placeholder="Cnt/Y" style="width:60px">
-<input type="submit" value="Go">
-</form>
 </body>
 </html>

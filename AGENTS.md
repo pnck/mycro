@@ -9,7 +9,7 @@ See [ROADMAP.md](ROADMAP.md) for the evolution plan. **Architectural discipline:
 ```
 src/
 ├── code.py           → /code.py       Entry point: asyncio main loop (HTTP + macro task + raw stub)
-├── index.html        → /index.html    Web UI (form + cheat sheet + Abort/status polling + Token input)
+├── index.html        → /index.html    Web UI (macro edit/run + Auto Clicker + cheat sheet)
 └── lib/
     ├── macro.py      → /lib/macro.py  Compiler + VM (pure Python, zero adafruit dependencies)
     ├── keymap.py     → /lib/keymap.py HID usage ID constants (page 0x07)
@@ -41,7 +41,6 @@ Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`
 | GET `/macro/status` | `idle` / `running` / `done` / `error <msg>` / `aborted` |
 | POST `/macro/abort` | `task.cancel()`; `execute()`'s finally guarantees all keys/buttons released |
 | POST `/compile` | Compile only, returns the disassembly |
-| GET `/mouse` | Quick mouse (`action=click\|move`, `p1`, `p2`) |
 
 **Auth**: once `MYCRO_TOKEN` is set in settings.toml, all endpoints except `/` require `Authorization: Bearer <token>`; unset = dev mode (serial warning).
 **Input decoding**: the frontend uses `encodeURIComponent` + `x-www-form-urlencoded`; `form_data` does **NOT** URL-decode (verified against the pinned library source), so code.py runs a manual `urldecode` — library upgrades must re-verify this assumption.
@@ -54,7 +53,7 @@ Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`
 - Special keys: `\enter` `\esc` `\tab` `\space` `\bs` `\del` `\up/\down/\left/\right` `\home` `\end` `\pgup` `\pgdn` `\ins` `\caps` `\f1`–`\f12`
 - Combos: `\ctrl+c`, `\ctrl+\shift+t`, `\alt+\f4`; modifier aliases ctrl/control, shift, alt/option/opt, win/gui/cmd
 - Control: `\delay{sec}` (single sleep), `\pace{sec}` (interval after each subsequent action), `\rep{N}{body}` (max 2 nesting levels), `\kdown{key}`, `\kup{key}` / `\kup{}` (release all)
-- Mouse: `\click{L|R|M[,count]}`, `\move{dx,dy}`, `\mdown{btn}`, `\mup{btn}`
+- Mouse: `\click{L|R|M|B|F[,count]}` (B/F = side buttons back/forward; the stock descriptor declares 5 buttons), `\move{dx,dy}`, `\mdown{btn}`, `\mup{btn}`
 
 > Structural capabilities (subroutines/`\wait`/variables) are explicitly NOT in v2; they are deferred to a unified design with the runtime extension mechanism (signal/slot, `\call{ext}` + import) — see the end of ROADMAP 1.3.
 
@@ -102,7 +101,7 @@ Design strengths: compile/execute separation (`/compile` previews the disassembl
 **Key API facts (verified)**:
 - `adafruit_hid.Mouse.move()` internally chunks movements >±127 (verified `_limit` exists in the on-device mouse.mpy), so the VM's i16 moves need no manual chunking
 - adafruit_httpserver's `form_data` / `query_params` **do NOT URL-decode** (verified in the on-device request.mpy: utf-8 decode only, no unquote logic) — `code.py`'s manual `urldecode` relies on this behavior, hence the version pin
-- The on-device httpserver is ≥ 4.5.x (has `start()`/`stop()`/`poll()`; code.py's `server.start()` usage verified working); after the first deploy, write the exact versions into requirements-device.txt via `circup freeze`
+- httpserver needs ≥ 4.5.x (has `start()`/`stop()`/`poll()`; the `server.start()` usage verified on the installed version; version snapshots live in private memory)
 - httpserver's main branch already has WebSocket / SSE / Basic/Bearer auth available
 
 ## 7. Extension Capability Conclusions (research settled; adopt directly)

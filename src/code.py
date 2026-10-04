@@ -200,42 +200,6 @@ def compile_macro(request: Request):
     return Response(request, macro.disassemble(bytecode), content_type="text/plain; charset=utf-8")
 
 
-@server.route("/mouse")
-def mouse_control(request: Request):
-    if not _authorized(request):
-        return _unauth(request)
-    action = request.query_params.get("action", "click")
-    p1 = request.query_params.get("p1", "L")
-    p2 = request.query_params.get("p2", "1")
-
-    if action == "click":
-        btn_map = {"l": 1, "left": 1, "r": 2, "right": 2, "m": 4, "middle": 4}
-        btn = btn_map.get(p1.lower(), 1)
-        try:
-            count = max(1, int(p2))
-        except Exception:
-            count = 1
-        for _ in range(count):
-            hid.mouse_press(btn)
-            hid.mouse_release(btn)
-        return Response(request, f"Clicked {p1} x{count}", content_type="text/plain; charset=utf-8")
-
-    elif action == "move":
-        try:
-            x = int(p1)
-        except Exception:
-            x = 0
-        try:
-            y = int(p2)
-        except Exception:
-            y = 0
-        # adafruit_hid chunks >±127 internally
-        hid.mouse_move(x, y)
-        return Response(request, f"Moved ({p1},{p2})", content_type="text/plain; charset=utf-8")
-
-    return Response(request, f"Unknown action: {action}", content_type="text/plain; charset=utf-8")
-
-
 async def _http_loop():
     while True:
         try:
