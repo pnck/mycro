@@ -1,6 +1,8 @@
 # Macro Interpreter for HID simulation — runtime-agnostic compiler + async VM
-# DSL: plain text, \enter, \ctrl+c, \delay{0.1}, \rep{3}{abc}, \kdown/\kup,
-#      \click/\move/\mdown/\mup
+# DSL v2: plain text, \enter, \ctrl+c, \delay{0.1} (one-shot sleep),
+#         \pace{0.05} (inter-action delay), \rep{3}{abc}, \kdown/\kup,
+#         \click/\move/\mdown/\mup, line continuation (backslash + newline),
+#         comments (\# to end of line)
 #
 # Hardware access goes through a HID provider object with this interface:
 #   key_press(keycode) / key_release(keycode) / keys_release_all()
@@ -20,14 +22,19 @@ from keymap import (
     letter_keycode, digit_keycode,
 )
 
+# Bytecode format header: MAGIC, VERSION, then opcodes
+MAGIC = 0xA5
+VERSION = 2
+
 # Opcodes
 OP_CHAR = 0x01  # <ascii>
 OP_KEY = 0x02  # <keycode>
 OP_COMBO = 0x03  # <mod_mask> <keycode>
-OP_DELAY = 0x04  # <ms_lo> <ms_hi> — sleeps once AND sets inter-action delay
+OP_SLEEP = 0x04  # <ms_lo> <ms_hi> — one-shot sleep (DSL \delay)
 OP_MCLICK = 0x05  # <btn> <count_lo> <count_hi>
 OP_MMOVE = 0x06  # <dx_lo> <dx_hi> <dy_lo> <dy_hi>
-OP_LOOP = 0x10  # <count> <len_lo> <len_hi>
+OP_PACE = 0x07  # <ms_lo> <ms_hi> — set inter-action delay (DSL \pace)
+OP_LOOP = 0x10  # <count> <len_lo> <len_hi>; len = body bytes incl. LOOP_END
 OP_LOOP_END = 0x11
 OP_KEY_DOWN = 0x12  # <keycode>
 OP_KEY_UP = 0x13  # <keycode> (0 = release all)
@@ -124,6 +131,7 @@ class Macro:
         self._depth = _depth
 
         try:
+            self._emit(MAGIC, VERSION)
             self._parse()
             self._emit(OP_END)
             return bytes(self._bc), None
@@ -132,8 +140,10 @@ class Macro:
 
     def disassemble(self, bytecode):
         """Disassemble bytecode to human-readable format."""
-        lines = []
-        i = 0
+        if len(bytecode) < 3 or bytecode[0] != MAGIC or bytecode[1] != VERSION:
+            raise ValueError("Bytecode version mismatch")
+        lines = [f"; bytecode v{VERSION}, {len(bytecode)}B"]
+        i = 2
         indent = 0
 
         while i < len(bytecode):
@@ -157,9 +167,13 @@ class Macro:
                 key_name = self._keycode_name(bytecode[i + 2])
                 lines.append(f"{prefix}COMBO {mods}+{key_name}")
                 i += 3
-            elif op == OP_DELAY:
+            elif op == OP_SLEEP:
                 ms = bytecode[i + 1] | (bytecode[i + 2] << 8)
-                lines.append(f"{prefix}DELAY {ms}ms")
+                lines.append(f"{prefix}SLEEP {ms}ms")
+                i += 3
+            elif op == OP_PACE:
+                ms = bytecode[i + 1] | (bytecode[i + 2] << 8)
+                lines.append(f"{prefix}PACE {ms}ms")
                 i += 3
             elif op == OP_MCLICK:
                 btn = (
@@ -308,7 +322,8 @@ class Macro:
         return self._text[start : self._pos].lower()
 
     def _read_braces(self):
-        """Read content between { and }."""
+        """Read content between { and }. Escaped braces/backslashes (\{ \} \\)
+        are not counted toward nesting depth."""
         if self._peek() != "{":
             return None
         self._advance()  # skip {
@@ -316,6 +331,10 @@ class Macro:
         depth = 1
         while self._pos < self._len and depth > 0:
             ch = self._advance()
+            nxt = self._peek()
+            if ch == "\\" and nxt is not None and nxt in "{}\\":
+                self._advance()  # escaped char: skip, don't count
+                continue
             if ch == "{":
                 depth += 1
             elif ch == "}":
@@ -385,18 +404,34 @@ class Macro:
         self._parse_key_or_combo(name)
 
     def _cmd_delay(self, pos):
+        r"""\delay{t} — one-shot sleep of t seconds."""
         arg = self._read_braces()
         if arg is None:
             raise MacroError("delay requires {value}", self._pos)
         try:
             ms = int(float(arg) * 1000)
             ms = max(1, min(65535, ms))
-            self._emit(OP_DELAY)
+            self._emit(OP_SLEEP)
             self._emit_u16(ms)
         except MacroError:
             raise
         except Exception:
             raise MacroError("Invalid delay value", pos)
+
+    def _cmd_pace(self, pos):
+        r"""\pace{t} — set the delay inserted after every following action."""
+        arg = self._read_braces()
+        if arg is None:
+            raise MacroError("pace requires {value}", self._pos)
+        try:
+            ms = int(float(arg) * 1000)
+            ms = max(0, min(65535, ms))
+            self._emit(OP_PACE)
+            self._emit_u16(ms)
+        except MacroError:
+            raise
+        except Exception:
+            raise MacroError("Invalid pace value", pos)
 
     def _cmd_rep(self, pos):
         arg = self._read_braces()
@@ -416,14 +451,13 @@ class Macro:
         if self._depth >= MAX_NEST:
             raise MacroError(f"rep nesting exceeds {MAX_NEST} levels", pos)
 
-        # Compile body
+        # Compile body (strip the sub-compile's 2-byte header and trailing OP_END)
         sub = Macro(self.hid)
         sub_bc, err = sub.compile(body, _depth=self._depth + 1)
         if err:
             raise MacroError(f"In rep body: {err}", pos)
 
-        # Remove trailing OP_END
-        sub_bc = sub_bc[:-1]
+        sub_bc = sub_bc[2:-1]
         body_len = len(sub_bc) + 1  # +1 for LOOP_END
 
         self._emit(OP_LOOP, count)
@@ -514,11 +548,37 @@ class Macro:
                 self._advance()
                 next_ch = self._peek()
 
+                if next_ch is None:
+                    raise MacroError("Invalid escape sequence", self._pos)
+
+                # Line continuation: backslash + newline is ignored entirely
+                # (lets long macros be split into logical lines)
+                if next_ch == "\n":
+                    self._advance()
+                    continue
+                if next_ch == "\r":
+                    self._advance()
+                    if self._peek() == "\n":
+                        self._advance()
+                    continue
+
+                # Comment: \# to end of line; the newline itself is consumed
+                # (no ENTER emitted). Use \enter to type Enter explicitly.
+                if next_ch == "#":
+                    self._advance()  # skip #
+                    while self._pos < self._len and self._text[self._pos] not in "\r\n":
+                        self._pos += 1
+                    if self._peek() == "\r":
+                        self._advance()
+                    if self._peek() == "\n":
+                        self._advance()
+                    continue
+
                 # Escape sequences
-                if next_ch is not None and next_ch in "\\{}":
+                if next_ch in "\\{}":
                     self._emit(OP_CHAR, ord(next_ch))
                     self._advance()
-                elif next_ch and _is_alpha(next_ch):
+                elif _is_alpha(next_ch):
                     self._parse_command()
                 else:
                     raise MacroError("Invalid escape sequence", self._pos)
@@ -556,7 +616,11 @@ class Macro:
         """
         bc = bytecode
         n = len(bc)
-        ip = 0
+        if n < 3 or bc[0] != MAGIC or bc[1] != VERSION:
+            raise ValueError(
+                f"Bytecode version mismatch (want magic=0x{MAGIC:02X} v{VERSION})"
+            )
+        ip = 2
         delay_ms = default_delay_ms
         loop_stack = []  # [(ip_start, remaining, saved_delay)]
         hid = self.hid
@@ -617,10 +681,13 @@ class Macro:
                     hid.keys_release_all()
                     await sleep_ms(delay_ms)
 
-                elif op == OP_DELAY:
+                elif op == OP_SLEEP:
+                    # One-shot sleep (DSL \delay)
+                    await sleep_ms(read_u16())
+
+                elif op == OP_PACE:
+                    # Set inter-action delay for following ops (DSL \pace)
                     delay_ms = read_u16()
-                    # Immediately execute this delay
-                    await sleep_ms(delay_ms)
 
                 elif op == OP_MCLICK:
                     btn = read_u8()
@@ -644,7 +711,9 @@ class Macro:
                     body_len = read_u16()
                     if ip + body_len > n:
                         raise RuntimeError("LOOP body overruns bytecode")
-                    if count > 1:
+                    if count == 0:
+                        ip += body_len  # skip body entirely
+                    elif count > 1:
                         loop_stack.append((ip, count - 1, delay_ms))
 
                 elif op == OP_LOOP_END:

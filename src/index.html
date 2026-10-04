@@ -81,6 +81,8 @@ compileBtn.addEventListener("click", () => post("/compile"));
 <tr><td><code>\\</code></td><td>Backslash</td></tr>
 <tr><td><code>\{</code> <code>\}</code></td><td>Literal braces</td></tr>
 <tr><td><code>\cmd{}</code></td><td>Empty {} separates command from text</td></tr>
+<tr><td><code>\</code> + newline</td><td>Line continuation — newline ignored (split logic blocks)</td></tr>
+<tr><td><code>\# comment</code></td><td>Comment to end of line (no Enter emitted)</td></tr>
 </table>
 </details>
 
@@ -113,7 +115,8 @@ compileBtn.addEventListener("click", () => post("/compile"));
 <summary><h5>Control Commands</h5></summary>
 <table>
 <tr><th>Command</th><th>Description</th></tr>
-<tr><td><code>\delay{0.5}</code></td><td>Set delay (seconds) for following keys</td></tr>
+<tr><td><code>\delay{0.5}</code></td><td>Sleep once (seconds)</td></tr>
+<tr><td><code>\pace{0.05}</code></td><td>Set delay after every following action</td></tr>
 <tr><td><code>\rep{5}{abc}</code></td><td>Repeat "abc" 5 times</td></tr>
 <tr><td><code>\kdown{ctrl}</code></td><td>Press and hold Ctrl</td></tr>
 <tr><td><code>\kup{ctrl}</code></td><td>Release Ctrl</td></tr>
