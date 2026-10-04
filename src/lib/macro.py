@@ -131,13 +131,19 @@ class Macro:
     def __init__(self, hid):
         self.hid = hid
 
-    def compile(self, text, _depth=0):
-        """Compile macro text to bytecode. Returns (bytecode, error_msg)."""
+    def compile(self, text, _depth=0, _defs=None, _chain=()):
+        """Compile macro text to bytecode. Returns (bytecode, error_msg).
+
+        _defs/_chain carry user-macro state across recursive compiles
+        (rep bodies and macro expansions share the same definition table).
+        """
         self._bc = bytearray()
         self._text = text
         self._pos = 0
         self._len = len(text)
         self._depth = _depth
+        self._defs = _defs if _defs is not None else {}
+        self._chain = _chain
 
         try:
             self._emit(MAGIC, VERSION)
@@ -319,7 +325,7 @@ class Macro:
         return self._text[start : self._pos].lower()
 
     def _read_braces(self):
-        """Read content between { and }. Escaped braces/backslashes (\{ \} \\)
+        r"""Read content between { and }. Escaped braces/backslashes (\{ \} \\)
         are not counted toward nesting depth."""
         if self._peek() != "{":
             return None
@@ -397,8 +403,107 @@ class Macro:
             handler(pos)
             return
 
+        # User-defined macro: \name{arg}... (compile-time expansion)
+        if name in self._defs:
+            self._expand_macro(name, pos)
+            return
+
         # Otherwise it's a key or combo: \enter, \ctrl+c
         self._parse_key_or_combo(name)
+
+    def _cmd_def(self, pos):
+        r"""\def{name}[argc]{body} — define a compile-time user macro (top level only)."""
+        if self._depth > 0:
+            raise MacroError("def only allowed at top level", pos)
+        name = self._read_braces()
+        if name is None:
+            raise MacroError("def requires {name}", self._pos)
+        name = name.strip().lower()
+        if (
+            len(name) < 2
+            or not _is_alpha(name[0])
+            or not all(_is_alnum(c) or c == "_" for c in name)
+        ):
+            raise MacroError(
+                "macro name must be >=2 chars, [a-z0-9_], starting with a letter", pos
+            )
+        if name in self._defs:
+            raise MacroError(f"macro redefined: {name}", pos)
+        if getattr(self, "_cmd_" + name, None) or name in self.KEYS or name in self.MODS:
+            raise MacroError(f"macro name conflicts with builtin: {name}", pos)
+
+        argc = 0
+        if self._peek() == "[":
+            self._advance()  # skip [
+            start = self._pos
+            while self._peek() is not None and self._peek() != "]":
+                self._advance()
+            if self._peek() != "]":
+                raise MacroError("Unmatched [", start)
+            try:
+                argc = int(self._text[start : self._pos])
+                if not 0 <= argc <= 9:
+                    raise ValueError
+            except ValueError:
+                raise MacroError("def argc must be 0-9", start)
+            self._advance()  # skip ]
+
+        body = self._read_braces()
+        if body is None:
+            raise MacroError("def requires {body}", self._pos)
+        self._defs[name] = (argc, body)
+
+    def _expand_macro(self, name, pos):
+        """Inline-expand a user macro at the call site (compile-time)."""
+        if name in self._chain:
+            raise MacroError(f"recursive macro: {name}", pos)
+        if self._depth >= MAX_NEST:
+            raise MacroError(f"macro expansion exceeds {MAX_NEST} levels", pos)
+        argc, body = self._defs[name]
+        args = []
+        for _ in range(argc):
+            a = self._read_braces()
+            if a is None:
+                raise MacroError(f"macro {name} expects {argc} arg(s)", self._pos)
+            args.append(a)
+        expanded = self._substitute(body, args, name, pos)
+        sub = Macro(self.hid)
+        sub_bc, err = sub.compile(
+            expanded,
+            _depth=self._depth + 1,
+            _defs=self._defs,
+            _chain=self._chain + (name,),
+        )
+        if err:
+            raise MacroError(f"In macro {name}: {err}", pos)
+        self._emit(sub_bc[2:-1])  # strip sub-compile header and trailing END
+
+    @staticmethod
+    def _substitute(body, args, name, pos):
+        """Single-pass replacement of #1..#9 with args; ## -> literal '#'.
+        Substituted text is NOT rescanned."""
+        out = []
+        i = 0
+        while i < len(body):
+            ch = body[i]
+            if ch == "#" and i + 1 < len(body):
+                nxt = body[i + 1]
+                if nxt == "#":
+                    out.append("#")
+                    i += 2
+                    continue
+                if nxt.isdigit() and nxt != "0":
+                    idx = int(nxt) - 1
+                    if idx >= len(args):
+                        raise MacroError(
+                            f"macro {name}: #{nxt} used but only {len(args)} arg(s)", pos
+                        )
+                    out.append(args[idx])
+                    i += 2
+                    continue
+            out.append(ch)
+            i += 1
+        return "".join(out)
 
     def _cmd_delay(self, pos):
         r"""\delay{t} — one-shot sleep of t seconds."""
@@ -450,7 +555,9 @@ class Macro:
 
         # Compile body (strip the sub-compile's 2-byte header and trailing OP_END)
         sub = Macro(self.hid)
-        sub_bc, err = sub.compile(body, _depth=self._depth + 1)
+        sub_bc, err = sub.compile(
+            body, _depth=self._depth + 1, _defs=self._defs, _chain=self._chain
+        )
         if err:
             raise MacroError(f"In rep body: {err}", pos)
 
