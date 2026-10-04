@@ -51,7 +51,7 @@
 
 ---
 
-## DSL v3 — Syntax Extension (finalized; Stages A/B land before Phase 2)
+## DSL v3 — Syntax Extension (finalized; all stages landed before Phase 2)
 
 ### Core rules
 1. **Value-position interpolation**: `$name` interpolation only takes effect in **value positions** (each command's parameter list declares its types explicitly); in code-body positions (the bodies of `\rep`/`\def`/`\ifnum`) and in plain text, `$` is always a literal character
@@ -74,22 +74,24 @@
 
 ### Stage B — Variables / conditionals / rendering (bytecode v3) ✅
 - [x] 16 i32 registers (zeroed at execution start), `\set{x}{i32}` / `\add{x}{i32}`; `0x` hex literals supported
-- [x] Special read-only: `$ret` (0xFF), `$timeout` (0xFE); signal slots `$ns.field` (READSLOT, lands in Stage C)
+- [x] Special read-only: `$ret` (0xFF), `$timeout` (0xFE); signal slots `$ns.field` (READSLOT)
 - [x] `\ifnum{$a}{op}{b}{then}[{else}]` (op ∈ `= != < <= > >=`; left operand must be a variable, right operand i32 or `$var`; compiles to forward BRA/JMP, zero runtime stack growth)
 - [x] `\val{name}` (OP_TYPEREG; counts as one pacing action; the argument must be defined, else compile error)
-- [x] Static checks: reading before `\set` is an error (conservative lexical-order judgement); `\call` arguments checked against the function signature (lands in Stage C)
+- [x] Static checks: reading before `\set` is an error (conservative lexical-order judgement); `\call` arguments checked against the function signature
 - [x] All value positions accept `$var` interpreted per the position's type (incl. `\kdown{$k}` with a register keycode)
 
 ### Bytecode v3 ✅
 - [x] Header: MAGIC(0xA5) + VERSION(3) + string table (u8 count; u8 len + bytes; signal/ns/fn/template names, deduplicated)
-- [x] New opcodes: 0x20 SET, 0x21 ADD (reg, i32); 0x22 BRA (cc, reg, i32, off16), 0x23 JMP (off16); 0x28 READSLOT (reg, sig, field); 0x29 WAIT (sig, timeout_ms u32, 0 = wait forever); 0x2A CALL_EXT (ns, fn, argc, typed args); 0x2B TYPEREG (reg) — 0x28/0x29/0x2A opcode slots assigned here, implementation lands in Stage C
+- [x] New opcodes: 0x20 SET, 0x21 ADD (reg, i32); 0x22 BRA (cc, reg, i32, off16), 0x23 JMP (off16); 0x28 READSLOT (reg, sig, field); 0x29 WAIT (sig, timeout_ms u32, 0 = wait forever); 0x2A CALL_EXT (ns, fn, argc, typed args); 0x2B TYPEREG (reg)
 - [x] Typed-operand rework: MMOVE / SLEEP / PACE / MCLICK.count numeric operands gain a tag prefix (0=imm, 1=reg); tag=0 is wire-identical to v2
 
-### Stage C — Waiting / runtime extension (syntax frozen, semantics land with the phases)
-- [ ] `\wait{signal}` / `\wait{signal}{sec}`: suspend the coroutine by name (asyncio.Event); runtime event sources register signals and write payload slots; timeout writes `$timeout`; abort can interrupt
-- [ ] `\use{ns}`: compile-time dependency declaration checked against the runtime namespace table; missing = compile error; emits no bytecode
-- [ ] `\call{ns.fn}{arg}...`: return value written to `$ret`, structured output written to `$ns.*` slots; namespaces: `sys` (minimal validation first) → `net` (Phase 2) → `img` (Phase 3)
-- [ ] Two-pass compiler: Pass 1 collects top-level `\def` (build the table, check circular references) and `\use` (check namespaces); Pass 2 does expansion + variable allocation + static checks; argument parsing upgraded to descriptors (imm/reg/str)
+### Stage C — Waiting / runtime extension (syntax and VM landed; net/img semantics arrive with the phases) ✅
+- [x] `\wait{signal}` / `\wait{signal}{sec}`: suspend the coroutine by name (asyncio.Event); runtime event sources register signals and write payload slots; timeout writes `$timeout`; abort can interrupt
+- [x] `\use{ns}`: compile-time dependency declaration checked against the runtime namespace table; missing = compile error; emits no bytecode
+- [x] `\call{ns.fn}{arg}...`: return value written to `$ret`, structured output written to `$ns.*` slots; the `sys` namespace is registered as minimal validation (`sys.free`); `net` with Phase 2, `img` with Phase 3
+- [x] Runtime registry (`src/lib/runtime.py`): unified registration and lookup of namespaces/signatures/signals/slots; platform wiring in code.py, fakes in tests
+- [x] Two-pass compiler: Pass 1 collects top-level `\def` (build the table, check circular references) and `\use` (check namespaces); Pass 2 does expansion + variable allocation + static checks; argument parsing upgraded to descriptors (imm/reg/str); shared deduplicated string table
+- [x] Nesting limit MAX_NEST = 4; compiler nesting is iterative (explicit heap stack, no Python recursion) — CircuitPython's pystack is only a few KB, so nesting depth is bounded by bytecode size, not call frames
 
 ### Boundaries
 - Variables are i32 only; strings are not first-class (strings pass opaquely via the string table / signal slots)
@@ -100,8 +102,8 @@
 - Constructor sugar (e.g. `\rgb{r,g,b}`) is **NOT in v3**; arrives as v3.1/v4 with Phase 3's img namespace
 
 ### Scheduling
-- **Stages A, B**: complete before Phase 2 (no dependency on Phase 2 facilities; the `\call` argument convention feeds back into Phase 2 protocol design)
-- **Stage C**: `sys` minimal validation first; `net` semantics with Phase 2, `img` semantics with Phase 3
+- **Stages A, B, C**: all landed before Phase 2 (as planned); the `\call` argument convention feeds into Phase 2 protocol design
+- **Stage C namespaces**: `sys` minimal validation done; `net` semantics with Phase 2, `img` semantics with Phase 3
 
 ---
 

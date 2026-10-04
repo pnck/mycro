@@ -305,7 +305,7 @@ def test_disassemble_stage_b():
 
 def test_dollar_escape():
     # spec rule 2: literal $ in text is \$ (a bare $ in text stays literal too)
-    bc = compile_ok("\\$")
+    bc = compile_ok("\$")
     assert bc == H + bytes([OP_CHAR, ord("$"), OP_END])
     bc = compile_ok("a$b")
     assert bc == H + bytes([OP_CHAR, ord("a"), OP_CHAR, ord("$"), OP_CHAR, ord("b"), OP_END])

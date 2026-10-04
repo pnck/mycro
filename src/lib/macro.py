@@ -44,16 +44,20 @@ OP_SET = 0x20  # reg, typed(i32)
 OP_ADD = 0x21  # reg, typed(i32)
 OP_BRA = 0x22  # cc, reg, typed(i32) rhs, u16 off — jump if cond FALSE
 OP_JMP = 0x23  # u16 off
+OP_READSLOT = 0x28  # reg, sig_str, field_str — read signal slot into register
+OP_WAIT = 0x29  # sig_str, typed(u32) timeout_ms (0 = forever)
+OP_CALL_EXT = 0x2A  # ns_str, fn_str, argc, typed args...
 OP_TYPEREG = 0x2B  # reg — render register as decimal keystrokes (DSL \val)
 OP_END = 0xFF
 
 # Typed-operand tags (physical arg encodings; semantic types never reach bytecode)
 TAG_IMM = 0
 TAG_REG = 1
+TAG_STR = 2  # string table index (ext args only)
 
 # Register space
 MAX_REGS = 16  # user registers 0x00-0x0F
-REG_SCRATCH = 0xFD  # compiler scratch (slot desugar)
+REG_SCRATCH = 0xFD  # reserved (special-register guard boundary)
 REG_TIMEOUT = 0xFE  # $timeout
 REG_RET = 0xFF  # $ret
 
@@ -61,7 +65,7 @@ REG_RET = 0xFF  # $ret
 CC_OPS = {"=": 0, "!=": 1, "<": 2, "<=": 3, ">": 4, ">=": 5}
 
 MAX_BYTECODE = 4096
-MAX_NEST = 2
+MAX_NEST = 4
 
 # Character set helpers (CircuitPython str lacks isalnum/isalpha)
 _ALPHA = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -146,32 +150,48 @@ class Macro:
 
     _BTN_NAMES = {1: "L", 2: "R", 4: "M", 8: "B", 16: "F"}
 
-    def __init__(self, hid):
+    def __init__(self, hid, runtime=None):
         self.hid = hid
+        self.runtime = runtime  # Runtime registry; required for \use/\call/\wait/slots
 
-    def compile(self, text, _depth=0, _defs=None, _chain=(), _vars=None):
+    def compile(self, text):
         """Compile macro text to bytecode. Returns (bytecode, error_msg).
 
-        _defs/_chain/_vars carry user-macro and variable state across
-        recursive compiles (rep bodies, macro expansions, if bodies all
-        share the same definition table and register allocation).
+        Nesting (rep/ifnum/macro bodies) is parsed iteratively on an explicit
+        heap stack (self._nest_stack), NOT by Python recursion: the device
+        pystack only survives ~2 levels of the old recursive compile chain
+        (each level cost 5 fat frames: compile/_parse/_parse_command/
+        _cmd_*/_compile_sub) once the asyncio+httpserver baseline is on it.
         """
         self._bc = bytearray()
         self._text = text
         self._pos = 0
         self._len = len(text)
-        self._depth = _depth
-        self._defs = _defs if _defs is not None else {}
-        self._chain = _chain
-        self._vars = _vars if _vars is not None else {}
+        self._depth = 0
+        self._defs = {}
+        self._chain = ()
+        self._vars = {}
+        self._strs = []
+        self._strmap = {}
+        self._nest_stack = []
 
         try:
-            self._emit(MAGIC, VERSION, 0)  # string table: empty for now
+            self._emit(MAGIC, VERSION, 0)  # header placeholder, rebuilt below
             self._parse()
             self._emit(OP_END)
-            return bytes(self._bc), None
+            # Rebuild the header with the collected string table
+            hdr = bytearray([MAGIC, VERSION, len(self._strs)])
+            for s in self._strs:
+                hdr.append(len(s.encode("utf-8")))
+                hdr.extend(s.encode("utf-8"))
+            return bytes(hdr + self._bc[3:]), None
         except MacroError as e:
-            return None, str(e)
+            # Rebuild the "In <context>: ..." chain from the nest stack,
+            # innermost first — same message shape the recursive compiler made.
+            msg = str(e)
+            for fr in reversed(self._nest_stack):
+                msg = "In {}: {}".format(fr[6], msg)
+            return None, msg
 
     @staticmethod
     def _read_header(bc):
@@ -310,6 +330,43 @@ class Macro:
             elif op == OP_TYPEREG:
                 lines.append(f"{prefix}TYPEREG $r{bytecode[i + 1]}")
                 i += 2
+            elif op == OP_READSLOT:
+                reg = bytecode[i + 1]
+                sig = strs[bytecode[i + 2]]
+                field = strs[bytecode[i + 3]]
+                lines.append(f"{prefix}READSLOT $r{reg}, {sig}.{field}")
+                i += 4
+            elif op == OP_WAIT:
+                sig = strs[bytecode[i + 1]]
+                i += 2
+                lines.append(f"{prefix}WAIT {sig} {fmt_arg(4)}ms")
+            elif op == OP_CALL_EXT:
+                ns = strs[bytecode[i + 1]]
+                fn = strs[bytecode[i + 2]]
+                argc = bytecode[i + 3]
+                i += 4
+                args = []
+                for _ in range(argc):
+                    tag = bytecode[i]
+                    i += 1
+                    if tag == TAG_IMM:
+                        v = (
+                            bytecode[i]
+                            | (bytecode[i + 1] << 8)
+                            | (bytecode[i + 2] << 16)
+                            | (bytecode[i + 3] << 24)
+                        )
+                        i += 4
+                        if v > 2147483647:
+                            v -= 4294967296
+                        args.append(str(v))
+                    elif tag == TAG_REG:
+                        args.append(f"$r{bytecode[i]}")
+                        i += 1
+                    else:
+                        args.append(repr(strs[bytecode[i]]))
+                        i += 1
+                lines.append(f"{prefix}CALL {ns}.{fn}({', '.join(args)})")
             elif op == OP_END:
                 lines.append(f"{prefix}END")
                 break
@@ -320,9 +377,9 @@ class Macro:
         return "\n".join(lines)
 
     def _keycode_name(self, code):
-        """Reverse lookup keycode name."""
-        # sorted(): deterministic across runtimes -- CircuitPython dicts are
-        # hash-ordered, not insertion-ordered like CPython (enter/return alias)
+        """Reverse lookup keycode name. sorted() keeps the result deterministic
+        across runtimes: CircuitPython dicts are hash-ordered, unlike
+        CPython's insertion-ordered dicts (aliases like enter/return)."""
         for name in sorted(self.KEYS):
             if self.KEYS[name] == code:
                 return name.upper()
@@ -554,20 +611,64 @@ class Macro:
             raise MacroError("def requires {body}", self._pos)
         self._defs[name] = (argc, body)
 
-    def _compile_sub(self, body, what, pos, chain=None):
-        """Recursively compile a nested body (rep/if/macro), sharing defs/vars.
-        Returns the body bytecode (header and trailing END stripped)."""
-        sub = Macro(self.hid)
-        sub_bc, err = sub.compile(
-            body,
-            _depth=self._depth + 1,
-            _defs=self._defs,
-            _chain=self._chain if chain is None else chain,
-            _vars=self._vars,
+    def _nest_into(self, body, what, cont):
+        """Swap the parser into a nested body. Parent state goes onto the
+        explicit heap stack; `what` labels the body for error messages and
+        `cont` tells _pop_nest how to wrap the finished sub-buffer.
+        Callers do their own depth check first (messages differ)."""
+        self._nest_stack.append(
+            (self._text, self._pos, self._len, self._bc,
+             self._depth, self._chain, what, cont)
         )
-        if err:
-            raise MacroError(f"In {what}: {err}", pos)
-        return sub_bc[3:-1]  # strip header (magic, version, str_count) + END
+        self._text, self._pos, self._len = body, 0, len(body)
+        self._bc = bytearray()
+        self._depth += 1
+
+    def _pop_nest(self):
+        """A nested body is finished: restore the parent frame and wrap the
+        sub-buffer per the continuation."""
+        sub = self._bc
+        (self._text, self._pos, self._len, self._bc,
+         self._depth, self._chain, what, cont) = self._nest_stack.pop()
+        kind = cont[0]
+        if kind == "inline":  # macro expansion: splice the bytes in
+            self._emit(sub)
+        elif kind == "rep":
+            count = cont[1]
+            self._emit(OP_LOOP)
+            self._emit_typed(count, 1)
+            self._emit_u16(len(sub) + 1)  # +1 for LOOP_END
+            self._emit(sub)
+            self._emit(OP_LOOP_END)
+        elif kind == "ifnum_then":
+            off_pos, else_body = cont[1], cont[2]
+            self._emit(sub)
+            if else_body is not None:
+                self._emit(OP_JMP)
+                jmp_pos = len(self._bc)
+                self._emit_u16(0)  # backpatched when the else body completes
+                # BRA target = else start (right after the JMP operand)
+                self._patch_u16(off_pos, (jmp_pos + 2) - (off_pos + 2))
+                self._nest_into(else_body, "ifnum else", ("ifnum_else", jmp_pos))
+            else:
+                self._patch_u16(off_pos, len(self._bc) - (off_pos + 2))
+        elif kind == "ifnum_else":
+            jmp_pos = cont[1]
+            self._emit(sub)
+            self._patch_u16(jmp_pos, len(self._bc) - (jmp_pos + 2))
+
+    def _str_idx(self, s, pos):
+        """Intern a string into the shared string table (dedup)."""
+        if s in self._strmap:
+            return self._strmap[s]
+        if len(self._strs) >= 255:
+            raise MacroError("String table full (max 255)", pos)
+        if len(s.encode("utf-8")) > 255:
+            raise MacroError("String too long (max 255 bytes)", pos)
+        idx = len(self._strs)
+        self._strs.append(s)
+        self._strmap[s] = idx
+        return idx
 
     def _expand_macro(self, name, pos):
         """Inline-expand a user macro at the call site (compile-time)."""
@@ -583,7 +684,8 @@ class Macro:
                 raise MacroError(f"macro {name} expects {argc} arg(s)", self._pos)
             args.append(a)
         expanded = self._substitute(body, args, name, pos)
-        self._emit(self._compile_sub(expanded, f"macro {name}", pos, chain=self._chain + (name,)))
+        self._nest_into(expanded, f"macro {name}", ("inline",))
+        self._chain = self._chain + (name,)
 
     @staticmethod
     def _substitute(body, args, name, pos):
@@ -633,15 +735,16 @@ class Macro:
             raise MacroError("integer out of i32 range", pos)
         return v
 
-    def _parse_value(self, s, pos):
+    def _parse_value(self, s, pos, reserved=()):
         """Value-position segment: int literal or $var/${var}.
-        Returns (TAG_IMM, v) or (TAG_REG, reg)."""
+        Returns (TAG_IMM, v) or (TAG_REG, reg). `reserved` holds registers
+        already consumed by sibling operands of the same instruction."""
         s = s.strip()
         if s.startswith("$"):
-            return (TAG_REG, self._parse_var_ref(s, pos))
+            return (TAG_REG, self._parse_var_ref(s, pos, reserved))
         return (TAG_IMM, self._parse_int_literal(s, pos))
 
-    def _parse_var_ref(self, s, pos):
+    def _parse_var_ref(self, s, pos, reserved=()):
         """$name or ${name} -> register index (must be defined)."""
         if s.startswith("${"):
             end = s.find("}")
@@ -652,19 +755,41 @@ class Macro:
                 raise MacroError(f"Unexpected text after ${{{name}}}", pos)
         else:
             name = s[1:]
-        return self._var_reg(name, pos)
+        return self._var_reg(name, pos, reserved)
 
-    def _var_reg(self, name, pos):
-        """Resolve a bare variable name to a register (read access)."""
+    def _var_reg(self, name, pos, reserved=()):
+        """Resolve a bare variable name to a register (read access).
+        Signal slots ($sig.field) emit a READSLOT into a temp register."""
         if name == "ret":
             return REG_RET
         if name == "timeout":
             return REG_TIMEOUT
         if "." in name:
-            raise MacroError(f"Unknown signal slot: {name}", pos)
+            # $sig.field — signal names may themselves contain dots
+            # (net.msg), so split at the LAST dot
+            sig, sep, field = name.rpartition(".")
+            if not sep or not sig or not field:
+                raise MacroError(f"Invalid slot reference: {name}", pos)
+            if self.runtime is None or not self.runtime.has_slot_ns(sig):
+                raise MacroError(f"Unknown signal: {sig}", pos)
+            reg = self._alloc_temp(reserved, pos)
+            self._emit(
+                OP_READSLOT, reg, self._str_idx(sig, pos), self._str_idx(field, pos)
+            )
+            return reg
         if name not in self._vars:
             raise MacroError(f"Undefined variable: {name}", pos)
         return self._vars[name]
+
+    def _alloc_temp(self, reserved, pos):
+        """Temp register for a slot desugar, live only within the current
+        instruction: taken from beyond the named-var block, skipping
+        registers reserved by sibling operands."""
+        blocked = set(self._vars.values()) | set(reserved)
+        for r in range(MAX_REGS):
+            if r not in blocked:
+                return r
+        raise MacroError("no free register for slot operand", pos)
 
     def _alloc_var(self, name, pos):
         """Resolve a variable name for assignment, allocating a register if new."""
@@ -684,29 +809,29 @@ class Macro:
             self._vars[name] = len(self._vars)
         return self._vars[name]
 
-    def _parse_time(self, s, pos):
+    def _parse_time(self, s, pos, reserved=()):
         """Time arg: float seconds (imm -> ms) or $var (register holds ms)."""
         s = s.strip()
         if s.startswith("$"):
-            return (TAG_REG, self._parse_var_ref(s, pos))
+            return (TAG_REG, self._parse_var_ref(s, pos, reserved))
         try:
             ms = int(float(s) * 1000)
         except ValueError:
             raise MacroError(f"Invalid time value: {s}", pos)
         return (TAG_IMM, max(1, min(65535, ms)))
 
-    def _parse_btn_arg(self, s, pos):
+    def _parse_btn_arg(self, s, pos, reserved=()):
         """Mouse button: name or $var (register holds the bitmask)."""
         s = s.strip().lower()
         if s.startswith("$"):
-            return (TAG_REG, self._parse_var_ref(s, pos))
+            return (TAG_REG, self._parse_var_ref(s, pos, reserved))
         return (TAG_IMM, self.MOUSE_BTNS.get(s, 1))
 
-    def _parse_key_arg(self, s, pos):
+    def _parse_key_arg(self, s, pos, reserved=()):
         """Key: name or $var (register holds the keycode)."""
         s = s.strip().lower()
         if s.startswith("$"):
-            return (TAG_REG, self._parse_var_ref(s, pos))
+            return (TAG_REG, self._parse_var_ref(s, pos, reserved))
         return (TAG_IMM, self._resolve_key(s, pos))
 
     # --- commands ---
@@ -716,8 +841,11 @@ class Macro:
         arg = self._read_braces()
         if arg is None:
             raise MacroError("delay requires {value}", self._pos)
+        # Parse before emitting: a slot operand desugars to a READSLOT that
+        # must precede the instruction, not land inside it
+        v = self._parse_time(arg, pos)
         self._emit(OP_SLEEP)
-        self._emit_typed(self._parse_time(arg, pos), 2)
+        self._emit_typed(v, 2)
 
     def _cmd_pace(self, pos):
         r"""\pace{t} — set the delay inserted after every following action."""
@@ -739,22 +867,27 @@ class Macro:
         arg = self._read_braces()
         if arg is None:
             raise MacroError("set requires {value}", self._pos)
+        v = self._parse_value(arg, pos)  # parse first: slot desugars emit READSLOT
         self._emit(OP_SET, reg)
-        self._emit_typed(self._parse_value(arg, pos), 4)
+        self._emit_typed(v, 4)
 
     def _cmd_add(self, pos):
         r"""\add{x}{i32|$var} — add to an existing variable."""
         name = self._read_braces()
         if name is None:
             raise MacroError("add requires {name}", self._pos)
-        reg = self._var_reg(name.strip().lower(), pos)
+        name = name.strip().lower()
+        if "." in name:
+            raise MacroError("add: cannot modify a signal slot", pos)
+        reg = self._var_reg(name, pos)
         if reg >= REG_SCRATCH:
             raise MacroError("add: cannot modify a special register", pos)
         arg = self._read_braces()
         if arg is None:
             raise MacroError("add requires {value}", self._pos)
+        v = self._parse_value(arg, pos)  # parse first: slot desugars emit READSLOT
         self._emit(OP_ADD, reg)
-        self._emit_typed(self._parse_value(arg, pos), 4)
+        self._emit_typed(v, 4)
 
     def _cmd_ifnum(self, pos):
         r"""\ifnum{$a}{op}{b}{then}[{else}] — conditional branch."""
@@ -780,22 +913,15 @@ class Macro:
             raise MacroError("ifnum requires {then}", self._pos)
         else_body = self._read_braces()  # optional
 
+        # Parse rhs before emitting: a slot operand desugars to a READSLOT
+        # that must precede the branch, and must not clobber a slot-temp
+        # already holding the left operand
+        rhs_val = self._parse_value(rhs, pos, reserved=(reg,))
         self._emit(OP_BRA, cc, reg)
-        self._emit_typed(self._parse_value(rhs, pos), 4)
+        self._emit_typed(rhs_val, 4)
         off_pos = len(self._bc)
-        self._emit_u16(0)  # backpatched below
-        self._emit(self._compile_sub(then_body, "ifnum then", pos))
-
-        if else_body is not None:
-            self._emit(OP_JMP)
-            jmp_pos = len(self._bc)
-            self._emit_u16(0)  # backpatched below
-            # BRA target = else start (right after the JMP operand)
-            self._patch_u16(off_pos, (jmp_pos + 2) - (off_pos + 2))
-            self._emit(self._compile_sub(else_body, "ifnum else", pos))
-            self._patch_u16(jmp_pos, len(self._bc) - (jmp_pos + 2))
-        else:
-            self._patch_u16(off_pos, len(self._bc) - (off_pos + 2))
+        self._emit_u16(0)  # backpatched by _pop_nest
+        self._nest_into(then_body, "ifnum then", ("ifnum_then", off_pos, else_body))
 
     def _cmd_val(self, pos):
         r"""\val{name} — render a variable as decimal keystrokes (text position)."""
@@ -803,6 +929,100 @@ class Macro:
         if arg is None:
             raise MacroError("val requires {name}", self._pos)
         self._emit(OP_TYPEREG, self._var_reg(arg.strip().lower(), pos))
+
+    def _cmd_use(self, pos):
+        r"""\use{ns} — declare a dependency on a runtime namespace (compile-time check)."""
+        arg = self._read_braces()
+        if arg is None:
+            raise MacroError("use requires {ns}", self._pos)
+        ns = arg.strip().lower()
+        if self.runtime is None:
+            raise MacroError("use requires a runtime registry", pos)
+        if not self.runtime.has_namespace(ns):
+            raise MacroError(f"Unknown namespace: {ns}", pos)
+
+    def _cmd_call(self, pos):
+        r"""\call{ns.fn}{arg}... — invoke a runtime extension function."""
+        target = self._read_braces()
+        if target is None:
+            raise MacroError("call requires {ns.fn}", self._pos)
+        target = target.strip().lower()
+        parts = target.split(".")
+        if len(parts) != 2 or not all(parts):
+            raise MacroError(f"call target must be ns.fn: {target}", pos)
+        ns, fn = parts
+        if self.runtime is None:
+            raise MacroError("call requires a runtime registry", pos)
+        sig = self.runtime.get_signature(ns, fn)
+        if sig is None:
+            raise MacroError(f"Unknown ext function: {target}", pos)
+
+        args = []
+        for typ in sig:
+            a = self._read_braces()
+            if a is None:
+                raise MacroError(f"{target} expects {len(sig)} arg(s)", self._pos)
+            # reserve the registers of already-parsed args so slot desugars
+            # for later args cannot clobber them
+            reserved = tuple(v for tag, v in args if tag == TAG_REG)
+            args.append(self._parse_ext_arg(a, typ, target, pos, reserved))
+        if self._peek() == "{":
+            raise MacroError(f"{target} expects {len(sig)} arg(s)", self._pos)
+
+        self._emit(OP_CALL_EXT, self._str_idx(ns, pos), self._str_idx(fn, pos), len(args))
+        for tag, v in args:
+            if tag == TAG_IMM:
+                self._emit(TAG_IMM)
+                self._emit_i32(v)
+            elif tag == TAG_REG:
+                self._emit(TAG_REG, v)
+            else:
+                self._emit(TAG_STR, v)
+
+    def _parse_ext_arg(self, a, typ, target, pos, reserved=()):
+        """Compile one ext arg per its signature type."""
+        if typ == "str":
+            if a.strip().startswith("$"):
+                raise MacroError(f"{target}: str args are literal (no string variables)", pos)
+            return (TAG_STR, self._str_idx(a, pos))
+        if typ in ("int", "color"):
+            return self._parse_value(a, pos, reserved)
+        # handle types (tpl, conn, ...): only a variable holding a handle
+        s = a.strip()
+        if not s.startswith("$"):
+            raise MacroError(f"{target}: {typ} arg must be a variable ($handle)", pos)
+        return (TAG_REG, self._parse_var_ref(s, pos, reserved))
+
+    def _cmd_wait(self, pos):
+        r"""\wait{signal}[{sec|$var}] — suspend until a runtime signal fires."""
+        arg = self._read_braces()
+        if arg is None:
+            raise MacroError("wait requires {signal}", self._pos)
+        sig = arg.strip().lower()
+        if self.runtime is None:
+            raise MacroError("wait requires a runtime registry", pos)
+        if not self.runtime.has_signal(sig):
+            raise MacroError(f"Unknown signal: {sig}", pos)
+
+        t = self._read_braces()
+        if t is None:
+            timeout = (TAG_IMM, 0)  # 0 = wait forever
+        else:
+            ts = t.strip()
+            if ts.startswith("$"):
+                timeout = (TAG_REG, self._parse_var_ref(ts, pos))
+            else:
+                try:
+                    timeout = (TAG_IMM, max(0, min(4294967295, int(float(ts) * 1000))))
+                except ValueError:
+                    raise MacroError("Invalid wait timeout", pos)
+
+        self._emit(OP_WAIT, self._str_idx(sig, pos))
+        if timeout[0] == TAG_REG:
+            self._emit(TAG_REG, timeout[1])
+        else:
+            self._emit(TAG_IMM)
+            self._emit_i32(timeout[1])
 
     def _cmd_rep(self, pos):
         arg = self._read_braces()
@@ -816,25 +1036,18 @@ class Macro:
         if body is None:
             raise MacroError("rep requires {body}", self._pos)
 
-        # B1: enforce nesting limit (recursive compile of body)
+        # B1: enforce nesting limit
         if self._depth >= MAX_NEST:
             raise MacroError(f"rep nesting exceeds {MAX_NEST} levels", pos)
-
-        sub_bc = self._compile_sub(body, "rep body", pos)
-        body_len = len(sub_bc) + 1  # +1 for LOOP_END
-
-        self._emit(OP_LOOP)
-        self._emit_typed(count, 1)
-        self._emit_u16(body_len)
-        self._emit(sub_bc)
-        self._emit(OP_LOOP_END)
+        self._nest_into(body, "rep body", ("rep", count))
 
     def _cmd_kdown(self, pos):
         arg = self._read_braces()
         if arg is None:
             raise MacroError("kdown requires {key}", self._pos)
+        v = self._parse_key_arg(arg, pos)  # parse first: slot desugars emit READSLOT
         self._emit(OP_KEY_DOWN)
-        self._emit_typed(self._parse_key_arg(arg, pos), 1)
+        self._emit_typed(v, 1)
 
     def _cmd_kup(self, pos):
         arg = self._read_braces()
@@ -844,8 +1057,9 @@ class Macro:
         if not arg:
             self._emit(OP_KEY_UP, TAG_IMM, 0)  # release all
         else:
+            v = self._parse_key_arg(arg, pos)  # parse first (READSLOT desugar)
             self._emit(OP_KEY_UP)
-            self._emit_typed(self._parse_key_arg(arg, pos), 1)
+            self._emit_typed(v, 1)
 
     def _cmd_click(self, pos):
         arg = self._read_braces()
@@ -855,7 +1069,9 @@ class Macro:
         btn = self._parse_btn_arg(parts[0], pos)
         count = (TAG_IMM, 1)
         if len(parts) >= 2:
-            count = self._parse_value(parts[1], pos)
+            # reserve the btn register so a slot-derived count cannot clobber it
+            count = self._parse_value(
+                parts[1], pos, reserved=(btn[1],) if btn[0] == TAG_REG else ())
             if count[0] == TAG_IMM:
                 count = (TAG_IMM, max(1, min(65535, count[1])))
         self._emit(OP_MCLICK)
@@ -870,7 +1086,9 @@ class Macro:
         dx = self._parse_value(parts[0], pos)
         dy = (TAG_IMM, 0)
         if len(parts) >= 2:
-            dy = self._parse_value(parts[1], pos)
+            # reserve the dx register so a slot-derived dy cannot clobber it
+            dy = self._parse_value(
+                parts[1], pos, reserved=(dx[1],) if dx[0] == TAG_REG else ())
 
         if dx[0] == TAG_IMM and dy[0] == TAG_IMM:
             # Immediate moves: emit in chunks of 32767
@@ -904,7 +1122,17 @@ class Macro:
         self._emit_typed(self._parse_btn_arg(arg, pos), 1)
 
     def _parse(self):
-        """Main parse loop."""
+        """Main parse driver — iterative nesting via _nest_stack (heap frames),
+        no Python recursion, so nesting depth cannot exhaust the tiny device
+        pystack (depth is bounded by bytecode size, not call frames)."""
+        while True:
+            self._parse_level()
+            if not self._nest_stack:
+                return
+            self._pop_nest()
+
+    def _parse_level(self):
+        """Parse the current self._text until exhausted (one nesting level)."""
         while self._pos < self._len:
             ch = self._peek()
 
@@ -981,7 +1209,7 @@ class Macro:
         """
         bc = bytecode
         n = len(bc)
-        _strs, ip = self._read_header(bc)
+        strs, ip = self._read_header(bc)
         delay_ms = default_delay_ms
         loop_stack = []  # [(ip_start, remaining, saved_delay)]
         regs = [0] * 256
@@ -1171,6 +1399,48 @@ class Macro:
                             await sleep_ms(click_hold_ms)
                             hid.keys_release_all()
                     await sleep_ms(delay_ms)
+
+                elif op == OP_READSLOT:
+                    reg = read_u8()
+                    sig = strs[read_u8()]
+                    field = strs[read_u8()]
+                    if self.runtime is None:
+                        raise RuntimeError("READSLOT without runtime registry")
+                    regs[reg] = self.runtime.read_slot(sig, field)
+
+                elif op == OP_WAIT:
+                    sig = strs[read_u8()]
+                    timeout = read_arg(4)
+                    if self.runtime is None:
+                        raise RuntimeError("WAIT without runtime registry")
+                    ok = await self.runtime.wait_signal(sig, clamp(timeout, 0, 4294967295))
+                    regs[REG_TIMEOUT] = 0 if ok else 1
+
+                elif op == OP_CALL_EXT:
+                    ns = strs[read_u8()]
+                    fn = strs[read_u8()]
+                    argc = read_u8()
+                    args = []
+                    for _ in range(argc):
+                        tag = read_u8()
+                        if tag == TAG_IMM:
+                            args.append(read_i32())
+                        elif tag == TAG_REG:
+                            args.append(regs[read_u8()])
+                        else:
+                            args.append(strs[read_u8()])
+                    if self.runtime is None:
+                        raise RuntimeError("CALL_EXT without runtime registry")
+                    r = self.runtime.call(ns, fn, args)
+                    if hasattr(r, "send"):  # coroutine: await it
+                        r = await r
+                    if r is None:
+                        regs[REG_RET] = 0
+                    else:
+                        try:
+                            regs[REG_RET] = int(r)
+                        except (TypeError, ValueError):
+                            regs[REG_RET] = 0
 
                 else:
                     raise RuntimeError(f"Unknown opcode 0x{op:02X}")

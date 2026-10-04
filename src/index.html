@@ -162,7 +162,7 @@ function keyToMacro(k) {
 	return null;
 }
 
-// \rep is capped at 255 per level; larger counts use two-level nesting (max depth 2) + a remainder level
+// \rep is capped at 255 per level; larger counts use two-level nesting + a remainder level
 function buildRep(n, body) {
 	if (n <= 255) return "\\rep{" + n + "}{" + body + "}";
 	const q = Math.floor(n / 255), r = n % 255;
@@ -205,6 +205,7 @@ clAbort.addEventListener("click", doAbort);
 <tr><td><code>abc 123</code></td><td>Plain text (space/newline become keys)</td></tr>
 <tr><td><code>\\</code></td><td>Backslash</td></tr>
 <tr><td><code>\{</code> <code>\}</code></td><td>Literal braces</td></tr>
+<tr><td><code>\$</code></td><td>Literal dollar sign ($ is special only in value positions)</td></tr>
 <tr><td><code>\cmd{}</code></td><td>Empty {} separates command from text</td></tr>
 <tr><td><code>\</code> + newline</td><td>Line continuation — newline ignored (split logic blocks)</td></tr>
 <tr><td><code>\# comment</code></td><td>Comment to end of line (no Enter emitted)</td></tr>
@@ -262,6 +263,41 @@ clAbort.addEventListener("click", doAbort);
 </table>
 </details>
 
+<details>
+<summary><h5>Variables & Interpolation (v3)</h5></summary>
+<table>
+<tr><th>Syntax</th><th>Description</th></tr>
+<tr><td><code>\set{x}{5}</code></td><td>Set variable x (16 i32 registers; 0x hex ok)</td></tr>
+<tr><td><code>\add{x}{-1}</code></td><td>Add to variable</td></tr>
+<tr><td><code>$x</code> <code>${x}</code></td><td>Variable value — only in value positions (counts, seconds, keycodes, coords)</td></tr>
+<tr><td><code>\val{x}</code></td><td>Type out the variable's decimal digits</td></tr>
+<tr><td><code>$ret</code> <code>$timeout</code></td><td>Read-only: last \call result / \wait timed-out flag</td></tr>
+</table>
+</details>
+
+<details>
+<summary><h5>Macros & Flow (v3)</h5></summary>
+<table>
+<tr><th>Syntax</th><th>Description</th></tr>
+<tr><td><code>\def{dbl}[1]{#1#1}</code></td><td>Define a macro (params #1–#9, ## = literal #)</td></tr>
+<tr><td><code>\dbl{ab}</code></td><td>Call it — expanded at compile time, max 4 nesting levels</td></tr>
+<tr><td><code>\ifnum{$x}{>=}{10}{a}{b}</code></td><td>If x &gt;= 10 type "a" else "b" (= != &lt; &lt;= &gt; &gt;=)</td></tr>
+<tr><td><code>\rep{$n}{ab}</code></td><td>Repeat with a variable count</td></tr>
+</table>
+</details>
+
+<details>
+<summary><h5>Runtime Extension (v3)</h5></summary>
+<table>
+<tr><th>Syntax</th><th>Description</th></tr>
+<tr><td><code>\use{sys}</code></td><td>Declare a namespace dependency (compile-time check)</td></tr>
+<tr><td><code>\call{sys.free}</code></td><td>Call an ext function; return value goes to <code>$ret</code></td></tr>
+<tr><td><code>\wait{sig}{5}</code></td><td>Wait for signal sig up to 5s (0 = forever); sets <code>$timeout</code></td></tr>
+<tr><td><code>$sig.field</code></td><td>Read a signal's payload slot (0 if unset)</td></tr>
+</table>
+<p><small>Namespaces/signals are registered by the runtime; this firmware provides <code>sys</code> (sys.free). net/img arrive in later phases.</small></p>
+</details>
+
 <details open>
 <summary><h5>Examples</h5></summary>
 <table>
@@ -272,10 +308,13 @@ clAbort.addEventListener("click", doAbort);
 <tr><td><code>\cmd+space\delay{0.2}terminal\enter</code></td><td>Open Terminal (macOS)</td></tr>
 <tr><td><code>\mdown{L}\move{100,0}\mup{L}</code></td><td>Drag mouse right 100px</td></tr>
 <tr><td><code>\kdown{ctrl}ccc\kup{}</code></td><td>Hold Ctrl, type "ccc", release</td></tr>
+<tr><td><code>\def{cp}[1]{\ctrl+#1}\cp{c}\cp{v}</code></td><td>Define & use a macro (v3)</td></tr>
+<tr><td><code>\set{n}{3}\rep{$n}{ab\enter}</code></td><td>Variable repeat count (v3)</td></tr>
+<tr><td><code>\call{sys.free}\val{ret}</code></td><td>Call ext fn, type the result (v3)</td></tr>
 </table>
 </details>
 
-<p><small>Limits: 4096 bytes bytecode, max 2 nesting levels</small></p>
+<p><small>Limits: 4096 bytes bytecode, max 4 nesting levels</small></p>
 </details>
 </body>
 </html>

@@ -13,6 +13,7 @@ src/
 └── lib/
     ├── macro.py      → /lib/macro.py  Compiler + VM (pure Python, zero adafruit dependencies)
     ├── keymap.py     → /lib/keymap.py HID usage ID constants (page 0x07)
+    ├── runtime.py    → /lib/runtime.py Runtime registry (namespaces/signals/slots)
     └── hid_adafruit.py → /lib/hid_adafruit.py  HIDProvider implementation on adafruit_hid
 tests/                  CPython unit tests (MockHID + pytest)
 tools/deploy.sh         Deploy: CIRCUITPY=/mountpoint ./tools/deploy.sh (exact-set sync via on-device manifest + circup lib install)
@@ -45,38 +46,49 @@ Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`
 **Auth**: once `MYCRO_TOKEN` is set in settings.toml, all endpoints except `/` require `Authorization: Bearer <token>`; unset = dev mode (serial warning).
 **Input decoding**: the frontend uses `encodeURIComponent` + `x-www-form-urlencoded`; `form_data` does **NOT** URL-decode (verified against the pinned library source), so code.py runs a manual `urldecode` — library upgrades must re-verify this assumption.
 
-## 3. Macro DSL Syntax v2 (LaTeX-style)
+## 3. Macro DSL Syntax (v3 landed)
 
-- Plain text is typed verbatim (ASCII 32–126 only); `\n`/`\r\n`/`\r` → Enter, `\t` → Tab
-- Escapes: `\\` `\{` `\}`; separate a command from following text with an empty `{}` (`\enter{}abc`)
-- Formatting: `\` + newline = line continuation (drops the newline, no Enter); `\# ...` = comment to end of line (consumes the newline) — long macros can wrap into logical blocks
-- Special keys: `\enter` `\esc` `\tab` `\space` `\bs` `\del` `\up/\down/\left/\right` `\home` `\end` `\pgup` `\pgdn` `\ins` `\caps` `\f1`–`\f12`
-- Combos: `\ctrl+c`, `\ctrl+\shift+t`, `\alt+\f4`; modifier aliases ctrl/control, shift, alt/option/opt, win/gui/cmd
-- Control: `\delay{sec}` (single sleep), `\pace{sec}` (interval after each subsequent action), `\rep{N}{body}` (max 2 nesting levels), `\kdown{key}`, `\kup{key}` / `\kup{}` (release all)
-- Mouse: `\click{L|R|M|B|F[,count]}` (B/F = side buttons back/forward; the stock descriptor declares 5 buttons), `\move{dx,dy}`, `\mdown{btn}`, `\mup{btn}`
+**Basics (since v2)**: plain text is typed verbatim (ASCII 32–126); `\n`/`\r\n`/`\r` → Enter, `\t` → Tab; escapes `\\` `\{` `\}` `\$`; `\` + newline = line continuation; `\# ...` = comment; special keys `\enter` `\esc` `\tab` `\space` `\bs` `\del`, arrows, `\home` `\end` `\pgup` `\pgdn` `\ins` `\caps` `\f1`–`\f12`; combos `\ctrl+c` etc.; mouse `\click{L|R|M|B|F[,count]}` (B/F = side buttons), `\move{dx,dy}`, `\mdown`, `\mup`; `\delay{sec}` (single), `\pace{sec}` (subsequent interval), `\rep{N}{body}` (nesting ≤4), `\kdown`/`\kup`.
 
-> Structural capabilities (`\def`/variables/`\ifnum`/`\val`/`\wait`/`\call{ext}`) are finalized as **DSL v3** — see the ROADMAP section "DSL v3 — Syntax Extension"; Stages A/B land before Phase 2.
+**Structure (v3)**:
+- User macros: `\def{name}[argc]{body}` + `\name{arg}...` (compile-time expansion; `#1`–`#9` params, `##` is a literal #)
+- Variables: 16 i32 registers, `\set{x}{v}` / `\add{x}{v}` (`0x` hex supported); `$ret`/`$timeout` special read-only; `$sig.field` signal slots (READSLOT desugar)
+- Conditionals: `\ifnum{$a}{op}{b}{then}[{else}]` (`= != < <= > >=`)
+- Rendering: `\val{name}` (types out decimal digits at text position; integer semantics use value-position `$name`)
+- Extension: `\use{ns}` (compile-time dependency check), `\call{ns.fn}{arg}...` (return → `$ret`), `\wait{sig}[{sec}]` (waits for the **next** fire after entry — a fire with no waiter is discarded; timeout → `$timeout`)
+- Key rules: `$` interpolation only takes effect in **value positions** (literal in code bodies/plain text); greedy match within value positions, `${name}` to delimit; built-in command names are ≥2 letters
+
+Full semantics and the type system (signatures/handles/erasure): see ROADMAP "DSL v3 — Syntax Extension".
 
 ## 4. Bytecode & VM
 
-Format: `MAGIC(0xA5) + VERSION(2)` two-byte header + opcode sequence; operands little-endian; `MAX_BYTECODE = 4096`. execute/disassemble verify the version header.
+Format: `MAGIC(0xA5) + VERSION(3) + string table (u8 count; u8 len+bytes)` + opcode sequence; operands little-endian; `MAX_BYTECODE = 4096`. execute/disassemble verify the version header. Registers: 0x00–0x0F user i32 (zeroed at execution start), 0xFD scratch, 0xFE=`$timeout`, 0xFF=`$ret`.
 
 | Opcode | Operands | Semantics |
 |---|---|---|
 | 0x01 CHAR | ascii | Mapped via provider `char_keycodes()` (Shift handled automatically) |
 | 0x02 KEY | keycode | Single key tap |
 | 0x03 COMBO | mod_mask, keycode | mask bit0-3 = Ctrl/Shift/Alt/GUI; keycode=0 means pure modifier |
-| 0x04 SLEEP | u16 ms | Single sleep (DSL `\delay`) |
-| 0x05 MCLICK | btn, u16 count | |
-| 0x06 MMOVE | i16 dx, i16 dy | adafruit_hid auto-chunks ±127 |
-| 0x07 PACE | u16 ms | Set the interval after subsequent actions (DSL `\pace`) |
-| 0x10 LOOP | u8 count, u16 body_len | body inlined at compile time; `loop_stack` holds `(ip, remaining, saved_delay)`; len = body size in bytes (incl. LOOP_END); runtime bounds check; count=0 skips by len |
+| 0x04 SLEEP | typed(u16) | Single sleep (DSL `\delay`) |
+| 0x05 MCLICK | typed(u8) btn, typed(u16) count | |
+| 0x06 MMOVE | typed(i16) dx, typed(i16) dy | adafruit_hid auto-chunks ±127 |
+| 0x07 PACE | typed(u16) | Set the interval after subsequent actions (DSL `\pace`) |
+| 0x10 LOOP | typed(u8) count, u16 len | len = body size in bytes (incl. LOOP_END); bounds check; count=0 skips |
 | 0x11 LOOP_END | — | Pop stack / jump back |
-| 0x12/0x13 KEY_DOWN/KEY_UP | keycode(0=release all) | |
-| 0x14/0x15 MDOWN/MUP | btn | |
+| 0x12/0x13 KEY_DOWN/KEY_UP | typed(u8) keycode(0=release all) | |
+| 0x14/0x15 MDOWN/MUP | typed(u8) btn | |
+| 0x20/0x21 SET/ADD | reg, typed(i32) | i32 wraparound |
+| 0x22 BRA | cc, reg, typed(i32), u16 off | On false condition `ip += off` (compiled from `\ifnum`) |
+| 0x23 JMP | u16 off | Skip the else branch |
+| 0x28 READSLOT | reg, sig, field | Read a signal slot into a register |
+| 0x29 WAIT | sig, typed(u32) timeout_ms | Suspend until signal; result written to `$timeout` |
+| 0x2A CALL_EXT | ns, fn, argc, typed args | Runtime extension call; return written to `$ret` |
+| 0x2B TYPEREG | reg | Render decimal digits (DSL `\val`, one pacing action) |
 | 0xFF END | — | |
 
-Design strengths: compile/execute separation (`/compile` previews the disassembly); compact bytecode; loops via jump+stack, no runtime recursion; `char_keycodes()` correctly handles Shift characters like `!@#`; execute's finally guarantees all keys/buttons released on every exit path (incl. cancel).
+typed = tag(0=imm/1=reg/2=str) + payload; tag=0 is wire-identical to v2. The string table holds signal/ns/fn/template names; slots are reused via READSLOT into scratch.
+
+Design strengths: compile/execute separation (`/compile` previews the disassembly); loops/ifs are pure ip jumps with zero runtime stack growth; execute's finally guarantees all keys/buttons released on every exit path (incl. cancel); semantic types (color/handles) are compile-time checked and runtime-erased — the bytecode physical tags stay at three forever. The compiler nests via an explicit heap stack (no Python recursion): the device pystack is only a few KB, so nesting depth is bounded by bytecode size, not call frames.
 
 ## 5. Current Limitations
 
