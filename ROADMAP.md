@@ -37,19 +37,71 @@
 **Bytecode format reserve**
 - [x] Bytecode gains a version header (MAGIC 0xA5 + VERSION 2); LOOP's len becomes live semantics (bounds check + count=0 skips the body)
 
-**Deferred to a unified design (explicitly NOT in v2, to avoid complexity blowup)**: subroutines `\def`/`\call`, the `\wait` primitive + signal/slot, `\call{ext_functions}` + runtime exposure/import, logic expressions and variables — these capabilities are mutually coupled; design the DSL surface and opcode semantics together when the real requirements of Phase 2 (network messages) / Phase 3 (vision) land.
-
-### 1.4 asyncio-ification ✅ (on-device validation pending hardware)
+### 1.4 asyncio-ification ✅
 - [x] Main loop `asyncio.run()`: HTTP `server.poll()` as one task, macro execution as another
 - [x] VM: `execute()` is `async def`; all internal `time.sleep` became `await asyncio.sleep`
 - [x] New `/macro/abort` → `task.cancel()`; `/macro/status` query; HTTP stays responsive during macro execution
-- [x] Raw socket listener stub task (port 7373, fully exception-isolated); **early on-device validation of CircuitPython asyncio TCP stability (#10775) pending hardware**
+- [x] Raw socket listener stub task (port 7373, fully exception-isolated); stub verified running on device; live-traffic stability lands with Phase 2 (#10775)
 - [x] Bearer token auth (`MYCRO_TOKEN` via settings.toml; unset = dev mode)
 
 **Acceptance status**
 - ✅ All P0 bugs have unit tests, all green
 - ✅ DSL v2: index.html example macros pinned by regression tests; new lexer/semantics features each have unit tests
-- ⏳ HTTP responsiveness during long macros, abort without stuck keys, 1h stress test — **pending on-device validation**
+- ✅ On-device validation passed (user-confirmed 2026-10-04): deploy, runtime WiFi connect, HTTP service, macro execution/abort
+
+---
+
+## DSL v3 — Syntax Extension (finalized; Stages A/B land before Phase 2)
+
+### Core rules
+1. **Value-position interpolation**: `$name` interpolation only takes effect in **value positions** (each command's parameter list declares its types explicitly); in code-body positions (the bodies of `\rep`/`\def`/`\ifnum`) and in plain text, `$` is always a literal character
+2. Within a value position, `$name` matches `[a-z0-9_.]` greedily; `${name}` delimits explicitly; a literal `$` is written `\$`
+3. **Dual-semantics split**: `$name` (value position) = integer semantics (counts/ms/keycodes/coordinates/comparands); `\val{name}` (text position) = renders the decimal digit key sequence
+4. `\def` parameters `#1`–`#9` are pure textual single-pass substitution, expanded first; semantics are uniquely determined by the landing site
+5. Built-in command names are ≥2 letters (single letters permanently reserved for bare keys)
+6. Values not decidable at compile time → emit runtime-evaluated instructions (value position tag=reg / text position OP_TYPEREG / slot positions desugared to READSLOT)
+
+### Type system (the extensibility foundation)
+- Variables are physically **i32** only, with three semantic roles: numbers / packed small values (color, keycode, etc.) / object handles
+- **Semantic types hang on ext function signatures** (the ns registry is precise to parameter types/return type/produced-slot contract), checked at compile time, erased at runtime
+- Large objects live in the **runtime object table + i32 handles** (tpl, conn, etc.); handles and numbers cannot be mixed arithmetically (static check)
+- Bytecode physical tags are always just imm/reg/str — semantic types never enter the bytecode — **a future new type = registering a new signature + new ext functions, zero syntax growth**
+- Domain predicates (e.g. color tolerance comparison) are always ext functions returning i32 to `$ret`; branching always goes through `\ifnum`
+
+### Stage A — User macros (pure compile-time, bytecode unchanged)
+- [ ] `\def{name}[argc]{body}` (argc 0–9); a `\name` call takes argc brace groups; resolution priority: built-in commands → user macros → key names
+- [ ] Constraints: top-level only, define-before-use, no redefinition, no clash with built-ins/key names; circular references / wrong argc → compile error; expansion depth counts into MAX_NEST
+
+### Stage B — Variables / conditionals / rendering (bytecode v3)
+- [ ] 16 i32 registers (zeroed at execution start), `\set{x}{i32}` / `\add{x}{i32}`; `0x` hex literals supported
+- [ ] Special read-only: `$ret` (0xFF), `$timeout` (0xFE); signal slots `$ns.field` (READSLOT)
+- [ ] `\ifnum{$a}{op}{b}{then}[{else}]` (op ∈ `= != < <= > >=`; left operand must be a variable, right operand i32 or `$var`; compiles to forward BRA/JMP, zero runtime stack growth)
+- [ ] `\val{name}` (OP_TYPEREG; counts as one pacing action; the argument must be defined, else compile error)
+- [ ] Static checks: reading before `\set` is an error (conservative lexical-order judgement); `\call` arguments checked against the function signature
+- [ ] All value positions accept `$var` interpreted per the position's type (incl. `\kdown{$k}` with a register keycode)
+
+### Bytecode v3
+- [ ] Header: MAGIC(0xA5) + VERSION(3) + string table (u8 count; u8 len + bytes; signal/ns/fn/template names, deduplicated)
+- [ ] New opcodes: 0x20 SET, 0x21 ADD (reg, i32); 0x22 BRA (cc, reg, i32, off16), 0x23 JMP (off16); 0x28 READSLOT (reg, sig, field); 0x29 WAIT (sig, timeout_ms u32, 0 = wait forever); 0x2A CALL_EXT (ns, fn, argc, typed args); 0x2B TYPEREG (reg)
+- [ ] Typed-operand rework: MMOVE / SLEEP / PACE / MCLICK.count numeric operands gain a tag prefix (0=imm, 1=reg); tag=0 is wire-identical to v2
+
+### Stage C — Waiting / runtime extension (syntax frozen, semantics land with the phases)
+- [ ] `\wait{signal}` / `\wait{signal}{sec}`: suspend the coroutine by name (asyncio.Event); runtime event sources register signals and write payload slots; timeout writes `$timeout`; abort can interrupt
+- [ ] `\use{ns}`: compile-time dependency declaration checked against the runtime namespace table; missing = compile error; emits no bytecode
+- [ ] `\call{ns.fn}{arg}...`: return value written to `$ret`, structured output written to `$ns.*` slots; namespaces: `sys` (minimal validation first) → `net` (Phase 2) → `img` (Phase 3)
+- [ ] Two-pass compiler: Pass 1 collects top-level `\def` (build the table, check circular references) and `\use` (check namespaces); Pass 2 does expansion + variable allocation + static checks; argument parsing upgraded to descriptors (imm/reg/str)
+
+### Boundaries
+- Variables are i32 only; strings are not first-class (strings pass opaquely via the string table / signal slots)
+- No general expressions / multiplication / division (`\set`/`\add` cover counting; complex math sinks into ext functions; the interpreter's own internals are not bound by this)
+- User macros are compile-time expansion only (no runtime subroutines)
+- BRA/JMP are forward-only (no `\while`); no else-if syntax (nest `\ifnum` instead)
+- `\val` is decimal only
+- Constructor sugar (e.g. `\rgb{r,g,b}`) is **NOT in v3**; arrives as v3.1/v4 with Phase 3's img namespace
+
+### Scheduling
+- **Stages A, B**: complete before Phase 2 (no dependency on Phase 2 facilities; the `\call` argument convention feeds back into Phase 2 protocol design)
+- **Stage C**: `sys` minimal validation first; `net` semantics with Phase 2, `img` semantics with Phase 3
 
 ---
 
