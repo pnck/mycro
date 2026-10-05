@@ -62,7 +62,25 @@ Errors are reported as `{"type": "error", "id": <request id>, "payload":
 
 ## Message types
 
-(The type catalog lands with the dispatcher stage; see ROADMAP Phase 2.)
+Request → response pairs echo the request `id`; a successful response's
+type is the request type plus `.ok`. Failures use `type: "error"` with a
+machine-readable `payload.code` (`bad_version` / `bad_type` / `bad_id` /
+`bad_ts` / `bad_payload` / `unknown_type` / `field` / `compile_error` /
+`unknown_signal` / `state` / `internal`).
+
+| type | direction | payload | response payload |
+|---|---|---|---|
+| `macro.submit` | client → server | `code`: DSL source string | `bytes`: compiled bytecode size |
+| `macro.status` | client → server | — | `state`: `idle`/`running`/`done`/`aborted`/`error`, optional `detail` |
+| `macro.abort` | client → server | — | — (error `state` when nothing is running) |
+| `device.info` | client → server | — | `board`, `fw`, `free_mem`, `proto` (protocol version) |
+| `event.push` | client → server | `name`: signal name, `fields`: object of i32 slot values | — (error `unknown_signal` for unregistered signals) |
+| `macro.result` | server → clients | `state`, `ms` (execution wall time) | push, `id` = 0 |
+| `net.msg` | server → clients | emitted by `\call{net.send}` | push, `id` = 0 |
+
+`event.push` is the inbound half of the DSL `net` namespace: firing
+`net.msg` wakes device macros suspended in `\wait{net.msg}` and publishes
+the fields as `$net.*` signal slots.
 
 ## ADR-1: encoding and channel choices
 

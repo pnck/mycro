@@ -116,8 +116,8 @@
 - [x] Wire format settled: u32 LE frame header (bit31 kind, 8 KB caps) + fixed-length auth prologue (magic + version + SHA-256 token digest); codec landed in `lib/codec.py`
 
 ### 2.2 Protocol implementation
-- [ ] Message envelope: `{v, type, id, ts, payload}` (v = protocol version)
-- [ ] First batch of types: `macro.submit` / `macro.status` / `macro.abort` / `macro.result` / `device.info` / `log.push` (downstream over SSE/WS)
+- [x] Message envelope: `{v, type, id, ts, payload}` (v = protocol version)
+- [x] First batch of types: `macro.submit` / `macro.status` / `macro.abort` / `macro.result` / `device.info` / `event.push` + `net.msg` (inbound event / outbound macro push for the DSL `net` namespace) / `log.push` (downstream over SSE/WS)
 - [ ] Raw socket frame format: u32 LE length prefix + envelope body; WebSocket reuses the same envelope
 - [ ] REST stays as the human/debug channel; machine channels go over socket/WS
 - [ ] Fill Phase 1's socket stub into a full codec + dispatcher
