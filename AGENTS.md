@@ -57,7 +57,7 @@ Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`
 - Variables: 16 i32 registers, `\set{x}{v}` / `\add{x}{v}` (`0x` hex supported); `$ret`/`$timeout` special read-only; `$sig.field` signal slots (READSLOT desugar)
 - Conditionals: `\ifnum{$a}{op}{b}{then}[{else}]` (`= != < <= > >=`)
 - Rendering: `\val{name}` (types out decimal digits at text position; integer semantics use value-position `$name`)
-- Extension: `\use{ns}` (compile-time dependency check), `\call{ns.fn}{arg}...` (return → `$ret`), `\wait{sig}[{sec}]` (waits for the **next** fire after entry — a fire with no waiter is discarded; timeout → `$timeout`)
+- Extension: `\use{ns}` (compile-time dependency check), `\call{ns.fn}{arg}...` (return → `$ret`), `\wait{sig}[{sec}]` (waits for the **next** fire after entry — a fire with no waiter is discarded; timeout → `$timeout`). Registered on device: `sys.free`; `net.send{tag}` broadcasts a `net.msg` push (`$ret` = clients reached) and the `net.msg` signal — a host's `event.push` envelope wakes `\wait{net.msg}` and publishes its fields as last-published state, read via `$net.msg.<field>` slot references
 - Key rules: `$` interpolation only takes effect in **value positions** (literal in code bodies/plain text); greedy match within value positions, `${name}` to delimit; built-in command names are ≥2 letters
 
 Full semantics and the type system (signatures/handles/erasure): see ROADMAP "DSL v3 — Syntax Extension".

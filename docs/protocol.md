@@ -80,7 +80,9 @@ machine-readable `payload.code` (`bad_version` / `bad_type` / `bad_id` /
 
 `event.push` is the inbound half of the DSL `net` namespace: firing
 `net.msg` wakes device macros suspended in `\wait{net.msg}` and publishes
-the fields as `$net.*` signal slots.
+the fields as last-published state, read via `$net.msg.<field>` slot
+references. `\wait` observes the next fire after entry only — a fire with
+no waiter is discarded (slots still record it).
 
 ## ADR-1: encoding and channel choices
 

@@ -29,11 +29,17 @@ WIFI_PASSWORD = os.getenv("MYCRO_WIFI_PASSWORD") or ""
 TOKEN = os.getenv("MYCRO_TOKEN")
 
 # Initialize HID + macro interpreter with a runtime registry
-# (sys namespace now; net/img land in Phase 2/3)
+# (sys + net namespaces; img lands in Phase 3)
 hid = AdafruitHIDProvider()
 runtime = Runtime()
 runtime.register_ns("sys", {
     "free": ([], lambda: gc.mem_free()),
+})
+# net: host event.push wakes \wait{net.msg} and publishes $net.* slots;
+# \call{net.send}{tag} broadcasts a net.msg push, $ret = clients reached
+runtime.register_signal("net.msg")
+runtime.register_ns("net", {
+    "send": (["str"], lambda tag: broadcast(proto.push("net.msg", {"tag": tag}))),
 })
 macro = Macro(hid, runtime)
 
@@ -286,12 +292,16 @@ class _Client:
 
 
 def broadcast(env):
-    """Stamp and enqueue a server-initiated push to every authed client."""
+    """Stamp and enqueue a server-initiated push to every authed client.
+    Returns the number of clients the frame was queued for."""
     env["ts"] = _now_ms()
     frame = codec.pack_frame(codec.KIND_JSON, codec.encode_envelope(env))
+    n = 0
     for c in _raw_clients:
         if c.authed:
             c.enqueue(frame)
+            n += 1
+    return n
 
 
 def _recv(conn, nbytes):
