@@ -115,18 +115,20 @@
 - [x] JSON selected (ADR-1 in docs/protocol.md): neither CircuitPython bundle ships a msgpack library, so msgpack would mean an unpinned vendored codec; on-device benchmark (ESP32-S3, CP 10.3.0): 0.42 ms / 416 B churn for an 89 B envelope, 3.27 ms / 2.5 KB for a 1.2 KB macro-submit envelope — far below macro-execution timescales; bulk binary bypasses JSON via binary frames
 - [x] Wire format settled: u32 LE frame header (bit31 kind, 8 KB caps) + fixed-length auth prologue (magic + version + SHA-256 token digest); codec landed in `lib/codec.py`
 
-### 2.2 Protocol implementation
+### 2.2 Protocol implementation ✅
 - [x] Message envelope: `{v, type, id, ts, payload}` (v = protocol version)
 - [x] First batch of types: `macro.submit` / `macro.status` / `macro.abort` / `macro.result` / `device.info` / `event.push` + `net.msg` (inbound event / outbound macro push for the DSL `net` namespace)
 - [x] Raw socket frame format: u32 LE length prefix (bit31 kind) + envelope body
 - [x] REST stays as the human/debug channel; the machine channel is raw TCP only (single-channel decision: no WebSocket/SSE — pushes broadcast on the same authenticated stream)
 - [x] Fill Phase 1's socket stub into a full codec + dispatcher
 
-**Acceptance**
-- The same `macro.submit` behaves identically over HTTP and raw TCP
-- The PC-side reference client (`tools/client.py`) runs end to end
-- The protocol documentation is sufficient for a third party (host companion program) to implement a client independently
-- Dual-end on-device test suite (`tools/devicetest.py`) fully green on real hardware
+**Acceptance status** (on-device, user-confirmed 2026-10-05)
+- ✅ Dual-end suite 35/35 (token configured) + all manual checks: mouse moved by event-driven slots, clean serial, PC2 web UI responsive throughout
+- ✅ `macro.submit` behaves identically over HTTP and raw TCP (suite E-group)
+- ✅ Reference client `tools/client.py` runs end to end; `docs/protocol.md` is the normative third-party reference
+- ✅ Hardware lessons landed: CP socket API surface (`recv_into` only, EAGAIN/ENOTCONN probing), no bytearray slice deletion, `hashlib.new()` factory, `traceback.print_exception`, SO_REUSEADDR for listener survival across soft reboots, `\wait` next-fire semantics pinned by suite D-group
+
+**Phase 2 closed.**
 
 ---
 
