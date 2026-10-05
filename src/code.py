@@ -1,17 +1,22 @@
 import asyncio
 import gc
 import os
+import time
 import traceback
 
 import socketpool
 import wifi
 from adafruit_httpserver import Request, Response, Server, FileResponse
 
+from lib import codec, proto
 from lib.hid_adafruit import AdafruitHIDProvider
 from lib.macro import Macro
 from lib.runtime import Runtime
 
-RAW_PORT = 7373  # raw TCP listener stub; message protocol lands in Phase 2
+RAW_PORT = 7373       # raw TCP message channel (docs/protocol.md)
+MAX_CLIENTS = 2       # authed raw clients; extras are rejected at auth time
+AUTH_DEADLINE_S = 5   # a connection must complete the auth prologue within this
+OUTBOX_CAP = 32       # per-client queued push frames; beyond this the peer is not reading
 
 # WiFi credentials come from OUR OWN settings.toml keys, NOT the built-in
 # CIRCUITPY_WIFI_* ones: the built-in ones make the supervisor connect before
@@ -106,18 +111,28 @@ def _macro_form(request):
     return urldecode(code), hold_ms
 
 
+def _broadcast_result(t0):
+    body = {"state": state["state"], "ms": _now_ms() - t0}
+    if state["detail"]:
+        body["detail"] = state["detail"]
+    broadcast(proto.push("macro.result", body))
+
+
 async def _run(bytecode):
     """Macro execution wrapper: keeps `state` as the source of truth."""
+    t0 = _now_ms()
     try:
         await macro.execute(bytecode, click_hold_ms=click_hold_ms)
         state["state"] = "done"
     except asyncio.CancelledError:
         state["state"] = "aborted"
+        _broadcast_result(t0)
         raise  # cancellation must propagate; keys are released by execute()'s finally
     except Exception as e:
         state["state"] = "error"
         state["detail"] = str(e)
         print("Macro runtime error:", e)
+    _broadcast_result(t0)
 
 
 @server.route("/macro", methods=["POST"])
@@ -207,6 +222,160 @@ def compile_macro(request: Request):
     return Response(request, macro.disassemble(bytecode), content_type="text/plain; charset=utf-8")
 
 
+def _now_ms():
+    return int(time.monotonic() * 1000)
+
+
+# --- Raw protocol plumbing (proto ctx, clients, broadcast) ---
+
+
+class _ProtoCtx:
+    """Platform wiring for proto.Dispatcher handlers."""
+
+    runtime = runtime
+
+    def submit(self, code):
+        global macro_task
+        try:
+            bytecode, err = macro.compile(code)
+        except Exception as e:
+            # Device resource errors (e.g. pystack) must never escape a handler
+            return None, f"{type(e).__name__}: {e}"
+        if err:
+            return None, err
+        print(f"\n=== Compiled Bytecode ({len(bytecode)} bytes, via raw) ===")
+        print(macro.disassemble(bytecode))
+        print("=" * 40)
+        state.update(state="running", detail="", bytes=len(bytecode))
+        macro_task = asyncio.create_task(_run(bytecode))
+        return len(bytecode), None
+
+    def status(self):
+        return state["state"], state["detail"] or None
+
+    def abort(self):
+        if macro_task and state["state"] == "running":
+            macro_task.cancel()
+            return True
+        return False
+
+    def device_info(self):
+        u = os.uname()
+        return {"board": u.machine, "fw": u.release, "free_mem": gc.mem_free()}
+
+
+dispatcher = proto.Dispatcher()
+proto_ctx = _ProtoCtx()
+_raw_clients = []
+
+
+class _Client:
+    def __init__(self, conn, addr):
+        self.conn = conn
+        self.addr = addr
+        self.inbuf = bytearray()       # auth prologue accumulator
+        self.reasm = codec.Reassembler()
+        self.outbox = []               # (frame bytes, send offset)
+        self.authed = False
+        self.alive = True
+        self.deadline = time.monotonic() + AUTH_DEADLINE_S
+
+    def enqueue(self, frame):
+        if self.alive and len(self.outbox) < OUTBOX_CAP:
+            self.outbox.append((frame, 0))
+
+
+def broadcast(env):
+    """Stamp and enqueue a server-initiated push to every authed client."""
+    env["ts"] = _now_ms()
+    frame = codec.pack_frame(codec.KIND_JSON, codec.encode_envelope(env))
+    for c in _raw_clients:
+        if c.authed:
+            c.enqueue(frame)
+
+
+def _recv(conn, nbytes):
+    """Read up to nbytes from a non-blocking socket.
+
+    CircuitPython's socketpool.Socket has recv_into, not recv; on-device
+    probe: no data raises EAGAIN, a closed peer raises ENOTCONN. Returns
+    bytes, b"" when the peer is gone, None when nothing is available."""
+    buf = bytearray(nbytes)
+    try:
+        n = conn.recv_into(buf)
+    except OSError as e:
+        if e.args and e.args[0] == 11:
+            return None  # EAGAIN: no data right now
+        return b""  # ENOTCONN (128) et al: peer is gone
+    if not n:
+        return b""
+    return bytes(buf[:n])
+
+
+def _service(c, now):
+    conn = c.conn
+    if not c.authed:
+        if now > c.deadline:
+            c.alive = False
+            return
+        chunk = _recv(conn, codec.AUTH_LEN - len(c.inbuf))
+        if chunk is None:
+            return  # no data yet
+        if chunk == b"":
+            c.alive = False
+            return
+        c.inbuf += chunk
+        if len(c.inbuf) >= codec.AUTH_LEN:
+            authed = sum(1 for x in _raw_clients if x.authed)
+            if codec.check_auth_header(bytes(c.inbuf), TOKEN) and authed < MAX_CLIENTS:
+                c.authed = True
+                print("raw client authed:", c.addr)
+            else:
+                print("raw auth rejected:", c.addr)
+                c.alive = False
+        return
+    for _ in range(4):  # bounded reads per tick so one client can't starve others
+        data = _recv(conn, 1024)
+        if data is None:
+            break  # no more data right now
+        if data == b"":
+            c.alive = False
+            return
+        try:
+            frames = c.reasm.feed(data)
+        except codec.CodecError as e:
+            print("raw frame error:", c.addr, e)
+            c.alive = False
+            return
+        print(f"raw rx {len(data)}B -> {len(frames)} frame(s)")
+        for kind, payload in frames:
+            if kind != codec.KIND_JSON:
+                resp = proto.error_response(
+                    None, "unsupported_kind", "no binary consumer registered")
+            else:
+                try:
+                    env = codec.decode_envelope(payload)
+                except codec.CodecError as e:
+                    resp = proto.error_response(None, "bad_envelope", str(e))
+                else:
+                    resp = dispatcher.dispatch(env, proto_ctx)
+            if resp is not None:
+                resp["ts"] = _now_ms()
+                print("raw tx", resp.get("type"), "to", c.addr)
+                c.enqueue(codec.pack_frame(codec.KIND_JSON, codec.encode_envelope(resp)))
+    while c.outbox:
+        frame, off = c.outbox[0]
+        try:
+            sent = conn.send(frame[off:])
+        except OSError:
+            break  # EAGAIN: retry next tick
+        off += sent
+        if off >= len(frame):
+            c.outbox.pop(0)
+        else:
+            c.outbox[0] = (frame, off)
+
+
 async def _http_loop():
     while True:
         try:
@@ -218,32 +387,50 @@ async def _http_loop():
         await asyncio.sleep(0)
 
 
-async def _raw_stub():
-    """Raw TCP listener stub — Phase 2 fills in the message protocol here.
+async def _raw_server():
+    """Raw TCP message channel (protocol v1, docs/protocol.md).
 
-    CircuitPython/espressif asyncio + raw TCP has known stability risk
-    (adafruit/circuitpython#10775): this task is fully exception-isolated so
-    a failure here can never take down the HTTP/HID service.
+    Single round-robin task owns every connection: no per-connection tasks,
+    no cross-task socket access. CircuitPython/espressif asyncio + raw TCP
+    has known stability risk (adafruit/circuitpython#10775): this task is
+    fully exception-isolated so a failure here can never take down the
+    HTTP/HID service.
     """
     try:
         s = pool.socket(pool.AF_INET, pool.SOCK_STREAM)
+        # survive soft reboots: the previous run's listener lingers briefly
+        s.setsockopt(pool.SOL_SOCKET, pool.SO_REUSEADDR, 1)
         s.settimeout(0)
         s.bind(("0.0.0.0", RAW_PORT))
-        s.listen(2)
-        print(f"Raw socket stub on :{RAW_PORT} (protocol TBD in Phase 2)")
+        s.listen(MAX_CLIENTS)
+        print(f"Raw protocol on :{RAW_PORT} (v{codec.PROTO_VERSION})")
         while True:
-            try:
-                conn, addr = s.accept()
-                print("raw conn from", addr)
+            while True:
                 try:
-                    conn.send(b"MYCRO/0.1 stub\n")
-                finally:
-                    conn.close()
-            except OSError:
-                pass  # no pending connection
-            await asyncio.sleep(0.05)
+                    conn, addr = s.accept()
+                except OSError:
+                    break  # no pending connection
+                conn.settimeout(0)
+                _raw_clients.append(_Client(conn, addr))
+                print("raw conn from", addr)
+            now = time.monotonic()
+            for c in _raw_clients[:]:
+                try:
+                    _service(c, now)
+                except Exception as e:
+                    print("raw client error:", c.addr, e)
+                    traceback.print_exception(e)  # full traceback to serial
+                    c.alive = False
+                if not c.alive:
+                    _raw_clients.remove(c)
+                    try:
+                        c.conn.close()
+                    except Exception:
+                        pass
+            await asyncio.sleep(0.01)
     except Exception as e:
-        print("raw socket stub disabled:", e)
+        print("raw server disabled:", e)
+        traceback.print_exception(e)
 
 
 async def _wifi_connect(attempts=3):
@@ -278,7 +465,7 @@ async def _main():
         print(f"HTTP server at http://{ip}")
         if not TOKEN:
             print("WARNING: MYCRO_TOKEN not set in settings.toml — auth disabled (dev mode)")
-        await asyncio.gather(_http_loop(), _raw_stub())
+        await asyncio.gather(_http_loop(), _raw_server())
     else:
         # Offline: keep the VM alive and idle. Edit settings.toml via the
         # CIRCUITPY drive and reset to retry.
