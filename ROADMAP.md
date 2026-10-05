@@ -111,9 +111,9 @@
 
 **Goal**: unified message semantics across HTTP / WebSocket / raw TCP, supporting remote orchestration, status push, and future vision event streams.
 
-### 2.1 Encoding selection
-- [ ] msgpack (compact, needs porting validation) vs JSON (built-in, zero-dependency fallback): decide by measured codec speed, RAM peak, and JS-side interoperability on the S3
-- [ ] Output: benchmark data + decision record (ADR)
+### 2.1 Encoding selection ✅
+- [x] JSON selected (ADR-1 in docs/protocol.md): neither CircuitPython bundle ships a msgpack library, so msgpack would mean an unpinned vendored codec; on-device benchmark (ESP32-S3, CP 10.3.0): 0.42 ms / 416 B churn for an 89 B envelope, 3.27 ms / 2.5 KB for a 1.2 KB macro-submit envelope — far below macro-execution timescales; bulk binary bypasses JSON via binary frames
+- [x] Wire format settled: u32 LE frame header (bit31 kind, 8 KB caps) + fixed-length auth prologue (magic + version + SHA-256 token digest); codec landed in `lib/codec.py`
 
 ### 2.2 Protocol implementation
 - [ ] Message envelope: `{v, type, id, ts, payload}` (v = protocol version)
@@ -170,4 +170,3 @@
 - **Risks & mitigations**:
   - CircuitPython asyncio + raw TCP stability (#10775) → early on-device validation in 1.4; fallback is the WebSocket channel
   - PSRAM large-buffer behavior differences → measure first in 3.1
-  - msgpack compatibility → selection validation in 2.1, JSON as fallback
