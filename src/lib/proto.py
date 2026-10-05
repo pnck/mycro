@@ -1,8 +1,8 @@
 """Phase 2 message dispatcher: envelope validation + type routing.
 
-Pure Python, transport-agnostic: the raw-TCP task (and any future
-WebSocket/SSE path) decodes frames via codec.py, then hands envelopes
-here. Handlers are synchronous; transports own all coroutine concerns.
+Pure Python, transport-agnostic: the raw-TCP task decodes frames via
+codec.py, then hands envelopes here. Handlers are synchronous; the
+transport owns all coroutine concerns.
 
 ctx is a duck-typed context supplied by the platform layer (code.py on
 device, fakes in tests):

@@ -109,7 +109,7 @@
 
 ## Phase 2 — Network Message Protocol
 
-**Goal**: unified message semantics across HTTP / WebSocket / raw TCP, supporting remote orchestration, status push, and future vision event streams.
+**Goal**: unified message semantics across HTTP (human/debug) and a raw TCP machine channel, supporting remote orchestration, status push, and future vision event streams.
 
 ### 2.1 Encoding selection ✅
 - [x] JSON selected (ADR-1 in docs/protocol.md): neither CircuitPython bundle ships a msgpack library, so msgpack would mean an unpinned vendored codec; on-device benchmark (ESP32-S3, CP 10.3.0): 0.42 ms / 416 B churn for an 89 B envelope, 3.27 ms / 2.5 KB for a 1.2 KB macro-submit envelope — far below macro-execution timescales; bulk binary bypasses JSON via binary frames
@@ -117,15 +117,16 @@
 
 ### 2.2 Protocol implementation
 - [x] Message envelope: `{v, type, id, ts, payload}` (v = protocol version)
-- [x] First batch of types: `macro.submit` / `macro.status` / `macro.abort` / `macro.result` / `device.info` / `event.push` + `net.msg` (inbound event / outbound macro push for the DSL `net` namespace) / `log.push` (downstream over SSE/WS)
-- [x] Raw socket frame format: u32 LE length prefix (bit31 kind) + envelope body; WebSocket reuses the same envelope
-- [ ] REST stays as the human/debug channel; machine channels go over socket/WS
+- [x] First batch of types: `macro.submit` / `macro.status` / `macro.abort` / `macro.result` / `device.info` / `event.push` + `net.msg` (inbound event / outbound macro push for the DSL `net` namespace)
+- [x] Raw socket frame format: u32 LE length prefix (bit31 kind) + envelope body
+- [x] REST stays as the human/debug channel; the machine channel is raw TCP only (single-channel decision: no WebSocket/SSE — pushes broadcast on the same authenticated stream)
 - [x] Fill Phase 1's socket stub into a full codec + dispatcher
 
 **Acceptance**
-- The same `macro.submit` behaves identically across all three channels
-- A PC-side Python client example runs end to end
+- The same `macro.submit` behaves identically over HTTP and raw TCP
+- The PC-side reference client (`tools/client.py`) runs end to end
 - The protocol documentation is sufficient for a third party (host companion program) to implement a client independently
+- Dual-end on-device test suite (`tools/devicetest.py`) fully green on real hardware
 
 ---
 
@@ -168,5 +169,5 @@
 - **On-device regression**: run on-device regression at the end of each Phase; no phase counts as done without hardware validation
 - **Documentation sync**: update AGENTS.md at the end of each Phase (architecture changes, new opcodes, protocol summary)
 - **Risks & mitigations**:
-  - CircuitPython asyncio + raw TCP stability (#10775) → early on-device validation in 1.4; fallback is the WebSocket channel
+  - CircuitPython asyncio + raw TCP stability (#10775) → early on-device validation in 1.4; fallback is the proven HTTP channel
   - PSRAM large-buffer behavior differences → measure first in 3.1
