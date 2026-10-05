@@ -18,6 +18,8 @@ src/
     └── hid_adafruit.py → /lib/hid_adafruit.py  HIDProvider implementation on adafruit_hid
 tests/                  CPython unit tests (MockHID + pytest)
 tools/deploy.sh         Deploy: CIRCUITPY=/mountpoint ./tools/deploy.sh (exact-set sync via on-device manifest + circup lib install)
+tools/client.py         Protocol v1 reference client (stdlib-only; executable spec for host companions)
+tools/devicetest.py     Dual-end on-device acceptance suite: client.py vs a real device
 docs/protocol.md        Machine protocol v1: wire format + ADR (normative client reference)
 requirements-device.txt  Device-side library list (circup version pinning)
 ```
