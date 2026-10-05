@@ -118,9 +118,9 @@
 ### 2.2 Protocol implementation
 - [x] Message envelope: `{v, type, id, ts, payload}` (v = protocol version)
 - [x] First batch of types: `macro.submit` / `macro.status` / `macro.abort` / `macro.result` / `device.info` / `event.push` + `net.msg` (inbound event / outbound macro push for the DSL `net` namespace) / `log.push` (downstream over SSE/WS)
-- [ ] Raw socket frame format: u32 LE length prefix + envelope body; WebSocket reuses the same envelope
+- [x] Raw socket frame format: u32 LE length prefix (bit31 kind) + envelope body; WebSocket reuses the same envelope
 - [ ] REST stays as the human/debug channel; machine channels go over socket/WS
-- [ ] Fill Phase 1's socket stub into a full codec + dispatcher
+- [x] Fill Phase 1's socket stub into a full codec + dispatcher
 
 **Acceptance**
 - The same `macro.submit` behaves identically across all three channels

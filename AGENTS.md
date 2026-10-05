@@ -34,8 +34,8 @@ Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`
 
 `asyncio.run()` main loop: first `_wifi_connect()` (runtime WiFi connect, 3 attempts with timeout; failure → offline-mode idle loop, USB/serial/HID unaffected — fix settings.toml and reset to retry), then `server.start()` and concurrent drivers:
 - **`_http_loop`**: `server.poll()` HTTP polling
-- **Macro execution task**: `POST /macro` starts in the background via `asyncio.create_task` after compiling; HTTP stays responsive during execution
-- **`_raw_stub`**: raw TCP listener on `:7373` (message protocol arrives in Phase 2; fully exception-isolated — CP espressif asyncio TCP has known risk #10775)
+- **Macro execution task**: `POST /macro` (or a `macro.submit` envelope) starts in the background via `asyncio.create_task` after compiling; HTTP stays responsive during execution
+- **`_raw_server`**: raw TCP message channel on `:7373` (protocol v1, [docs/protocol.md](docs/protocol.md)): fixed-length auth prologue (SHA-256 token digest), then framed JSON envelopes dispatched by `proto.py`. One round-robin task owns every connection (no per-connection tasks, no cross-task socket access); fully exception-isolated — CP espressif asyncio TCP has known risk #10775. Server pushes (`macro.result`) broadcast to all authed clients
 
 | Endpoint | Role |
 |---|---|
