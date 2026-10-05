@@ -14,9 +14,11 @@ src/
     ├── macro.py      → /lib/macro.py  Compiler + VM (pure Python, zero adafruit dependencies)
     ├── keymap.py     → /lib/keymap.py HID usage ID constants (page 0x07)
     ├── runtime.py    → /lib/runtime.py Runtime registry (namespaces/signals/slots)
+    ├── codec.py      → /lib/codec.py  Wire codec: frame packing/reassembly + auth header (pure Python)
     └── hid_adafruit.py → /lib/hid_adafruit.py  HIDProvider implementation on adafruit_hid
 tests/                  CPython unit tests (MockHID + pytest)
 tools/deploy.sh         Deploy: CIRCUITPY=/mountpoint ./tools/deploy.sh (exact-set sync via on-device manifest + circup lib install)
+docs/protocol.md        Machine protocol v1: wire format + ADR (normative client reference)
 requirements-device.txt  Device-side library list (circup version pinning)
 ```
 
