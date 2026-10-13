@@ -179,8 +179,8 @@ Compile-time **type environment** (copy rules, exhaustive):
 | Event | Environment update |
 |---|---|
 | `\call{ns.fn}...` | type(`$ret`) := fn's declared return type |
-| `\set{s}{$ret}` | type(s) := type(`$ret`) |
-| `\set{s}{$other}` | type(s) := type(other) |
+| `\set{s}{$ret}` | type(s) := type(`$ret`); handle types **move** (type(`$ret`) reverts to int) |
+| `\set{s}{$other}` | type(s) := type(other); handle types **move** (type(other) reverts to int) |
 | `\set{s}{literal}` / `\add` | type(s) := int |
 | `\wait` | type(`$timeout`) := int (constant) |
 

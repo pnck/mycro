@@ -886,8 +886,24 @@ class Macro:
         v = self._parse_value(arg, pos)  # parse first: slot desugars emit READSLOT
         self._emit(OP_SET, reg)
         self._emit_typed(v, 4)
-        # type environment: copy the source's type (no computation)
-        self._types[name] = self._reg_type(v[1]) if v[0] == TAG_REG else "int"
+        # type environment: copy the source's type (no computation);
+        # handle types MOVE — the source reverts to int, mirroring the
+        # runtime's ownership move (spec/vm.md Part II §2/§4)
+        if v[0] == TAG_REG:
+            t = self._reg_type(v[1])
+            if t in ("int", "color"):
+                self._types[name] = t
+            else:
+                self._types[name] = t
+                if v[1] == REG_RET:
+                    self._ret_type = "int"
+                else:
+                    for nm, r in self._vars.items():
+                        if r == v[1]:
+                            self._types[nm] = "int"
+                            break
+        else:
+            self._types[name] = "int"
 
     def _cmd_add(self, pos):
         r"""\add{x}{i32|$var} — add to an existing variable."""
@@ -1270,6 +1286,9 @@ class Macro:
         loop_stack = []  # [(ip_start, remaining, saved_delay)]
         regs = [0] * 256
         hid = self.hid
+        runtime = self.runtime
+        if runtime is not None:
+            runtime.release_all()  # execution bracket: start (defensive)
 
         def read_u8():
             nonlocal ip
@@ -1293,15 +1312,21 @@ class Macro:
             ip += 4
             return v - 4294967296 if v > 2147483647 else v
 
+        def read_argx(width, signed=False):
+            """Typed operand with source identity (register-write
+            mediation needs to know when a value comes from a register)."""
+            if read_u8() == TAG_REG:
+                r = read_u8()
+                return regs[r], r
+            if width == 1:
+                return read_u8(), None
+            if width == 2:
+                return (read_i16() if signed else read_u16()), None
+            return read_i32(), None
+
         def read_arg(width, signed=False):
             """Typed operand: TAG_REG reads a register, TAG_IMM reads inline."""
-            if read_u8() == TAG_REG:
-                return regs[read_u8()]
-            if width == 1:
-                return read_u8()
-            if width == 2:
-                return read_i16() if signed else read_u16()
-            return read_i32()
+            return read_argx(width, signed)[0]
 
         def clamp(v, lo, hi):
             return max(lo, min(hi, v))
@@ -1409,11 +1434,17 @@ class Macro:
 
                 elif op == OP_SET:
                     reg = read_u8()
-                    regs[reg] = read_arg(4)
+                    val, src = read_argx(4)
+                    if runtime is not None:
+                        runtime.reg_write(reg, src)  # overwrite/move mediation
+                    regs[reg] = val
 
                 elif op == OP_ADD:
                     reg = read_u8()
-                    regs[reg] = regs[reg] + read_arg(4)
+                    val = read_arg(4)
+                    if runtime is not None:
+                        runtime.reg_write(reg, None)
+                    regs[reg] = regs[reg] + val
                     # keep registers in signed i32 range
                     if regs[reg] > 2147483647:
                         regs[reg] -= 4294967296
@@ -1460,16 +1491,18 @@ class Macro:
                     reg = read_u8()
                     sig = strs[read_u8()]
                     field = strs[read_u8()]
-                    if self.runtime is None:
+                    if runtime is None:
                         raise RuntimeError("READSLOT without runtime registry")
-                    regs[reg] = self.runtime.read_slot(sig, field)
+                    runtime.reg_write(reg, None)
+                    regs[reg] = runtime.read_slot(sig, field)
 
                 elif op == OP_WAIT:
                     sig = strs[read_u8()]
                     timeout = read_arg(4)
-                    if self.runtime is None:
+                    if runtime is None:
                         raise RuntimeError("WAIT without runtime registry")
-                    ok = await self.runtime.wait_signal(sig, clamp(timeout, 0, 4294967295))
+                    ok = await runtime.wait_signal(sig, clamp(timeout, 0, 4294967295))
+                    runtime.reg_write(REG_TIMEOUT, None)
                     regs[REG_TIMEOUT] = 0 if ok else 1
 
                 elif op == OP_CALL_EXT:
@@ -1485,18 +1518,21 @@ class Macro:
                             args.append(regs[read_u8()])
                         else:
                             args.append(strs[read_u8()])
-                    if self.runtime is None:
+                    if runtime is None:
                         raise RuntimeError("CALL_EXT without runtime registry")
-                    r = self.runtime.call(ns, fn, args)
+                    r = runtime.call(ns, fn, args)
                     if hasattr(r, "send"):  # coroutine: await it
                         r = await r
                     if r is None:
-                        regs[REG_RET] = 0
+                        value = 0
                     else:
                         try:
-                            regs[REG_RET] = int(r)
+                            value = int(r)
                         except (TypeError, ValueError):
-                            regs[REG_RET] = 0
+                            value = 0
+                    runtime.reg_write(REG_RET, None)
+                    regs[REG_RET] = value
+                    runtime.claim(REG_RET, value)  # fresh handle ownership
 
                 else:
                     raise RuntimeError(f"Unknown opcode 0x{op:02X}")
@@ -1506,3 +1542,5 @@ class Macro:
             # B2: never leave keys/buttons pressed, whatever the exit path
             hid.keys_release_all()
             hid.mouse_release(BTN_ALL)
+            if runtime is not None:
+                runtime.release_all()  # execution bracket: exit
