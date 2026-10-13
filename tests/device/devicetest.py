@@ -26,7 +26,9 @@ import time
 import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "tools"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from client import AUTH_MAGIC, PROTO_VERSION, Client, ProtocolError  # noqa: E402
+import reference_provider  # noqa: E402
 
 RESULTS = []
 
@@ -624,6 +626,103 @@ def g2_latency_probe(ctx, n=10):
     check(f"G2 latency probe x{n}", True, detail)
 
 
+# --- G3+: img exact-pixel family e2e (reference provider) ---
+# Expected values derive from reference_provider's deterministic frames:
+# pixel(10,8) in frame "a" = rgb(70,110,150) = 0x466E96.
+
+IMG_NOPROV = ("\\use{img}\\use{net}"
+              "\\call{img.snap}{10,8,1,1}"
+              "\\ifnum{$ret}{<}{0}{\\call{net.send}{noprov}}{\\call{net.send}{prov-ok}}")
+
+IMG_AT = ("\\use{img}\\use{net}"
+          "\\call{img.snap}{10,8,1,1}\\set{s}{$ret}"
+          "\\call{img.at}{$s}{0,0}"
+          "\\ifnum{$ret}{=}{0x466E96}{\\call{net.send}{at-ok}}{\\call{net.send}{at-wrong}}")
+
+IMG_DIFF = ("\\use{img}\\use{net}"
+            "\\call{img.snap}{0,0,8,8}\\set{a}{$ret}"
+            "\\call{net.send}{snapped}"
+            "\\wait{net.msg}{30}"
+            "\\call{img.snap}{0,0,8,8}\\set{b}{$ret}"
+            "\\call{img.diff}{$a}{$b}{0}"
+            "\\ifnum{$ret}{>}{0}{\\call{net.send}{diff-ok}}{\\call{net.send}{no-diff}}")
+
+IMG_REUSE = ("\\use{img}\\use{net}"
+             "\\call{img.snap}{0,0,4,4}\\set{a}{$ret}"
+             "\\call{img.snap}{10,8,4,4}\\set{a}{$ret}"  # overwrite releases
+             "\\call{img.at}{$a}{0,0}"
+             "\\ifnum{$ret}{=}{0x466E96}{\\call{net.send}{reuse-ok}}{\\call{net.send}{reuse-wrong}}")
+
+
+def g3_img_no_provider(ctx):
+    """Requires no provider connected — in the default order it runs
+    before _ensure_provider; with --only, don't combine with g4-g6."""
+    c = ctx.client()
+    c.call("macro.submit", {"code": IMG_NOPROV})
+    tag = recv_tag(c, "noprov", timeout=10)
+    res = recv_result(c)
+    check("G3 img.snap without provider -> $ret<0",
+          tag is not None and res is not None)
+    c.close()
+
+
+def _ensure_provider(ctx):
+    if getattr(ctx, "provider", None) is None:
+        ctx.provider = reference_provider.ReferenceProvider(
+            ctx.host, ctx.port, ctx.token)
+        ctx.provider.start()
+        time.sleep(0.3)  # connect + img.hello registration
+
+
+def g4_img_snap_at(ctx):
+    _ensure_provider(ctx)
+    c = ctx.client()
+    c.call("macro.submit", {"code": IMG_AT})
+    tag = recv_until(c, lambda e: e.get("type") == "net.msg", timeout=15)
+    got = tag["payload"].get("tag") if tag else None
+    res = recv_result(c)
+    check("G4 snap + at reads exact pixel color",
+          got == "at-ok" and res is not None, str(got))
+    c.close()
+
+
+def g5_img_diff(ctx):
+    _ensure_provider(ctx)
+    c = ctx.client()
+    try:
+        c.call("macro.submit", {"code": IMG_DIFF})
+        snapped = recv_tag(c, "snapped", timeout=15)
+        if snapped:
+            ctx.provider.set_frame("b")
+            c.call("event.push", {"name": "net.msg", "fields": {}})
+        tag = recv_until(
+            c,
+            lambda e: e.get("type") == "net.msg"
+            and e["payload"].get("tag") in ("diff-ok", "no-diff"),
+            timeout=15)
+        got = tag["payload"].get("tag") if tag else None
+        res = recv_result(c)
+        check("G5 diff detects swapped frame (and stays silent when same)",
+              snapped is not None and got == "diff-ok" and res is not None,
+              f"snapped={'ok' if snapped else 'FAIL'} diff={got}")
+    finally:
+        if getattr(ctx, "provider", None) is not None:
+            ctx.provider.set_frame("a")
+        c.close()
+
+
+def g6_handle_overwrite_reuse(ctx):
+    _ensure_provider(ctx)
+    c = ctx.client()
+    c.call("macro.submit", {"code": IMG_REUSE})
+    tag = recv_until(c, lambda e: e.get("type") == "net.msg", timeout=15)
+    got = tag["payload"].get("tag") if tag else None
+    res = recv_result(c)
+    check("G6 handle overwrite releases; variable reusable",
+          got == "reuse-ok" and res is not None, str(got))
+    c.close()
+
+
 def f4_memory_trend(ctx, mem0):
     c = ctx.client()
     p = c.call("device.info")["payload"]
@@ -681,7 +780,9 @@ def main(argv=None):
              d4_abort_during_wait, d5_stale_signal_dropped,
              d6_slot_state_persists, d7_slot_values_on_wire,
              e1_http_status_during_raw, e2_http_submit_broadcasts_to_raw,
-             f2_submit_storm, f3_hard_kill, g1_binary_flood, g2_latency_probe]
+             f2_submit_storm, f3_hard_kill, g1_binary_flood, g2_latency_probe,
+             g3_img_no_provider, g4_img_snap_at, g5_img_diff,
+             g6_handle_overwrite_reuse]
     if not args.skip_slow:
         cases.append(a4_slow_auth_deadline)
     if args.only:
@@ -706,6 +807,9 @@ def main(argv=None):
             check("f1_long_idle", False, f"{type(e).__name__}: {e}")
 
     f4_memory_trend(ctx, mem0)
+
+    if getattr(ctx, "provider", None) is not None:
+        ctx.provider.stop()
 
     failed = [n for n, ok, _ in RESULTS if not ok]
     print(f"\n{len(RESULTS) - len(failed)}/{len(RESULTS)} passed")

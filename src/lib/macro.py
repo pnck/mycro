@@ -935,7 +935,9 @@ class Macro:
             raise MacroError("ifnum left operand must be a variable ($name)", pos)
         reg = self._parse_var_ref(left.strip(), pos)
         lt = self._reg_type(reg)
-        if lt not in ("int", "color"):
+        # $ret is exempt: it carries error sentinels alongside results,
+        # so comparing it is the mandatory failure check (spec/vm.md)
+        if reg != REG_RET and lt not in ("int", "color"):
             raise MacroError(f"ifnum: cannot compare a {lt} handle", pos)
 
         op = self._read_braces()
@@ -957,7 +959,8 @@ class Macro:
         # that must precede the branch, and must not clobber a slot-temp
         # already holding the left operand
         rhs_val = self._parse_value(rhs, pos, reserved=(reg,))
-        if rhs_val[0] == TAG_REG and self._reg_type(rhs_val[1]) not in ("int", "color"):
+        if rhs_val[0] == TAG_REG and rhs_val[1] != REG_RET \
+                and self._reg_type(rhs_val[1]) not in ("int", "color"):
             raise MacroError(
                 f"ifnum: cannot compare a {self._reg_type(rhs_val[1])} handle", pos)
         self._emit(OP_BRA, cc, reg)

@@ -110,6 +110,13 @@ def test_ifnum_rejects_handle():
         "\\call{img.load}{name}\\set{h}{$ret}\\set{x}{1}\\ifnum{$x}{=}{$h}{a}")
 
 
+def test_ifnum_ret_exemption():
+    # $ret carries error sentinels alongside results — checking it is the
+    # mandatory failure path, exempt from the handle comparison ban
+    compile_ok("\\call{img.load}{name}\\ifnum{$ret}{<}{0}{a}")
+    compile_ok("\\call{img.load}{name}\\set{x}{1}\\ifnum{$x}{=}{$ret}{a}")
+
+
 def test_point_rect_args_expand():
     bc = compile_ok("\\call{img.load}{n}\\set{h}{$ret}\\call{img.at}{$h}{3,4}")
     strs, code = header_strs(bc)
