@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Phase 2 dual-end on-device acceptance suite.
+"""Dual-end on-device acceptance suite.
 
 Drives a real MYCRO device over the raw TCP channel (protocol v1) and
 HTTP, checking wire behavior end to end. Run after deploying:
 
-    python3 tools/devicetest.py <device-ip> --token <MYCRO_TOKEN>
+    python3 tests/device/devicetest.py <device-ip> --token <MYCRO_TOKEN>
 
 Options: --port, --idle-secs (long-idle case, default 10),
 --skip-slow (skip auth-deadline and long-idle cases).
@@ -12,7 +12,7 @@ Options: --port, --idle-secs (long-idle case, default 10),
 Exits 0 when every automated case passes. A manual-observation checklist
 (mouse motion on PC1, serial log lines) prints at the end.
 
-Self-contained: stdlib + client.py from the same directory.
+Self-contained: stdlib + client.py from ../../tools.
 """
 
 import argparse
@@ -25,7 +25,7 @@ import sys
 import time
 import urllib.request
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "tools"))
 from client import AUTH_MAGIC, PROTO_VERSION, Client, ProtocolError  # noqa: E402
 
 RESULTS = []
@@ -557,6 +557,73 @@ def f3_hard_kill(ctx):
     check("F3 client hard-kill (RST) -> device unaffected", ok)
 
 
+# --- G: Phase 3 readiness ---
+
+def g1_binary_flood(ctx, frames=128, burst=16):
+    """The device rejects kind=1 frames with unsupported_kind errors, but
+    the flood still exercises the full RX path: a receive-throughput
+    lower bound for future img.* traffic. burst stays under the device
+    outbox cap (32) so no error response is dropped."""
+    c = ctx.client()
+    c.call("macro.status")  # warm the connection
+    chunk = b"\x00" * (8192 - 4)  # u16 stream_id + u16 flags + raw bytes
+    frame = struct.pack("<I", 0x80000000 | len(chunk)) + chunk
+    t0 = time.monotonic()
+    sent = drained = 0
+    while drained < frames:
+        while sent < frames and sent - drained < burst:
+            c.sock.sendall(frame)
+            sent += 1
+        env = c.recv_envelope()
+        if env.get("type") == "error" \
+                and env["payload"].get("code") == "unsupported_kind":
+            drained += 1
+    dt = time.monotonic() - t0
+    kbs = frames * len(frame) / dt / 1024
+    c.close()
+    alive = False
+    try:
+        alive = ctx.client().call("macro.status")["type"] == "macro.status.ok"
+    except Exception:
+        pass
+    check(f"G1 binary flood {frames}x{len(frame)}B -> {kbs:.0f} KB/s, alive",
+          drained == frames and alive, f"{kbs:.0f} KB/s")
+
+
+def g2_latency_probe(ctx, n=10):
+    """Per-request RTT on one established raw connection, with HTTP
+    timings for contrast. T5/G1 fold connect+auth into their numbers;
+    this isolates steady-state request latency. If raw and HTTP are both
+    slow the cause is link-level (e.g. WiFi power save); if only raw is
+    slow, it's the raw server loop. Informational, always passes."""
+    c = ctx.client()
+    c.call("macro.status")  # warm the connection
+    rtts = []
+    for _ in range(n):
+        t0 = time.monotonic()
+        c.call("device.info")
+        rtts.append((time.monotonic() - t0) * 1000)
+    c.close()
+    try:
+        http_get(ctx, "/macro/status")  # warm HTTP
+        httpt = []
+        for _ in range(n):
+            t0 = time.monotonic()
+            http_get(ctx, "/macro/status")
+            httpt.append((time.monotonic() - t0) * 1000)
+    except Exception as e:
+        httpt = None
+        print(f"  (HTTP contrast failed: {e})")
+
+    def stat(v):
+        return f"min={min(v):.0f} avg={sum(v) / len(v):.0f} max={max(v):.0f}ms"
+
+    detail = f"raw: {stat(rtts)}"
+    if httpt:
+        detail += f" | http: {stat(httpt)}"
+    check(f"G2 latency probe x{n}", True, detail)
+
+
 def f4_memory_trend(ctx, mem0):
     c = ctx.client()
     p = c.call("device.info")["payload"]
@@ -614,7 +681,7 @@ def main(argv=None):
              d4_abort_during_wait, d5_stale_signal_dropped,
              d6_slot_state_persists, d7_slot_values_on_wire,
              e1_http_status_during_raw, e2_http_submit_broadcasts_to_raw,
-             f2_submit_storm, f3_hard_kill]
+             f2_submit_storm, f3_hard_kill, g1_binary_flood, g2_latency_probe]
     if not args.skip_slow:
         cases.append(a4_slow_auth_deadline)
     if args.only:
