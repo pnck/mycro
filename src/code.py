@@ -459,6 +459,14 @@ async def _wifi_connect(attempts=3):
                 wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD, timeout=15)
             except TypeError:
                 wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)  # older firmware: no timeout kwarg
+            try:
+                # Modem sleep (default MIN) makes the AP buffer inbound
+                # packets until the next DTIM wake: ~350ms connection setup
+                # and sawtooth ping RTTs. This device is USB-powered; take
+                # the responsiveness instead of the milliamps.
+                wifi.radio.power_management = wifi.PowerManagement.NONE
+            except Exception:
+                pass  # older firmware without the enum
             print("WiFi connected:", wifi.radio.ipv4_address)
             return True
         except Exception as e:
