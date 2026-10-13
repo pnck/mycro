@@ -140,12 +140,12 @@
 
 **Principle: verify before migrating — no research on unselected platforms; MVP code is only written on the decided platform.**
 
-- [ ] **Dual benchmarks in parallel**:
-  - CP side: measure ulab convolve/dot at the target resolution → judge latency feasibility of template matching and a micro CNN forward pass
-  - MP side: **MicroPython spike brought forward** (a few days) — verify ① stability of micropython-lib `usb-device-keyboard/mouse` composite HID on S3 (incl. coexistence with REPL) ② microlite+esp-nn inference benchmark ③ WiFi+HID concurrency
-- [ ] Image source decision: host screenshots pushed over the network (A, expected winner, reuses the Phase 2 protocol directly) vs `espcamera` onboard camera (B)
-- [ ] Measure PSRAM heap with large buffers (bitmap + intermediate arrays)
-- [ ] **Platform decision ADR**: CP template matching sufficient → stay on CP; insufficient and spike passes → migrate to MP (vision developed directly on MP); spike fails → stay on CP + dual-chip fallback
+- [x] **Dual benchmarks in parallel**:
+  - CP side: row-conv NCC verified on-device with exact argmax (80x60/T=16 = 573 ms … 160x120/T=32 = 6872 ms; ingest 6 ms) — template matching feasible on CP (`tests/device/bench_device.py`)
+  - MP side: **MicroPython spike** — still open, now scoped to the 3.3 CNN question only (template matching no longer needs it)
+- [x] Image source decision: **(A) host screenshots over the network, captured by an OBS plugin** (obspython; PNG → Pillow decode in-plugin → raw pixels over kind-1 frames; see docs/protocol.md ADR-2). `espcamera` rejected: an HID dongle points at a screen with a camera only in toy setups
+- [x] Measure PSRAM heap with large buffers: peak ~160 KB used of ~7.5 MB free at 160x120 float frames — no constraint
+- [ ] **Platform decision ADR**: template matching stays on CP (ADR-2 landed); the CNN leg of the decision rides on the MP spike above
 
 ### 3.2 Template matching MVP (platform decided by 3.1)
 - [ ] `VisionProvider` abstraction (`capture() -> ulab.ndarray`), network screenshot source first
