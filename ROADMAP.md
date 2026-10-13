@@ -147,17 +147,15 @@
 - [x] Measure PSRAM heap with large buffers: peak ~160 KB used of ~7.5 MB free at 160x120 float frames — no constraint
 - [ ] **Platform decision ADR**: template matching stays on CP (ADR-2 landed); the CNN leg of the decision rides on the MP spike above
 
-### 3.2 Template matching MVP (platform decided by 3.1)
-- [ ] `VisionProvider` abstraction (`capture() -> ulab.ndarray`), network screenshot source first
-- [ ] ulab matcher: grayscale NCC template matching + color threshold / region diff detection
-- [ ] Macro ↔ vision integration: via the extension mechanism designed by then (`\wait` primitive + signal/slot + runtime-exposed functions, see the deferred items in 1.3); the DSL surface and opcode semantics are decided then
+### 3.2 Exact pixel matching (landed 2026-10-13)
+- [x] Snapshot-centric img namespace: `img.snap{rect}` / `img.at{$s}{point}` / `img.diff{$a}{$b}{tol}` — the snapshot is the only entity; handles follow the register-ownership model (overwrite releases, `\set` moves, exit frees)
+- [x] VM register-write mediation + middleware handle discipline + compiler constraint-only type environment — normative: [spec/vm.md](spec/vm.md)
+- [x] Capture provider protocol (`img.frame` with rect/points/w+h selectors) over the Phase 2 channel; OBS plugin (`obs/obs_mycro.py`) full-capability; `tests/device/reference_provider.py` + devicetest G-group e2e
 
-### 3.3 CNN recognition (trigger: 3.1 benchmarks / 3.2 field results show template matching is insufficient)
-> The platform is already decided in 3.1; this section is just execution, no more migration uncertainty.
-- [ ] If staying on CP: hand-written micro CNN forward pass on ulab (96×96 grayscale, ≤3 layers, im2col+dot+convolve); if that falls short → dual-chip (a second S3 running ESP-IDF+ESP-DL, returning labels/coordinates over UART/ESP-NOW/WiFi, zero changes on the CP side)
-- [ ] If migrated to MP: go straight to microlite (TFLM+esp-nn, ~10× speedup)
-- [ ] Keep host-side inference throughout (device uploads screenshots, receives labels) as the control baseline
-- [ ] Training/deploy pipeline: train on PC → export weights to a device-readable format (binary + Phase 2 protocol wrapping) → push updates over the network
+### 3.3 Template matching + CNN (one discussion; trigger: field results show exact matching is insufficient)
+- Opening question: the 匹配物 problem — where does "what a monster is" come from: grabbed pixel templates vs a classifier's learned knowledge (decides grab-style UX vs model pipeline)
+- `imgmatch.py` (row-conv NCC) is landed and on-device-verified but deliberately unwired; ROI windowed search + stride are the planned speed levers (bench numbers in docs/protocol.md ADR-2)
+- CNN leg: MP spike (microlite+esp-nn) / CP micro-forward-pass / dual-chip ESP-DL per the settled research; host-side recognition is fallback-only (anti-cheat exposure)
 
 **Acceptance**
 - MVP: screenshot → match → trigger macro end-to-end latency is measurable (target < 500ms, revised after measurement)
