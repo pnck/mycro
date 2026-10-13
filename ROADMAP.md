@@ -53,6 +53,8 @@
 
 ## DSL v3 — Syntax Extension (finalized; all stages landed before Phase 2)
 
+> The normative surface specification lives in [spec/dsl.md](spec/dsl.md); this section is the historical record of the design decisions.
+
 ### Core rules
 1. **Value-position interpolation**: `$name` interpolation only takes effect in **value positions** (each command's parameter list declares its types explicitly); in code-body positions (the bodies of `\rep`/`\def`/`\ifnum`) and in plain text, `$` is always a literal character
 2. Within a value position, `$name` matches `[a-z0-9_.]` greedily; `${name}` delimits explicitly; a literal `$` is written `\$`
