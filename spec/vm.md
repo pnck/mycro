@@ -186,8 +186,12 @@ Compile-time **type environment** (copy rules, exhaustive):
 
 A handle-typed variable used where a non-matching type is required (or
 vice versa), an untraceable handle argument, `\add` on a handle, and
-`\ifnum` on a handle are **compile errors**. `$ret` itself has no static
-type; its semantic type belongs to the call site.
+`\ifnum` on a handle are **compile errors** — with one exception:
+`$ret` is always comparable in `\ifnum`, because it carries error
+sentinels (negative values) alongside results, and checking it is the
+mandatory failure path. The `$ret` exemption covers comparison only;
+passing `$ret` as a handle argument still requires the current call to
+have returned that handle type.
 
 ## 3. Write discipline (exhaustive)
 
