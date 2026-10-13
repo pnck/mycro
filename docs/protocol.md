@@ -77,6 +77,18 @@ machine-readable `payload.code` (`bad_version` / `bad_type` / `bad_id` /
 | `event.push` | client → server | `name`: signal name, `fields`: object of i32 slot values | — (error `unknown_signal` for unregistered signals) |
 | `macro.result` | server → clients | `state`, `ms` (execution wall time) | push, `id` = 0 |
 | `net.msg` | server → clients | emitted by `\call{net.send}` | push, `id` = 0 |
+| `img.hello` | capture client → server | `caps`: list | push, `id` = 0; registers the client as the capture provider |
+| `img.frame` | server → capture client | one selector: `rect` {x,y,w,h} → lossless RGB8 crop / `points` [[x,y],…] → exact colors / `w`,`h` + `format` (`rgb8`/`gray8`) → whole-source resample | `img.frame.ok` with `width`/`height` (native dims), selector-specific fields, and for pixel streams `stream_id`/`chunks` followed by kind-1 chunks |
+
+`img.frame` is the **only** provider verb — stateless "current frame":
+every request takes a fresh screenshot and extracts per the selector.
+The provider is a client like any other; after auth it sends
+`img.hello`, and from then on the device may send it reverse requests
+(`id`-correlated). A second `img.hello` replaces the registration;
+disconnecting clears it. Errors use the usual `error` type
+(`capture_failed`, `field`, `unknown_type`). All coordinates are native
+source pixels; resampling happens only under the explicit `w,h` selector
+and never changes color depth unless `format` says so.
 
 `event.push` is the inbound half of the DSL `net` namespace: firing
 `net.msg` wakes device macros suspended in `\wait{net.msg}` and publishes
@@ -116,8 +128,9 @@ same LAN plaintext model as the existing HTTP Bearer token.
 ## ADR-2: image pipeline (Phase 3, decided 2026-10)
 
 Decisions below are backed by on-device/OBS measurements, quoted at the
-end. The `img.*` message types are specified here as planned; they land
-in the message-type table when implemented.
+end. The `img.frame` verb lives in the message-type table above; the
+DSL surface built on it (the snapshot-centric exact pixel family) is
+specified in spec/vm.md Part II.
 
 **Capture: an OBS plugin (obspython), host-side decode.** OBS's source
 screenshot API is exposed to Python scripts
@@ -156,29 +169,26 @@ rules are symmetric, so no new listener, port, or protocol exists.
 Binary responses use kind-1 frames correlated by `stream_id` to their
 metadata envelope, exactly as the frame layer already describes.
 
-**Coordinate space.** All coordinates are source pixels. Every `img.*`
-response carries `width`/`height` of the captured source; Retina-class
-hosts capture at 2x logical size, so callers that think in logical
-pixels must scale by the response's aspect. (Verified: a ~1512x982
-logical window captures at 3024x1964.)
+**Coordinate space.** All coordinates are native source pixels and
+pixel-exact paths never resample. Every `img.frame` response carries
+the source's native `width`/`height`; Retina-class hosts capture at 2x
+logical size, which simply means more addressable pixels. (Verified: a
+~1512x982 logical window captures at 3024x1964.) A normalized frame
+space for template matching was considered and deliberately shelved with
+that feature — when it lands in P3 it will be explicit, never implicit
+in a size parameter.
 
-**Planned request types, caps, and measured per-request budgets**
-(capture ~400 ms + decode ~38 ms + steady-state RTT ~26 ms + transfer
-at ~127 KB/s + device-side processing):
-
-| type | payload | response | budget | cadence |
-|---|---|---|---|---|
-| `img.probe` | `points`: [[x,y],…] ≤ 64 | `colors`: [[r,g,b],…] | ~0.5 s | ~2 Hz color waits |
-| `img.region` | `x,y,w,h` ≤ 256 (512 hard) | binary RGB8 | ~2 s at 256² | low-frequency only |
-| `img.frame` | `w,h` ≤ 160x120, optional `src` rect crop-before-scale | binary gray8 | 80x60: ~1.1 s incl. NCC | ~0.9 Hz match loop |
-
-Template matching guidance from the bench (row-conv NCC, all exact
-argmax): T=16 on 80x60 = 573 ms (default), T=8 on 160x120 = 1245 ms,
-T=16 on 160x120 = 2691 ms, T=32 = 6872 ms — cost scales quadratically
-with template size, so T ≤ 16 recommended, T = 32 hard cap, and `src`
-rects (crop host-side before downscale) are the preferred way to keep
-the search space cheap. Ingest (raw bytes → ulab float array) is 6 ms;
-PSRAM is no constraint (peak ~160 KB used of ~7.5 MB free).
+**Selector budgets (measured)** (capture ~400 ms + decode ~38 ms +
+steady-state RTT ~26 ms + transfer at ~127 KB/s): `points` ~0.5 s
+(~2 Hz color checks), `rect` 256² ~2 s (low-frequency only), `w,h` gray
+80x60 ~0.6 s. The DSL's exact pixel family (`img.snap`/`img.at`/
+`img.diff`, spec/vm.md handle model) rides `rect`; template matching
+(`w,h`) is deferred to the P3 discussion together with the CNN question
+— the bench numbers that will drive it: row-conv NCC with exact argmax,
+T=16 on 80x60 = 573 ms, T=8 on 160x120 = 1245 ms, T=16 = 2691 ms,
+T=32 = 6872 ms (quadratic in template edge; ROI windows are the planned
+lever). Ingest (raw bytes → ulab float array) is 6 ms; PSRAM is no
+constraint (peak ~160 KB used of ~7.5 MB free).
 
 **WiFi power management.** CircuitPython defaults to modem sleep
 (`wifi.PowerManagement.MIN`): the AP buffers inbound packets until the
