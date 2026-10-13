@@ -18,6 +18,15 @@ MAX_CLIENTS = 2       # authed raw clients; extras are rejected at auth time
 AUTH_DEADLINE_S = 5   # a connection must complete the auth prologue within this
 OUTBOX_CAP = 32       # per-client queued push frames; beyond this the peer is not reading
 
+# img namespace (exact pixel matching; spec/vm.md + docs/protocol.md)
+IMG_TIMEOUT_S = 20    # reverse-request ceiling
+SNAP_MAX_EDGE = 128   # snapshot edge cap (128x128 RGB = 48KB per snapshot)
+
+try:
+    _TimeoutError = asyncio.TimeoutError
+except AttributeError:
+    _TimeoutError = TimeoutError
+
 # WiFi credentials come from OUR OWN settings.toml keys, NOT the built-in
 # CIRCUITPY_WIFI_* ones: the built-in ones make the supervisor connect before
 # USB MSC is up, so a router outage would hang boot and take away even the
@@ -29,17 +38,31 @@ WIFI_PASSWORD = os.getenv("MYCRO_WIFI_PASSWORD") or ""
 TOKEN = os.getenv("MYCRO_TOKEN")
 
 # Initialize HID + macro interpreter with a runtime registry
-# (sys + net namespaces; img lands in Phase 3)
+# (sys + net + img namespaces)
 hid = AdafruitHIDProvider()
 runtime = Runtime()
 runtime.register_ns("sys", {
-    "free": ([], lambda: gc.mem_free()),
+    "free": ([], "int", lambda: gc.mem_free()),
 })
 # net: host event.push wakes \wait{net.msg} and publishes $net.* slots;
 # \call{net.send}{tag} broadcasts a net.msg push, $ret = clients reached
 runtime.register_signal("net.msg")
 runtime.register_ns("net", {
-    "send": (["str"], lambda tag: broadcast(proto.push("net.msg", {"tag": tag}))),
+    "send": (["str"], "int",
+             lambda tag: broadcast(proto.push("net.msg", {"tag": tag}))),
+})
+# img (exact pixel matching): the snapshot is the only entity — a named
+# capture of a native-resolution, lossless RGB rect of the current frame.
+# \call{img.snap}{x,y,w,h} -> $ret = snap handle; \call{img.at}{$s}{x,y}
+# -> $ret = packed RGB color (snapshot-local point); \call{img.diff}{$a}
+# {$b}{tol} -> $ret = number of pixels whose channels differ by > tol.
+# Handles obey the ownership rules of spec/vm.md Part II section 4:
+# overwrite releases, \set moves, macro exit frees everything.
+runtime.register_ns("img", {
+    "snap": (["rect"], "snap", lambda x, y, w, h: _img_snap(x, y, w, h)),
+    "at": (["snap", "point"], "color", lambda s, x, y: _img_at(s, x, y)),
+    "diff": (["snap", "snap", "int"], "int",
+             lambda a, b, tol: _img_diff(a, b, tol)),
 })
 macro = Macro(hid, runtime)
 
@@ -304,6 +327,169 @@ def broadcast(env):
     return n
 
 
+# --- img capture provider (reverse requests over its connection) ---
+# The capture provider (OBS plugin) is a persistent CLIENT that announces
+# itself with an img.hello push; img.* DSL calls send request envelopes
+# back over that connection and await the response. At most one request
+# is in flight: the macro task is serialized by the busy guard.
+
+_img_client = None   # the _Client that announced img.hello
+_img_pending = None  # the single in-flight reverse request
+_img_req_id = 0
+
+
+class ImgError(Exception):
+    """img.* call failures; the DSL surface sees $ret < 0 + a serial log."""
+
+
+def _img_register(c):
+    global _img_client
+    if _img_client is not c:
+        _img_client = c
+        print("img provider:", c.addr)
+
+
+def _img_drop(c):
+    global _img_client, _img_pending
+    if _img_client is c:
+        _img_client = None
+        print("img provider lost:", c.addr)
+    ent = _img_pending
+    if ent is not None and ent["client"] is c:
+        ent["err"] = "provider_lost"
+        ent["event"].set()
+
+
+async def _img_request(type_, payload):
+    """Reverse request to the capture provider. Returns
+    (response_payload, stream_bytes | None); raises ImgError."""
+    global _img_pending, _img_req_id
+    c = _img_client
+    if c is None or not c.alive or not c.authed:
+        raise ImgError("no_provider")
+    _img_req_id = (_img_req_id + 1) & 0x7FFFFFFF
+    ent = {"id": _img_req_id, "event": asyncio.Event(), "client": c,
+           "resp": None, "err": None, "sid": -1, "stream": None}
+    _img_pending = ent
+    env = {"v": codec.PROTO_VERSION, "type": type_, "id": ent["id"],
+           "ts": _now_ms(), "payload": payload}
+    c.enqueue(codec.pack_frame(codec.KIND_JSON, codec.encode_envelope(env)))
+    try:
+        await asyncio.wait_for(ent["event"].wait(), IMG_TIMEOUT_S)
+    except _TimeoutError:
+        ent["err"] = "timeout"
+    _img_pending = None
+    if ent["err"]:
+        raise ImgError(ent["err"])
+    resp = ent["resp"]
+    if resp.get("type") == "error":
+        raise ImgError(resp.get("payload", {}).get("code", "error"))
+    return resp.get("payload", {}), ent["stream"]
+
+
+def _img_resolve(c, env):
+    """Complete (or arm) the pending reverse request from a response
+    envelope. A payload with stream_id arms the binary collector;
+    completion then waits for the FLAG_STREAM_END chunk."""
+    ent = _img_pending
+    if ent is None or c is not ent["client"] or env.get("id") != ent["id"]:
+        print("img: stray response dropped:", env.get("type"))
+        return
+    ent["resp"] = env
+    p = env.get("payload", {})
+    sid = p.get("stream_id")
+    if env.get("type") != "error" and isinstance(sid, int) \
+            and p.get("chunks", 0) > 0:
+        ent["sid"] = sid
+        ent["stream"] = bytearray()  # completion deferred to _img_chunk
+    else:
+        ent["event"].set()
+
+
+def _img_chunk(c, payload):
+    """Route a kind-1 frame to the armed stream collector.
+    Returns False for unexpected binary traffic (-> unsupported_kind)."""
+    ent = _img_pending
+    if ent is None or c is not ent["client"] or ent["sid"] < 0:
+        return False
+    sid, flags, data = codec.split_chunk(payload)
+    if sid != ent["sid"]:
+        return False
+    ent["stream"] += data
+    if flags & codec.FLAG_STREAM_END:
+        ent["event"].set()
+    return True
+
+
+def _img_snap(x, y, w, h):
+    async def run():
+        if not (1 <= w <= SNAP_MAX_EDGE and 1 <= h <= SNAP_MAX_EDGE):
+            print("img.snap: edge capped at", SNAP_MAX_EDGE)
+            return -1
+        if x < 0 or y < 0:
+            print("img.snap: negative origin")
+            return -1
+        try:
+            payload, stream = await _img_request(
+                "img.frame", {"rect": {"x": x, "y": y, "w": w, "h": h}})
+        except ImgError as e:
+            print("img.snap failed:", e)
+            return -1
+        if stream is None:
+            return -1
+        cw = payload.get("crop_w", w)  # provider clamps at source borders
+        ch = payload.get("crop_h", h)
+        if len(stream) != cw * ch * 3:
+            print("img.snap: bad stream")
+            return -1
+        return runtime.new_handle("snap", {"w": cw, "h": ch,
+                                           "rgb": bytes(stream)})
+    return run()
+
+
+def _img_at(handle, x, y):
+    data = runtime.handle_data(handle, "snap")
+    if data is None:
+        print("img.at: invalid snap handle", handle)
+        return -1
+    if not (0 <= x < data["w"] and 0 <= y < data["h"]):
+        print("img.at: point outside snapshot")
+        return -1
+    i = (y * data["w"] + x) * 3
+    rgb = data["rgb"]
+    return (rgb[i] << 16) | (rgb[i + 1] << 8) | rgb[i + 2]
+
+
+def _img_diff(a, b, tol):
+    da = runtime.handle_data(a, "snap")
+    db = runtime.handle_data(b, "snap")
+    if da is None or db is None:
+        print("img.diff: invalid snap handle")
+        return -1
+    if da["w"] != db["w"] or da["h"] != db["h"]:
+        print("img.diff: dimension mismatch")
+        return -1
+    tol = max(0, min(255, tol))
+    ra, rb = da["rgb"], db["rgb"]
+    n = 0
+    for i in range(0, len(ra), 3):
+        d = ra[i] - rb[i]
+        if d < 0:
+            d = -d
+        if d <= tol:
+            d = ra[i + 1] - rb[i + 1]
+            if d < 0:
+                d = -d
+            if d <= tol:
+                d = ra[i + 2] - rb[i + 2]
+                if d < 0:
+                    d = -d
+                if d <= tol:
+                    continue
+        n += 1
+    return n
+
+
 def _recv(conn, nbytes):
     """Read up to nbytes from a non-blocking socket.
 
@@ -360,7 +546,7 @@ def _service(c, now):
         print(f"raw rx {len(data)}B -> {len(frames)} frame(s)")
         for kind, payload in frames:
             if kind != codec.KIND_JSON:
-                resp = proto.error_response(
+                resp = None if _img_chunk(c, payload) else proto.error_response(
                     None, "unsupported_kind", "no binary consumer registered")
             else:
                 try:
@@ -368,7 +554,15 @@ def _service(c, now):
                 except codec.CodecError as e:
                     resp = proto.error_response(None, "bad_envelope", str(e))
                 else:
-                    resp = dispatcher.dispatch(env, proto_ctx)
+                    if env.get("type") == "img.hello":
+                        _img_register(c)
+                        resp = None
+                    elif _img_pending is not None \
+                            and env.get("id") == _img_pending["id"]:
+                        _img_resolve(c, env)
+                        resp = None
+                    else:
+                        resp = dispatcher.dispatch(env, proto_ctx)
             if resp is not None:
                 resp["ts"] = _now_ms()
                 print("raw tx", resp.get("type"), "to", c.addr)
@@ -432,6 +626,7 @@ async def _raw_server():
                     traceback.print_exception(e)  # full traceback to serial
                     c.alive = False
                 if not c.alive:
+                    _img_drop(c)
                     _raw_clients.remove(c)
                     try:
                         c.conn.close()
