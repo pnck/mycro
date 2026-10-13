@@ -117,6 +117,14 @@ def test_ifnum_ret_exemption():
     compile_ok("\\call{img.load}{name}\\set{x}{1}\\ifnum{$x}{=}{$ret}{a}")
 
 
+def test_str_arg_unescape_and_strip():
+    # brace-matching escapes become literal chars; whitespace stripped
+    bc = compile_ok("\\call{img.load}{ a\\}b }")
+    strs, _ = header_strs(bc)
+    assert "a}b" in strs
+    assert "no string variables" in compile_err("\\call{img.load}{$x}")
+
+
 def test_point_rect_args_expand():
     bc = compile_ok("\\call{img.load}{n}\\set{h}{$ret}\\call{img.at}{$h}{3,4}")
     strs, code = header_strs(bc)
