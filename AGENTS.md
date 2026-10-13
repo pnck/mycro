@@ -18,6 +18,7 @@ src/
     ├── imgmatch.py   → /lib/imgmatch.py Row-convolution NCC (landed but unwired until template matching enters P3)
     └── hid_adafruit.py → /lib/hid_adafruit.py  HIDProvider implementation on adafruit_hid
 spec/vm.md              NORMATIVE VM specification (bytecode/execution + macro middleware contract)
+spec/dsl.md             NORMATIVE DSL surface specification (syntax + semantics + version history)
 tests/
 ├── unit/               CPython pytest unit tests (MockHID; conftest puts src/lib on sys.path)
 ├── device/             Real-device suites: devicetest.py (dual-end acceptance incl. img G-group) +
@@ -58,17 +59,13 @@ Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`
 
 ## 3. Macro DSL Syntax (v3 landed)
 
-**Basics (since v2)**: plain text is typed verbatim (ASCII 32–126); `\n`/`\r\n`/`\r` → Enter, `\t` → Tab; escapes `\\` `\{` `\}` `\$`; `\` + newline = line continuation; `\# ...` = comment; special keys `\enter` `\esc` `\tab` `\space` `\bs` `\del`, arrows, `\home` `\end` `\pgup` `\pgdn` `\ins` `\caps` `\f1`–`\f12`; combos `\ctrl+c` etc.; mouse `\click{L|R|M|B|F[,count]}` (B/F = side buttons), `\move{dx,dy}`, `\mdown`, `\mup`; `\delay{sec}` (single), `\pace{sec}` (subsequent interval), `\rep{N}{body}` (nesting ≤4), `\kdown`/`\kup`.
+**Normative reference: [spec/dsl.md](spec/dsl.md)** (document model, value/variable/slot rules, \def, \ifnum, extension calls, registered namespaces, boundaries, version history). Summary:
 
-**Structure (v3)**:
-- User macros: `\def{name}[argc]{body}` + `\name{arg}...` (compile-time expansion; `#1`–`#9` params, `##` is a literal #)
-- Variables: 16 i32 registers, `\set{x}{v}` / `\add{x}{v}` (`0x` hex supported); `$ret`/`$timeout` special read-only; `$sig.field` signal slots (READSLOT desugar)
-- Conditionals: `\ifnum{$a}{op}{b}{then}[{else}]` (`= != < <= > >=`)
-- Rendering: `\val{name}` (types out decimal digits at text position; integer semantics use value-position `$name`)
-- Extension: `\use{ns}` (compile-time dependency check), `\call{ns.fn}{arg}...` (return → `$ret`), `\wait{sig}[{sec}]` (waits for the **next** fire after entry — a fire with no waiter is discarded; timeout → `$timeout`). Registered on device: `sys.free`; `net.send{tag}` broadcasts a `net.msg` push (`$ret` = clients reached) and the `net.msg` signal — a host's `event.push` envelope wakes `\wait{net.msg}` and publishes its fields as last-published state, read via `$net.msg.<field>` slot references; `img` exact pixel matching (snapshot-centric): `img.snap{x,y,w,h}` → `$ret` snap handle, `img.at{$s}{x,y}` → packed RGB color, `img.diff{$a}{$b}{tol}` → divergent pixel count; handles follow spec/vm.md ownership (overwrite releases, `\set` moves, exit frees); errors return `$ret < 0`
-- Key rules: `$` interpolation only takes effect in **value positions** (literal in code bodies/plain text); greedy match within value positions, `${name}` to delimit; built-in command names are ≥2 letters
-
-Full semantics and the type system (signatures/handles/erasure): see ROADMAP "DSL v3 — Syntax Extension".
+- Text types verbatim ASCII; `\` escapes + line continuation + `\#` comments; special keys/combos/mouse; `\delay`/`\pace`; `\rep{N}{body}` (nest ≤4)
+- v3 structure: `\def` compile-time user macros (#1–#9 textual substitution); 32 i32 registers with `\set`/`\add`; `$ret`/`$timeout` read-only; signal slots `$sig.field` (split at LAST dot); `\ifnum` forward-only branches; `\val` decimal render; `\use`/`\call`/`\wait` runtime extension
+- `$` interpolation only in value positions (literal elsewhere); greedy `[a-z0-9_.]`, `${name}` delimits
+- Direction rule: macro-initiated request/response = `\call`; world-initiated events = signals + `\wait`; slots are never a return channel
+- img exact pixel family: `img.snap{rect}` → handle, `img.at{$s}{point}` → packed color, `img.diff{$a}{$b}{tol}` → count; handles per spec/vm.md ownership
 
 ## 4. Bytecode & VM
 

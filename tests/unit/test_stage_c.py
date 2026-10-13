@@ -456,3 +456,14 @@ def test_disassemble_stage_c():
     assert "CALL img.peek(1, 2)" in out
     assert "WAIT go 3000ms" in out
     assert "READSLOT" in out and "go.code" in out
+
+
+def test_def_forwards_compound_arg():
+    # a \def parameter carries compound text into a rect-typed position
+    compile_ok("\\call{img.load}{n}\\set{h}{$ret}"
+               "\\def{fw}[1]{\\call{img.crop}{$h}{#1}}"
+               "\\fw{1,2,3,4}")
+    # landing-position validity is checked after substitution
+    assert "4 comma-separated" in compile_err(
+        "\\call{img.load}{n}\\set{h}{$ret}"
+        "\\def{fw}[1]{\\call{img.crop}{$h}{#1}}\\fw{1,2}")

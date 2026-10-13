@@ -71,8 +71,10 @@ Multi-operand instructions use typed operands:
 tag u8:  0 = immediate (i32 LE)   1 = register (u8)   2 = string (u8 index)
 ```
 
-Tag 2 is valid only in CALL_EXT arguments. The three physical tags are
-exhaustive; semantic types (Part II §2) never reach bytecode.
+The three tags are exactly the argument tenses of the DSL (spec/dsl.md
+§6): inline compile-time constant / string-table compile-time constant /
+runtime register. Tag 2 is valid only in CALL_EXT arguments. Semantic
+types (Part II §2) never reach bytecode.
 
 ## 4. Opcode set (v3)
 
@@ -170,7 +172,7 @@ Argument types and the forms they accept:
 |---|---|
 | `int` | immediate (incl. `0x` hex) / `$var` / slot reference |
 | `color` | as `int` (packed RGB i32; `\rgb{}` sugar is a deferred v3.1 item) |
-| `str` | literal text (string table) |
+| `str` | literal source text (string table); **compile-time form only — never a runtime value** (cannot be produced, stored, or returned; runtime data enters as `bytes` handles) |
 | `point` / `rect` | one brace group of 2 / 4 comma-separated values; each element is an `int`-form argument; the compiler expands them into consecutive typed operands |
 | handle types (`snap`, `tpl`, …) | **only** a `$var` whose recorded type matches |
 
