@@ -198,7 +198,7 @@ def test_err_ifnum_bad_op():
 
 
 def test_err_too_many_vars():
-    text = "".join(f"\\set{{v{i}}}{{1}}" for i in range(17))
+    text = "".join(f"\\set{{v{i}}}{{1}}" for i in range(33))  # MAX_REGS = 32
     assert "Too many variables" in compile_err(text)
 
 

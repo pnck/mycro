@@ -56,7 +56,7 @@ TAG_REG = 1
 TAG_STR = 2  # string table index (ext args only)
 
 # Register space
-MAX_REGS = 16  # user registers 0x00-0x0F
+MAX_REGS = 32  # user registers 0x00-0x1F (spec/vm.md: profile constant, u8 ceiling 256)
 REG_SCRATCH = 0xFD  # reserved (special-register guard boundary)
 REG_TIMEOUT = 0xFE  # $timeout
 REG_RET = 0xFF  # $ret
@@ -171,6 +171,8 @@ class Macro:
         self._defs = {}
         self._chain = ()
         self._vars = {}
+        self._types = {}       # type environment: name -> type (spec/vm.md Part II §2)
+        self._ret_type = "int"  # type of $ret at this point (last \call's return)
         self._strs = []
         self._strmap = {}
         self._nest_stack = []
@@ -807,7 +809,20 @@ class Macro:
             if len(self._vars) >= MAX_REGS:
                 raise MacroError(f"Too many variables (max {MAX_REGS})", pos)
             self._vars[name] = len(self._vars)
+            self._types[name] = "int"
         return self._vars[name]
+
+    def _reg_type(self, reg):
+        """Recorded semantic type of a register's current content
+        (type environment, spec/vm.md Part II §2)."""
+        if reg == REG_RET:
+            return self._ret_type
+        if reg == REG_TIMEOUT:
+            return "int"
+        for name, r in self._vars.items():
+            if r == reg:
+                return self._types.get(name, "int")
+        return "int"  # transient slot-temp registers hold ints
 
     def _parse_time(self, s, pos, reserved=()):
         """Time arg: float seconds (imm -> ms) or $var (register holds ms)."""
@@ -863,13 +878,16 @@ class Macro:
         name = self._read_braces()
         if name is None:
             raise MacroError("set requires {name}", self._pos)
-        reg = self._alloc_var(name.strip().lower(), pos)
+        name = name.strip().lower()
+        reg = self._alloc_var(name, pos)
         arg = self._read_braces()
         if arg is None:
             raise MacroError("set requires {value}", self._pos)
         v = self._parse_value(arg, pos)  # parse first: slot desugars emit READSLOT
         self._emit(OP_SET, reg)
         self._emit_typed(v, 4)
+        # type environment: copy the source's type (no computation)
+        self._types[name] = self._reg_type(v[1]) if v[0] == TAG_REG else "int"
 
     def _cmd_add(self, pos):
         r"""\add{x}{i32|$var} — add to an existing variable."""
@@ -882,6 +900,9 @@ class Macro:
         reg = self._var_reg(name, pos)
         if reg >= REG_SCRATCH:
             raise MacroError("add: cannot modify a special register", pos)
+        if self._reg_type(reg) != "int":
+            raise MacroError(
+                f"add: cannot modify a {self._reg_type(reg)} handle", pos)
         arg = self._read_braces()
         if arg is None:
             raise MacroError("add requires {value}", self._pos)
@@ -897,6 +918,9 @@ class Macro:
         if left is None or not left.strip().startswith("$"):
             raise MacroError("ifnum left operand must be a variable ($name)", pos)
         reg = self._parse_var_ref(left.strip(), pos)
+        lt = self._reg_type(reg)
+        if lt not in ("int", "color"):
+            raise MacroError(f"ifnum: cannot compare a {lt} handle", pos)
 
         op = self._read_braces()
         if op is None:
@@ -917,6 +941,9 @@ class Macro:
         # that must precede the branch, and must not clobber a slot-temp
         # already holding the left operand
         rhs_val = self._parse_value(rhs, pos, reserved=(reg,))
+        if rhs_val[0] == TAG_REG and self._reg_type(rhs_val[1]) not in ("int", "color"):
+            raise MacroError(
+                f"ifnum: cannot compare a {self._reg_type(rhs_val[1])} handle", pos)
         self._emit(OP_BRA, cc, reg)
         self._emit_typed(rhs_val, 4)
         off_pos = len(self._bc)
@@ -956,6 +983,7 @@ class Macro:
         sig = self.runtime.get_signature(ns, fn)
         if sig is None:
             raise MacroError(f"Unknown ext function: {target}", pos)
+        ret_type = self.runtime.get_return_type(ns, fn)
 
         args = []
         for typ in sig:
@@ -965,7 +993,11 @@ class Macro:
             # reserve the registers of already-parsed args so slot desugars
             # for later args cannot clobber them
             reserved = tuple(v for tag, v in args if tag == TAG_REG)
-            args.append(self._parse_ext_arg(a, typ, target, pos, reserved))
+            parsed = self._parse_ext_arg(a, typ, target, pos, reserved)
+            if isinstance(parsed, list):  # point/rect expand to N operands
+                args.extend(parsed)
+            else:
+                args.append(parsed)
         if self._peek() == "{":
             raise MacroError(f"{target} expects {len(sig)} arg(s)", self._pos)
 
@@ -978,20 +1010,44 @@ class Macro:
                 self._emit(TAG_REG, v)
             else:
                 self._emit(TAG_STR, v)
+        self._ret_type = ret_type  # $ret's type flows from the call site
 
     def _parse_ext_arg(self, a, typ, target, pos, reserved=()):
-        """Compile one ext arg per its signature type."""
+        r"""Compile one ext arg per its signature type. point/rect return a
+        LIST of typed operands (compound value in one brace group, e.g.
+        {x,y} / {x,y,w,h} — the \move{dx,dy} idiom); all other types
+        return a single (tag, value) pair."""
+        if typ in ("point", "rect"):
+            n = 2 if typ == "point" else 4
+            parts = [p.strip() for p in a.split(",")]
+            if len(parts) != n or not all(parts):
+                raise MacroError(
+                    f"{target}: {typ} expects {n} comma-separated values", pos)
+            out = []
+            acc = tuple(reserved)
+            for p in parts:
+                t, v = self._parse_value(p, pos, acc)
+                if t == TAG_REG:
+                    acc = acc + (v,)  # don't clobber a sibling's slot-temp
+                out.append((t, v))
+            return out
         if typ == "str":
             if a.strip().startswith("$"):
                 raise MacroError(f"{target}: str args are literal (no string variables)", pos)
             return (TAG_STR, self._str_idx(a, pos))
         if typ in ("int", "color"):
             return self._parse_value(a, pos, reserved)
-        # handle types (tpl, conn, ...): only a variable holding a handle
+        # handle types (snap, tpl, ...): only a variable whose recorded
+        # type matches — compile-time environment check (spec/vm.md)
         s = a.strip()
         if not s.startswith("$"):
             raise MacroError(f"{target}: {typ} arg must be a variable ($handle)", pos)
-        return (TAG_REG, self._parse_var_ref(s, pos, reserved))
+        reg = self._parse_var_ref(s, pos, reserved)
+        vt = self._reg_type(reg)
+        if vt != typ:
+            raise MacroError(
+                f"{target}: arg must hold a {typ} handle (got {vt})", pos)
+        return (TAG_REG, reg)
 
     def _cmd_wait(self, pos):
         r"""\wait{signal}[{sec|$var}] — suspend until a runtime signal fires."""

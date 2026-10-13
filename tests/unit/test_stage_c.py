@@ -15,11 +15,13 @@ from mock_hid import MockHID
 
 def make_runtime():
     rt = Runtime()
-    rt.register_ns("sys", {"free": ([], lambda: 12345)})
+    rt.register_ns("sys", {"free": ([], "int", lambda: 12345)})
     rt.register_ns("img", {
-        "load": (["str"], lambda name: 7),
-        "match": (["tpl"], lambda h: 1 if h == 7 else 0),
-        "peek": (["int", "int"], lambda x, y: x + y),
+        "load": (["str"], "tpl", lambda name: 7),
+        "match": (["tpl"], "int", lambda h: 1 if h == 7 else 0),
+        "peek": (["int", "int"], "int", lambda x, y: x + y),
+        "at": (["tpl", "point"], "int", lambda h, x, y: h + x + y),
+        "crop": (["tpl", "rect"], "int", lambda h, x, y, w, hh: h),
     })
     rt.register_signal("go")
     rt.register_signal("net.msg")
@@ -80,8 +82,59 @@ def test_str_arg():
 
 
 def test_handle_arg_must_be_var():
-    compile_ok("\\set{h}{0}\\call{img.match}{$h}")
+    # form check: a literal can never be a handle
     assert "must be a variable" in compile_err("\\call{img.match}{7}")
+
+
+def test_handle_type_environment():
+    # traceable flow: load returns tpl -> \set copies the type -> match ok
+    compile_ok("\\call{img.load}{name}\\set{h}{$ret}\\call{img.match}{$h}")
+    # $ret used directly is traceable as well
+    compile_ok("\\call{img.load}{name}\\call{img.match}{$ret}")
+    # plain int variable is not a tpl handle
+    assert "must hold a tpl handle" in compile_err("\\set{h}{0}\\call{img.match}{$h}")
+    # stale $ret: an intervening int-returning call retypes $ret
+    assert "must hold a tpl handle" in compile_err(
+        "\\call{img.load}{name}\\call{sys.free}\\call{img.match}{$ret}")
+
+
+def test_add_rejects_handle():
+    assert "cannot modify a tpl handle" in compile_err(
+        "\\call{img.load}{name}\\set{h}{$ret}\\add{h}{1}")
+
+
+def test_ifnum_rejects_handle():
+    assert "cannot compare a tpl handle" in compile_err(
+        "\\call{img.load}{name}\\set{h}{$ret}\\ifnum{$h}{=}{1}{a}")
+    assert "cannot compare a tpl handle" in compile_err(
+        "\\call{img.load}{name}\\set{h}{$ret}\\set{x}{1}\\ifnum{$x}{=}{$h}{a}")
+
+
+def test_point_rect_args_expand():
+    bc = compile_ok("\\call{img.load}{n}\\set{h}{$ret}\\call{img.at}{$h}{3,4}")
+    strs, code = header_strs(bc)
+    tail = bc[code:]
+    at = tail.rindex(OP_CALL_EXT)  # the img.at call (img.load is first)
+    assert tail[at + 1] == strs.index("img") and tail[at + 2] == strs.index("at")
+    assert tail[at + 3] == 3  # handle + point expanded to 2 operands
+    bc = compile_ok("\\call{img.load}{n}\\set{h}{$ret}\\call{img.crop}{$h}{1,2,3,4}")
+    tail = bc[header_strs(bc)[1]:]
+    assert tail[tail.rindex(OP_CALL_EXT) + 3] == 5  # handle + 4 rect operands
+
+
+def test_point_rect_arg_errors():
+    assert "2 comma-separated" in compile_err(
+        "\\call{img.load}{n}\\set{h}{$ret}\\call{img.at}{$h}{3}")
+    assert "4 comma-separated" in compile_err(
+        "\\call{img.load}{n}\\set{h}{$ret}\\call{img.crop}{$h}{1,2,3}")
+
+
+def test_point_rect_elements_support_vars_and_slots():
+    # rect elements are value positions: $var and slot refs compile
+    compile_ok("\\set{x}{1}\\call{img.load}{n}\\set{h}{$ret}"
+               "\\call{img.crop}{$h}{$x,2,3,4}")
+    compile_ok("\\call{img.load}{n}\\set{h}{$ret}"
+               "\\call{img.crop}{$h}{$net.msg.x,2,3,4}")
 
 
 def test_int_args():
@@ -227,7 +280,7 @@ def test_slot_ifnum_both_operands():
 def test_slot_call_two_slot_args():
     captured = {}
     rt = Runtime()
-    rt.register_ns("pair", {"sum2": (["int", "int"],
+    rt.register_ns("pair", {"sum2": (["int", "int"], "int",
                                      lambda a, b: captured.__setitem__("v", (a, b)) or a + b)})
     rt.register_signal("go")
     rt.fire_signal("go", {"x": 3, "y": 4})
@@ -291,7 +344,7 @@ def test_run_call_str_arg_and_handle_flow():
         return 7
 
     rt = make_runtime()
-    rt.register_ns("img", {"load": (["str"], load), "match": (["tpl"], lambda h: 1)})
+    rt.register_ns("img", {"load": (["str"], "tpl", load), "match": (["tpl"], "int", lambda h: 1)})
     hid = run("\\call{img.load}{logo}\\call{img.match}{$ret}\\val{ret}", rt=rt)
     assert captured["name"] == "logo"
     # match(7) -> 1 rendered
@@ -304,9 +357,9 @@ def test_run_call_async_fn_awaited():
         return 42
 
     rt = make_runtime()
-    rt.register_ns("img", {"load": (["str"], lambda n: 0), "match": (["tpl"], lambda h: 0),
+    rt.register_ns("img", {"load": (["str"], "tpl", lambda n: 0), "match": (["tpl"], "int", lambda h: 0),
                            "peek": (["int", "int"], lambda a, b: a + b)})
-    rt.register_ns("test", {"slow": ([], slow)})
+    rt.register_ns("test", {"slow": ([], "int", slow)})
     hid = run("\\call{test.slow}\\val{ret}", rt=rt)
     assert ("kp", keymap.digit_keycode("4")) in hid.events
     assert ("kp", keymap.digit_keycode("2")) in hid.events

@@ -25,7 +25,8 @@ class Runtime:
     # --- registration (platform side) ---
 
     def register_ns(self, ns, fns):
-        """fns: {fn_name: (signature, callable)}."""
+        """fns: {fn_name: (arg_types, return_type, callable)}.
+        See spec/vm.md Part II for the type discipline."""
         self._ns.setdefault(ns, {}).update(fns)
 
     def register_signal(self, name):
@@ -46,6 +47,10 @@ class Runtime:
         entry = self._ns.get(ns, {}).get(fn)
         return entry[0] if entry else None
 
+    def get_return_type(self, ns, fn):
+        entry = self._ns.get(ns, {}).get(fn)
+        return entry[1] if entry and len(entry) == 3 else "int"
+
     def has_signal(self, name):
         return name in self._signals
 
@@ -60,7 +65,7 @@ class Runtime:
 
     def call(self, ns, fn, args):
         """Invoke an ext function; may return a value or a coroutine."""
-        return self._ns[ns][fn][1](*args)
+        return self._ns[ns][fn][2](*args)
 
     async def wait_signal(self, name, timeout_ms):
         """Wait for the NEXT fire of `name` after entry: a latch left by a

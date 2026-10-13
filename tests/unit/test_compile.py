@@ -253,7 +253,7 @@ def test_index_html_examples_compile():
     # the \call example needs the runtime registry (sys namespace)
     from runtime import Runtime
     rt = Runtime()
-    rt.register_ns("sys", {"free": ([], lambda: 0)})
+    rt.register_ns("sys", {"free": ([], "int", lambda: 0)})
     bc, err = Macro(MockHID(), rt).compile("\\call{sys.free}\\val{ret}")
     assert err is None, f"unexpected compile error: {err}"
 
