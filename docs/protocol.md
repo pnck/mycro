@@ -112,3 +112,77 @@ prologue keeps the hot loop free of auth parsing, rejects stray traffic
 (port scans, wrong services) before any frame handling, and stores
 nothing but a digest comparison on the wire path. The threat model is the
 same LAN plaintext model as the existing HTTP Bearer token.
+
+## ADR-2: image pipeline (Phase 3, decided 2026-10)
+
+Decisions below are backed by on-device/OBS measurements, quoted at the
+end. The `img.*` message types are specified here as planned; they land
+in the message-type table when implemented.
+
+**Capture: an OBS plugin (obspython), host-side decode.** OBS's source
+screenshot API is exposed to Python scripts
+(`obs_frontend_take_source_screenshot` + the `SCREENSHOT_TAKEN` event +
+`obs_frontend_get_last_screenshot`), giving GPU-captured pixels of any
+OBS source — including DirectX-rendered windows on Windows — with no
+per-platform capture code in our hands; the same script runs unchanged
+on macOS (dev host) and Windows (target). Screenshots save as PNG only
+(JXR for HDR on Windows), at native source resolution, with no
+server-side downscale — so the plugin decodes with Pillow (installed
+into the same Python OBS loads) and the device needs no image codec at
+all. OBS refuses concurrent screenshots; the plugin serializes capture
+requests internally.
+
+**Semantics: stateless "current frame".** The plugin holds no frame
+cache and runs no refresh timer: every `img.*` request triggers one
+fresh capture, one extraction, one response. Freshness is therefore
+never in doubt and there is no cache-coherence question; the cost is
+the full capture chain (~450 ms) per request, which bounds polling
+cadence at ~2 Hz — well inside macro semantics.
+
+**Matching on the device.** The device hosts the matching service; the
+host is a thin capture+extract pipe running inside OBS's process (a
+separate host-side recognizer would be an anti-cheat liability on the
+controlled machine, and OBS itself is a mainstream whitelisted tool).
+The algorithm is row-convolution NCC on ulab — verified on-device with
+exact argmax hits on planted templates. CNN/YOLO-class recognition is a
+Phase 3.1 platform-spike question (ESP-DL/microlite custom firmware) and
+is deliberately out of scope here.
+
+**Connection model: one client, reverse requests.** The OBS plugin is a
+persistent *client* of the device's :7373 listener (same auth prologue).
+`img.*` requests flow device→plugin over that established connection
+and responses flow back with the request's `id` — the envelope/frame
+rules are symmetric, so no new listener, port, or protocol exists.
+Binary responses use kind-1 frames correlated by `stream_id` to their
+metadata envelope, exactly as the frame layer already describes.
+
+**Coordinate space.** All coordinates are source pixels. Every `img.*`
+response carries `width`/`height` of the captured source; Retina-class
+hosts capture at 2x logical size, so callers that think in logical
+pixels must scale by the response's aspect. (Verified: a ~1512x982
+logical window captures at 3024x1964.)
+
+**Planned request types, caps, and measured per-request budgets**
+(capture ~400 ms + decode ~38 ms + steady-state RTT ~26 ms + transfer
+at ~127 KB/s + device-side processing):
+
+| type | payload | response | budget | cadence |
+|---|---|---|---|---|
+| `img.probe` | `points`: [[x,y],…] ≤ 64 | `colors`: [[r,g,b],…] | ~0.5 s | ~2 Hz color waits |
+| `img.region` | `x,y,w,h` ≤ 256 (512 hard) | binary RGB8 | ~2 s at 256² | low-frequency only |
+| `img.frame` | `w,h` ≤ 160x120, optional `src` rect crop-before-scale | binary gray8 | 80x60: ~1.1 s incl. NCC | ~0.9 Hz match loop |
+
+Template matching guidance from the bench (row-conv NCC, all exact
+argmax): T=16 on 80x60 = 573 ms (default), T=8 on 160x120 = 1245 ms,
+T=16 on 160x120 = 2691 ms, T=32 = 6872 ms — cost scales quadratically
+with template size, so T ≤ 16 recommended, T = 32 hard cap, and `src`
+rects (crop host-side before downscale) are the preferred way to keep
+the search space cheap. Ingest (raw bytes → ulab float array) is 6 ms;
+PSRAM is no constraint (peak ~160 KB used of ~7.5 MB free).
+
+**WiFi power management.** CircuitPython defaults to modem sleep
+(`wifi.PowerManagement.MIN`): the AP buffers inbound packets until the
+next DTIM wake, which cost ~350 ms per connection setup and produced
+sawtooth ping RTTs (30–120 ms cycling; router RTT 3–7 ms; warm-
+connection RTT 26 ms). The device is USB-powered, so code.py now sets
+`PowerManagement.NONE` after connecting — flat 3–15 ms ping afterwards.
