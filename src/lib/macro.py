@@ -1031,6 +1031,21 @@ class Macro:
                 self._emit(TAG_STR, v)
         self._ret_type = ret_type  # $ret's type flows from the call site
 
+    @staticmethod
+    def _unescape_str(s):
+        """str literal args: the brace-matching escapes (\{ \} \\) become
+        the literal characters (single pass)."""
+        out = []
+        i = 0
+        while i < len(s):
+            if s[i] == "\\" and i + 1 < len(s) and s[i + 1] in "{}\\":
+                out.append(s[i + 1])
+                i += 2
+            else:
+                out.append(s[i])
+                i += 1
+        return "".join(out)
+
     def _parse_ext_arg(self, a, typ, target, pos, reserved=()):
         r"""Compile one ext arg per its signature type. point/rect return a
         LIST of typed operands (compound value in one brace group, e.g.
@@ -1051,9 +1066,10 @@ class Macro:
                 out.append((t, v))
             return out
         if typ == "str":
-            if a.strip().startswith("$"):
+            s = self._unescape_str(a.strip())
+            if s.startswith("$"):
                 raise MacroError(f"{target}: str args are literal (no string variables)", pos)
-            return (TAG_STR, self._str_idx(a, pos))
+            return (TAG_STR, self._str_idx(s, pos))
         if typ in ("int", "color"):
             return self._parse_value(a, pos, reserved)
         # handle types (snap, tpl, ...): only a variable whose recorded
