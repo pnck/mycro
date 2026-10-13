@@ -61,6 +61,7 @@ device_token = ""
 
 # --- runtime state ---
 _stop = threading.Event()
+_reconnect = threading.Event()  # connect button / settings change
 _thread = None
 _sock = None           # closed from script_unload to wake the worker
 _shot = None           # {"event": threading.Event} while capturing
@@ -81,10 +82,30 @@ def script_defaults(settings):
 
 def script_update(settings):
     global source_name, device_host, device_port, device_token
-    source_name = obs.obs_data_get_string(settings, "source")
-    device_host = obs.obs_data_get_string(settings, "host")
-    device_port = obs.obs_data_get_int(settings, "port")
-    device_token = obs.obs_data_get_string(settings, "token")
+    new = (obs.obs_data_get_string(settings, "source"),
+           obs.obs_data_get_string(settings, "host"),
+           obs.obs_data_get_int(settings, "port"),
+           obs.obs_data_get_string(settings, "token"))
+    changed = (source_name, device_host, device_port, device_token) != new
+    source_name, device_host, device_port, device_token = new
+    if changed and _thread is not None:
+        request_reconnect()  # editing the IP must not wait for a timeout
+
+
+def request_reconnect():
+    """Drop any live connection and reconnect immediately."""
+    _reconnect.set()
+    s = _sock
+    if s is not None:
+        try:
+            s.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+
+def on_connect_clicked(props, prop):
+    request_reconnect()
+    return True
 
 
 def script_properties():
@@ -101,6 +122,8 @@ def script_properties():
     obs.obs_properties_add_text(props, "host", "Device IP", obs.OBS_TEXT_DEFAULT)
     obs.obs_properties_add_int(props, "port", "Device port", 1, 65535, 1)
     obs.obs_properties_add_text(props, "token", "Device token", obs.OBS_TEXT_PASSWORD)
+    obs.obs_properties_add_button(props, "connect", "Connect / Reconnect",
+                                  on_connect_clicked)
     return props
 
 
@@ -115,6 +138,7 @@ def script_load(settings):
 def script_unload():
     global _sock, _shot
     _stop.set()
+    _reconnect.set()  # wake a worker sleeping in backoff
     s = _sock
     if s is not None:
         try:
@@ -324,7 +348,8 @@ def worker():
     while not _stop.is_set():
         if not device_host:
             obs.script_log(obs.LOG_WARNING, "mycro: no device IP configured")
-            _stop.wait(RECONNECT_S)
+            _reconnect.wait(RECONNECT_S)
+            _reconnect.clear()
             continue
         s = None
         try:
@@ -344,6 +369,9 @@ def worker():
                     pass
             _sock = None
         if not _stop.is_set():
-            obs.script_log(obs.LOG_INFO, "mycro: reconnecting in %ds"
+            # backoff sleeps here; the Connect button / settings edits
+            # wake it immediately
+            obs.script_log(obs.LOG_INFO, "mycro: reconnecting in %ds (or on demand)"
                            % int(RECONNECT_S))
-            _stop.wait(RECONNECT_S)
+            _reconnect.wait(RECONNECT_S)
+            _reconnect.clear()
