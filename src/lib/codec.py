@@ -28,6 +28,8 @@ AUTH_LEN = len(AUTH_MAGIC) + 1 + 32  # magic + version + SHA-256 digest
 KIND_JSON = 0
 KIND_BINARY = 1
 
+FLAG_STREAM_END = 1  # chunk flags bit0: last chunk of the stream
+
 MAX_PAYLOAD = 8192  # JSON envelope cap (macro source maxes at 4096)
 MAX_BINARY_CHUNK = 8192  # per-chunk cap for future bulk streams
 
@@ -87,6 +89,15 @@ def pack_frame(kind, payload):
         raise CodecError("payload {}B over {}B cap".format(len(payload), cap))
     n = len(payload) | (kind << 31)
     return bytes((n & 0xFF, (n >> 8) & 0xFF, (n >> 16) & 0xFF, (n >> 24) & 0xFF)) + payload
+
+
+def split_chunk(payload):
+    """Parse a kind-1 payload: u16 LE stream_id + u16 LE flags + raw."""
+    if len(payload) < 4:
+        raise CodecError("binary chunk shorter than its 4-byte header")
+    sid = payload[0] | (payload[1] << 8)
+    flags = payload[2] | (payload[3] << 8)
+    return sid, flags, bytes(payload[4:])
 
 
 class Reassembler:

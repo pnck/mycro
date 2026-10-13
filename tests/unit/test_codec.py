@@ -155,3 +155,19 @@ def test_auth_dev_mode_skips_hash_but_checks_magic():
     assert check_auth_header(AUTH_MAGIC + bytes([PROTO_VERSION]) + b"\x00" * 32, None)
     assert check_auth_header(AUTH_MAGIC + bytes([PROTO_VERSION]) + b"\x00" * 32, "")
     assert not check_auth_header(b"XXXX" + bytes([PROTO_VERSION]) + b"\x00" * 32, None)
+
+
+def test_split_chunk_roundtrip():
+    from codec import FLAG_STREAM_END, split_chunk
+    payload = bytes((0x34, 0x12, FLAG_STREAM_END, 0x00)) + b"payload-bytes"
+    sid, flags, data = split_chunk(payload)
+    assert sid == 0x1234
+    assert flags == FLAG_STREAM_END
+    assert data == b"payload-bytes"
+
+
+def test_split_chunk_rejects_short():
+    import pytest
+    from codec import CodecError, split_chunk
+    with pytest.raises(CodecError):
+        split_chunk(b"\x01\x02\x03")
