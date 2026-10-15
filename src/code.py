@@ -10,7 +10,7 @@ from adafruit_httpserver import Request, Response, Server, FileResponse
 
 from lib import codec, proto
 from lib.hid_adafruit import AdafruitHIDProvider
-from lib.macro import Macro
+from lib.macro import Macro, RECT_MAX_EDGE
 from lib.runtime import Runtime
 
 RAW_PORT = 7373       # raw TCP message channel (docs/protocol.md)
@@ -20,7 +20,7 @@ OUTBOX_CAP = 32       # per-client queued push frames; beyond this the peer is n
 
 # img namespace (exact pixel matching; spec/vm.md + docs/protocol.md)
 IMG_TIMEOUT_S = 20    # reverse-request ceiling
-SNAP_MAX_EDGE = 128   # snapshot edge cap (128x128 RGB = 48KB per snapshot)
+SNAP_MAX_EDGE = RECT_MAX_EDGE  # snapshot edge cap (128x128 RGB = 48KB)
 
 try:
     _TimeoutError = asyncio.TimeoutError
@@ -43,6 +43,9 @@ hid = AdafruitHIDProvider()
 runtime = Runtime()
 runtime.register_ns("sys", {
     "free": ([], "int", lambda: gc.mem_free()),
+    # \rect literal data handoff: the compiler preprocesses pixels into the
+    # runtime const store; the emitted sys.const call materializes a handle
+    "const": (["int"], "snap", lambda cid: _sys_const(cid)),
 })
 # net: host event.push wakes \wait{net.msg} and publishes $net.* slots;
 # \call{net.send}{tag} broadcasts a net.msg push, $ret = clients reached
@@ -340,6 +343,16 @@ _img_req_id = 0
 
 class ImgError(Exception):
     """img.* call failures; the DSL surface sees $ret < 0 + a serial log."""
+
+
+def _sys_const(cid):
+    """Materialize a compile-time const resource as a handle (the runtime
+    half of the \rect literal — spec/dsl.md §3)."""
+    entry = runtime.const_entry(cid)
+    if entry is None:
+        print("sys.const: bad const id", cid)
+        return -1
+    return runtime.new_handle(entry["kind"], entry["data"])
 
 
 def _img_register(c):

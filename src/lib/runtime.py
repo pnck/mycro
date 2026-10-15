@@ -37,6 +37,21 @@ class Runtime:
         self._handle_seq = 0
         self._reg_handles = {}  # register index -> handle id
         self._fresh = None      # newest unclaimed handle id
+        # compile-time constant resources (spec/vm.md Part II §5):
+        # \rect literals land here, NOT in the bytecode; reset per compile
+        self._consts = []       # [{"kind": str, "data": any}]
+
+    def clear_consts(self):
+        self._consts.clear()
+
+    def add_const(self, kind, data):
+        self._consts.append({"kind": kind, "data": data})
+        return len(self._consts) - 1
+
+    def const_entry(self, cid):
+        if 0 <= cid < len(self._consts):
+            return self._consts[cid]
+        return None
 
     # --- registration (platform side) ---
 
