@@ -840,7 +840,29 @@ def g9_stream_throughput(ctx):
         ctx.provider.set_frame(*_frame_default())
 
 
-def f4_memory_trend(ctx, mem0):
+def _mem_now(ctx):
+    """free_mem probe; its own short connection is uniform per case."""
+    try:
+        c = ctx.client()
+        m = c.call("device.info")["payload"].get("free_mem")
+        c.close()
+        return m
+    except Exception:
+        return None
+
+
+def f4_memory_trend(ctx, mem0, marks=None):
+    if marks:
+        print("memory trend per case (KB free, delta vs previous):")
+        prev = mem0
+        for name, m in marks:
+            if m is None:
+                print(f"  {name}: probe failed")
+                continue
+            d = m - prev if prev else 0
+            prev = m
+            flag = "  <-- big drop" if d < -65536 else ""
+            print(f"  {name}: {m // 1024} KB ({d / 1024:+.0f}){flag}")
     c = ctx.client()
     p = c.call("device.info")["payload"]
     c.close()
@@ -911,11 +933,13 @@ def main(argv=None):
             print(f"no cases match --only {args.only!r}")
             return 2
 
+    mem_marks = []
     for fn in cases:
         try:
             fn(ctx)
         except Exception as e:
             check(fn.__name__, False, f"{type(e).__name__}: {e}")
+        mem_marks.append((fn.__name__, _mem_now(ctx)))
 
     if not args.skip_slow and (not args.only or "f1" in wanted):
         try:
@@ -924,7 +948,7 @@ def main(argv=None):
             check("f1_long_idle", False, f"{type(e).__name__}: {e}")
             check("f1_long_idle", False, f"{type(e).__name__}: {e}")
 
-    f4_memory_trend(ctx, mem0)
+    f4_memory_trend(ctx, mem0, mem_marks)
 
     if getattr(ctx, "provider", None) is not None:
         ctx.provider.stop()
