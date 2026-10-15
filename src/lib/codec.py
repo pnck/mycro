@@ -105,7 +105,7 @@ def split_chunk(payload):
 
 
 class Reassembler:
-    """Incremental frame reassembly over ONE static buffer.
+    """Incremental frame reassembly over ONE self-managed buffer.
 
     The buffer is allocated once per connection and never grows: the
     transport recv_into()s directly into write_view(), then feed() parses
@@ -115,6 +115,10 @@ class Reassembler:
     recv itself) and buffer->its final destination (the consumer's
     slice-assign). No per-chunk heap allocation.
 
+    Compaction of the unconsumed tail is DEFERRED to the start of the
+    next cycle: it must never run in the same feed that minted the
+    views, or the views would point at memmove'd-over memory.
+
     Capacity fits one full binary frame plus one full read, so after
     compaction there is always room for a max-size recv."""
 
@@ -123,9 +127,21 @@ class Reassembler:
     def __init__(self):
         self._buf = bytearray(self.CAPACITY)
         self._have = 0
+        self._pos = 0  # consumed prefix, compacted lazily next cycle
+
+    def _compact(self):
+        if self._pos:
+            tail = self._have - self._pos
+            if tail:
+                tmp = bytes(self._buf[self._pos:self._have])
+                self._buf[:tail] = tmp
+            self._have = tail
+            self._pos = 0
 
     def write_view(self, nbytes=MAX_BINARY_CHUNK):
-        """Writable tail for recv_into: room for up to nbytes."""
+        """Writable tail for recv_into: room for up to nbytes. Compacts
+        first — any views from the previous cycle die here."""
+        self._compact()
         return memoryview(self._buf)[self._have:self._have + nbytes]
 
     def feed(self, data):
@@ -135,8 +151,9 @@ class Reassembler:
         write_view) or a bytes-like to copy in. Returns (kind, payload)
         pairs; payloads are views valid until the next feed/write_view."""
         if isinstance(data, int):
-            self._have += data
+            self._have += data  # write_view already compacted
         else:
+            self._compact()
             n = len(data)
             if self._have + n > len(self._buf):
                 raise CodecError("reassembler overflow")
@@ -164,11 +181,5 @@ class Reassembler:
             payload = memoryview(self._buf)[pos + 4: pos + 4 + length]
             frames.append((kind, payload))
             pos += 4 + length
-        if pos:
-            # compact the unconsumed tail to the front; usually empty
-            tail = self._have - pos
-            if tail:
-                tmp = bytes(self._buf[pos:self._have])
-                self._buf[:tail] = tmp
-            self._have = tail
-        return frames
+        self._pos = pos  # compaction deferred: the views above must
+        return frames    # keep pointing at intact memory

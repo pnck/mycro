@@ -122,6 +122,10 @@ def a1_valid_token(ctx):
 
 
 def a2_wrong_token(ctx):
+    if not ctx.token:
+        check("A2 wrong token -> silent close", True,
+              "SKIP: dev mode has no token to reject")
+        return
     try:
         Client(ctx.host, ctx.port, "definitely-wrong").call("macro.status")
         check("A2 wrong token -> silent close", False, "call succeeded")
@@ -834,6 +838,10 @@ def g9_stream_throughput(ctx):
         else:
             check("G9 full-screen stream throughput", False,
                   "bad or missing PNG")
+    except urllib.error.HTTPError as e:
+        # the 502 body carries _img_ui["err"] — the actual failure reason
+        check("G9 full-screen stream throughput", False,
+              f"{e} body={e.read()!r}")
     except Exception as e:
         check("G9 full-screen stream throughput", False, str(e))
     finally:
@@ -843,8 +851,11 @@ def g9_stream_throughput(ctx):
 IMG_POOL = ("\\use{img}\\use{net}"
             + "".join(f"\\call{{img.snap}}{{0,0,4,4}}\\set{{{v}}}{{"
                       f"$ret}}" for v in "abcdefgh")  # fill all SNAP_SLOTS
-            + "\\call{img.snap}{0,0,4,4}\\set{i}{$ret}"  # 9th: pool full
-            "\\ifnum{$i}{<}{0}{\\call{net.send}{pool-full}}"
+            + "\\call{img.snap}{0,0,4,4}"  # 9th: pool full -> $ret=-1
+            # $ret must be checked directly: storing it types the variable
+            # as a handle and ifnum rejects handle operands (the $ret
+            # exemption exists exactly for error-sentinel checks)
+            "\\ifnum{$ret}{<}{0}{\\call{net.send}{pool-full}}"
             "{\\call{net.send}{pool-nine}}"
             "\\call{img.snap}{10,8,4,4}\\set{a}{$ret}"  # overwrite frees a slot
             "\\call{img.at}{$a}{0,0}"
