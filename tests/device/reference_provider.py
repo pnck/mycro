@@ -86,6 +86,19 @@ def frame_fullhd():
     return _big_cache
 
 
+def make_png(w, h, rgb):
+    """Minimal valid PNG (8-bit RGB, filter-0 rows) — stdlib only."""
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    raw = b"".join(b"\x00" + rgb[y * w * 3:(y + 1) * w * 3] for y in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
 def _gray(rgb):
     out = bytearray(len(rgb) // 3)
     j = 0
