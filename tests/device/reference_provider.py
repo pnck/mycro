@@ -29,6 +29,13 @@ CHUNK_RAW = 8192 - 4  # binary frame payload minus u16 stream_id + u16 flags
 FLAG_STREAM_END = 1
 
 W, H = 80, 60
+BIG_W, BIG_H = 1920, 1080  # "big" frame: the full-screen throughput case
+
+_pixels_cache = {}
+
+
+def _dims(which):
+    return (BIG_W, BIG_H) if which == "big" else (W, H)
 
 
 def make_png(w, h, rgb):
@@ -45,6 +52,22 @@ def make_png(w, h, rgb):
 
 
 def _pixels(which):
+    if which in _pixels_cache:
+        return _pixels_cache[which]
+    if which == "big":
+        # per-pixel variation keeps PNG compression honest for the
+        # throughput measurement (a flat field would deflate to nothing)
+        out = bytearray(BIG_W * BIG_H * 3)
+        i = 0
+        for y in range(BIG_H):
+            for x in range(BIG_W):
+                v = (x * 3 + y * 5 + (x * y) % 7) % 256
+                out[i] = v
+                out[i + 1] = (v + 40) % 256
+                out[i + 2] = (v + 80) % 256
+                i += 3
+        _pixels_cache[which] = bytes(out)
+        return _pixels_cache[which]
     out = bytearray(W * H * 3)
     for y in range(H):
         for x in range(W):
@@ -56,7 +79,8 @@ def _pixels(which):
                 r, g, b = v, (v + 40) % 256, (v + 80) % 256
             i = (y * W + x) * 3
             out[i], out[i + 1], out[i + 2] = r, g, b
-    return bytes(out)
+    _pixels_cache[which] = bytes(out)
+    return _pixels_cache[which]
 
 
 def _gray(rgb):
@@ -118,21 +142,22 @@ class ReferenceProvider:
                 t, rid = env.get("type"), env.get("id", 0)
                 p = env.get("payload", {})
                 rgb = _pixels(self.which)
+                w0, h0 = _dims(self.which)
                 if t != "img.frame":
                     continue  # pushes (macro.result et al.) are ignored
                 if "rect" in p:
                     rc = p["rect"]
                     x, y = int(rc["x"]), int(rc["y"])
                     w, h = int(rc["w"]), int(rc["h"])
-                    cw, ch = min(w, W - max(x, 0)), min(h, H - max(y, 0))
+                    cw, ch = min(w, w0 - max(x, 0)), min(h, h0 - max(y, 0))
                     out = bytearray(cw * ch * 3)
                     for yy in range(ch):
-                        src = ((y + yy) * W + x) * 3
+                        src = ((y + yy) * w0 + x) * 3
                         out[yy * cw * 3:(yy + 1) * cw * 3] = \
                             rgb[src:src + cw * 3]
                     sid = (sid + 1) & 0xFFFF
                     self._send_stream(s, rid, sid,
-                                      {"width": W, "height": H,
+                                      {"width": w0, "height": h0,
                                        "crop_w": cw, "crop_h": ch,
                                        "format": "rgb8"}, bytes(out))
                 elif "points" in p:
@@ -141,13 +166,13 @@ class ReferenceProvider:
                         i = (int(y) * W + int(x)) * 3
                         colors.append([rgb[i], rgb[i + 1], rgb[i + 2]])
                     self._send_env(s, "img.frame.ok", rid,
-                                   {"width": W, "height": H,
+                                   {"width": w0, "height": h0,
                                     "format": "colors", "colors": colors})
                 elif str(p.get("format", "")) == "png":
                     sid = (sid + 1) & 0xFFFF
-                    png = make_png(W, H, rgb)
+                    png = make_png(w0, h0, rgb)
                     self._send_stream(s, rid, sid,
-                                      {"width": W, "height": H,
+                                      {"width": w0, "height": h0,
                                        "format": "png"}, png)
                 elif "w" in p and "h" in p:                    # native is already 80x60: only 1:1 is served
                     w, h = int(p["w"]), int(p["h"])

@@ -786,26 +786,43 @@ def g8_rect_literal(ctx):
     c.close()
 
 
-def g9_stream_throughput(ctx, n=10):
-    """Max sustained throughput on the REAL binary path (G1 measures the
-    rejection path): the macro snaps a 128x128 RGB rect n times; each
-    snap is a 48KB stream request -> provider -> device -> handle.
-    Throughput = n * 49152 / macro wall time (from macro.result)."""
+def g9_stream_throughput(ctx):
+    """Max sustained throughput on the REAL path: a full-screen PNG
+    capture (1920x1080 synthetic frame) flows provider -> device (kind-1
+    stream) -> HTTP -> here. Total bytes / total time, POST to 200."""
     _ensure_provider(ctx)
-    c = ctx.client()
-    c.call("macro.submit",
-           {"code": "\\use{img}\\rep{%d}{\\call{img.snap}{0,0,128,128}"
-                    "\\set{s}{$ret}}" % n})
-    res = recv_result(c, timeout=120)
-    ok = res is not None and res["payload"].get("state") == "done"
-    detail = "no result"
-    if ok:
-        ms = res["payload"].get("ms", 0)
-        kbs = n * 49152 / max(ms, 1) * 1000 / 1024
-        detail = f"{n}x48KB in {ms}ms -> {kbs:.0f} KB/s"
-        ok = ms > 0
-    check("G9 sustained stream throughput", ok, detail)
-    c.close()
+
+    def req(method):
+        r = urllib.request.Request(f"http://{ctx.host}/img/capture",
+                                   method=method)
+        if ctx.token:
+            r.add_header("Authorization", f"Bearer {ctx.token}")
+        return r
+
+    ctx.provider.set_frame("big")
+    try:
+        urllib.request.urlopen(req("POST"), timeout=5).read()
+        t0 = time.monotonic()
+        data = None
+        for _ in range(240):  # generous: up to 60s for a multi-MB stream
+            time.sleep(0.25)
+            r = urllib.request.urlopen(req("GET"), timeout=5)
+            if r.status == 204:
+                continue
+            data = r.read()
+            break
+        dt = time.monotonic() - t0
+        if data and data[:8] == b"\x89PNG\r\n\x1a\n":
+            kbs = len(data) / dt / 1024
+            check("G9 full-screen stream throughput",
+                  dt > 0, f"{len(data) / 1024:.0f}KB in {dt:.1f}s -> {kbs:.0f} KB/s")
+        else:
+            check("G9 full-screen stream throughput", False,
+                  "bad or missing PNG")
+    except Exception as e:
+        check("G9 full-screen stream throughput", False, str(e))
+    finally:
+        ctx.provider.set_frame("a")
 
 
 def f4_memory_trend(ctx, mem0):
