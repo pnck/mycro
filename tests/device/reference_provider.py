@@ -8,8 +8,8 @@ all extraction selectors (rect / points / w+h+format / format:png).
 The provider's screen content is explicit frame DATA, not named modes —
 a real screen changes over time, and tests set it directly:
 `provider.set_frame(w, h, rgb888_bytes)`. Frame builders:
-`frame_gradient()` (default; G4/G7/G8 read exact pixels from it),
-`frame_nonlinear()` (the change G5 must detect), `frame_big()`
+`frame_default()` (default; G4/G7/G8 read exact pixels from it),
+`frame_changed()` (the change G5 must detect), `frame_fullhd()`
 (1920x1080, G9's full-screen throughput case).
 
 gray8 uses the integer BT.601 luma shared with src/lib/imgmatch.py and
@@ -34,9 +34,10 @@ W, H = 80, 60
 BIG_W, BIG_H = 1920, 1080
 
 
-def frame_gradient(w=W, h=H):
-    """Deterministic base frame: v(x,y) = (x*3 + y*5) % 256 as (v, v+40,
-    v+80). G4/G7/G8 read exact pixels from this."""
+def frame_default(w=W, h=H):
+    """The predictable default screen. The formula is arbitrary — what
+    matters is position-dependent + deterministic (a solid color would
+    hide coordinate-mapping bugs). G4/G7/G8 read exact pixels here."""
     out = bytearray(w * h * 3)
     i = 0
     for y in range(h):
@@ -49,8 +50,8 @@ def frame_gradient(w=W, h=H):
     return bytes(out)
 
 
-def frame_nonlinear(w=W, h=H):
-    """A different field (v = x*x + y*y*3 + 7) — the changed content G5
+def frame_changed(w=W, h=H):
+    """The screen after content changed (v = x*x + y*y*3 + 7) — what G5
     must detect via img.diff."""
     out = bytearray(w * h * 3)
     i = 0
@@ -67,9 +68,9 @@ def frame_nonlinear(w=W, h=H):
 _big_cache = None
 
 
-def frame_big():
-    """1920x1080 with per-pixel variation (PNG deflate stays honest) —
-    the full-screen throughput case for G9. Computed once."""
+def frame_fullhd():
+    """A 1920x1080 screen with per-pixel variation (PNG deflate stays
+    honest) — G9's full-screen throughput case. Computed once."""
     global _big_cache
     if _big_cache is None:
         out = bytearray(BIG_W * BIG_H * 3)
@@ -97,7 +98,7 @@ def _gray(rgb):
 class ReferenceProvider:
     def __init__(self, host, port, token):
         self.host, self.port, self.token = host, port, token
-        self._frame = (W, H, frame_gradient())
+        self._frame = (W, H, frame_default())
         self.ready = threading.Event()
         self._stop = threading.Event()
         self._thread = None
@@ -166,7 +167,7 @@ class ReferenceProvider:
                 elif "points" in p:
                     colors = []
                     for x, y in p["points"]:
-                        i = (int(y) * W + int(x)) * 3
+                        i = (int(y) * w0 + int(x)) * 3
                         colors.append([rgb[i], rgb[i + 1], rgb[i + 2]])
                     self._send_env(s, "img.frame.ok", rid,
                                    {"width": w0, "height": h0,
