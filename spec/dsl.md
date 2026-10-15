@@ -73,6 +73,15 @@ All numeric arguments are value positions (§3).
 - **Dual semantics**: `$name` in a value position is the integer;
   `\val{name}` in a text position types the decimal digits (one pacing
   action)
+- **`\rect{...}` pixel literal**: `\rect{\row{0xRRGGBB,...},...}` is a
+  compile-time pixel constant usable in a `\set` value position or a
+  snap-typed call argument; it materializes as a **snap handle**
+  (identical kind to `img.snap` results — `at`/`diff` interoperate
+  freely). The pixel data never enters the bytecode: the compiler
+  preprocesses it into the middleware's const store and emits a
+  `sys.const` fetch. Rows must be equal-width, edges ≤ 128, colors in
+  0x000000–0xFFFFFF; the constant lives until the next compilation.
+  A 1x1 literal is the exact-color idiom
 
 ## 4. User macros
 

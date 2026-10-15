@@ -53,6 +53,7 @@ Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`
 | GET `/macro/status` | `idle` / `running` / `done` / `error <msg>` / `aborted` |
 | POST `/macro/abort` | `task.cancel()`; `execute()`'s finally guarantees all keys/buttons released |
 | POST `/compile` | Compile only, returns the disassembly |
+| POST/GET `/img/capture` | Pixel Assist: POST starts a provider capture, GET polls (204 pending / 200 PNG bytes, passthrough — the device never decodes) |
 
 **Auth**: once `MYCRO_TOKEN` is set in settings.toml, all endpoints except `/` require `Authorization: Bearer <token>`; unset = dev mode (serial warning).
 **Input decoding**: the frontend uses `encodeURIComponent` + `x-www-form-urlencoded`; `form_data` does **NOT** URL-decode (verified against the pinned library source), so code.py runs a manual `urldecode` — library upgrades must re-verify this assumption.
@@ -65,7 +66,7 @@ Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`
 - v3 structure: `\def` compile-time user macros (#1–#9 textual substitution); 32 i32 registers with `\set`/`\add`; `$ret`/`$timeout` read-only; signal slots `$sig.field` (split at LAST dot); `\ifnum` forward-only branches; `\val` decimal render; `\use`/`\call`/`\wait` runtime extension
 - `$` interpolation only in value positions (literal elsewhere); greedy `[a-z0-9_.]`, `${name}` delimits
 - Direction rule: macro-initiated request/response = `\call`; world-initiated events = signals + `\wait`; slots are never a return channel
-- img exact pixel family: `img.snap{rect}` → handle, `img.at{$s}{point}` → packed color, `img.diff{$a}{$b}{tol}` → count; handles per spec/vm.md ownership
+- img exact pixel family: `img.snap{rect}` → handle, `img.at{$s}{point}` → packed color, `img.diff{$a}{$b}{tol}` → count; `\rect{\row{0xRRGGBB,…},…}` pixel literals compile into the middleware const store and materialize as snap handles via `sys.const`; handles per spec/vm.md ownership
 
 ## 4. Bytecode & VM
 
