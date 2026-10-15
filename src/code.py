@@ -247,7 +247,7 @@ def macro_abort(request: Request):
 # HTTP handlers are synchronous, so the capture runs as a task and the
 # browser polls. The device never decodes the PNG — pure passthrough.
 
-_img_ui = {"pending": False, "data": None, "err": None}
+_img_ui = {"pending": False, "data": None, "err": None, "stream_ms": None}
 
 
 @server.route("/img/capture", methods=["POST"])
@@ -257,12 +257,13 @@ def img_capture_start(request: Request):
     if _img_ui["pending"]:
         return Response(request, "busy", status=(409, "Conflict"),
                         content_type="text/plain")
-    _img_ui.update(pending=True, data=None, err=None)
+    _img_ui.update(pending=True, data=None, err=None, stream_ms=None)
     asyncio.create_task(_img_capture_task())
     return Response(request, "started", content_type="text/plain")
 
 
 async def _img_capture_task():
+    t0 = _now_ms()
     try:
         _payload, stream = await _img_request("img.frame", {"format": "png"})
         if stream:
@@ -270,6 +271,7 @@ async def _img_capture_task():
             # across later img traffic until the browser fetches it.
             # Human-click frequency — one copy is fine here.
             _img_ui["data"] = bytes(stream)
+            _img_ui["stream_ms"] = _now_ms() - t0  # provider->device leg
         else:
             _img_ui["err"] = "empty response"
     except ImgError as e:
@@ -297,7 +299,12 @@ def img_capture_poll(request: Request):
     # immediately — a full-screen PNG is >1MB of heap we must not retain
     data = _img_ui["data"]
     _img_ui["data"] = None
-    return Response(request, body=data, content_type="image/png")
+    # X-Stream-Ms: provider->device leg time, so clients can split
+    # end-to-end throughput into its two WiFi legs
+    ms = _img_ui["stream_ms"]
+    headers = {"X-Stream-Ms": str(ms)} if ms is not None else None
+    return Response(request, body=data, content_type="image/png",
+                    headers=headers)
 
 
 @server.route("/compile", methods=["POST"])

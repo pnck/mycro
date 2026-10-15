@@ -566,9 +566,12 @@ def f3_hard_kill(ctx):
 # --- G: Phase 3 readiness ---
 
 def g1_binary_flood(ctx, frames=128, burst=16):
-    """The device rejects kind=1 frames with unsupported_kind errors, but
-    the flood still exercises the full RX path: a receive-throughput
-    lower bound for future img.* traffic. burst stays under the device
+    """Receive-throughput lower bound. The device has no binary consumer
+    armed here, so by protocol each kind=1 frame draws an
+    unsupported_kind error (B4 pins this) — the flood PACES on those
+    error envelopes (burst window), i.e. the serial log will show one
+    "raw tx error" per chunk. That wall of errors is the expected
+    behavior of this case, not a failure. burst stays under the device
     outbox cap (32) so no error response is dropped."""
     c = ctx.client()
     c.call("macro.status")  # warm the connection
@@ -823,18 +826,28 @@ def g9_stream_throughput(ctx):
         urllib.request.urlopen(req("POST"), timeout=5).read()
         t0 = time.monotonic()
         data = None
+        stream_ms = None
         for _ in range(240):  # generous: up to 60s for a multi-MB stream
             time.sleep(0.25)
             r = urllib.request.urlopen(req("GET"), timeout=5)
             if r.status == 204:
                 continue
+            stream_ms = r.headers.get("X-Stream-Ms")  # device-timed leg 1
             data = r.read()
             break
         dt = time.monotonic() - t0
         if data and data[:8] == b"\x89PNG\r\n\x1a\n":
             kbs = len(data) / dt / 1024
+            legs = ""
+            if stream_ms is not None:
+                s1 = int(stream_ms) / 1000
+                leg1 = len(data) / s1 / 1024 if s1 > 0 else 0
+                leg2 = len(data) / (dt - s1) / 1024 if dt > s1 else 0
+                legs = (f" | legs: provider->dev {leg1:.0f} KB/s,"
+                        f" dev->http {leg2:.0f} KB/s")
             check("G9 full-screen stream throughput",
-                  dt > 0, f"{len(data) / 1024:.0f}KB in {dt:.1f}s -> {kbs:.0f} KB/s")
+                  dt > 0, f"{len(data) / 1024:.0f}KB in {dt:.1f}s -> "
+                  f"{kbs:.0f} KB/s{legs}")
         else:
             check("G9 full-screen stream throughput", False,
                   "bad or missing PNG")
@@ -857,7 +870,9 @@ IMG_POOL = ("\\use{img}\\use{net}"
             # exemption exists exactly for error-sentinel checks)
             "\\ifnum{$ret}{<}{0}{\\call{net.send}{pool-full}}"
             "{\\call{net.send}{pool-nine}}"
-            "\\call{img.snap}{10,8,4,4}\\set{a}{$ret}"  # overwrite frees a slot
+            "\\set{a}{0}"  # overwrite-release happens at the WRITE: the
+            # slot must be freed BEFORE the next snap, one breath earlier
+            "\\call{img.snap}{10,8,4,4}\\set{a}{$ret}"
             "\\call{img.at}{$a}{0,0}"
             "\\ifnum{$ret}{=}{0x466E96}{\\call{net.send}{pool-reused}}"
             "{\\call{net.send}{pool-bad}}")
@@ -895,7 +910,7 @@ def _mem_now(ctx):
 def f4_memory_trend(ctx, mem0, marks=None):
     if marks:
         print("memory trend per case (KB free, delta vs previous;"
-              " sawtooth = GC cycles):")
+              " isolated big drops = one-time arena growth, by design):")
         prev = mem0
         for name, m in marks:
             if m is None:
@@ -913,11 +928,25 @@ def f4_memory_trend(ctx, mem0, marks=None):
         c.close()
     except Exception:
         now = 0
-    delta = now - mem0 if mem0 else 0
-    pct = f"{delta / mem0 * 100:+.1f}%" if mem0 else "n/a"
-    check("F4 free_mem steady state (post-GC peak; warn if <-20%)",
-          not mem0 or delta > -mem0 // 5,
-          f"start={mem0} end={now} ({pct})")
+    # On-demand arenas (Appendix A) grow once to the workload's
+    # high-water mark and then hold — that growth is NOT a leak. The
+    # leak check anchors after the last big drop (one-time growth) and
+    # demands the steady segment is flat; small drops never re-anchor,
+    # so a slow leak still accumulates against the anchor.
+    anchor = mem0
+    prev = mem0
+    for _name, m in marks or []:
+        if m is not None and prev and m - prev < -65536:
+            anchor = m  # one-time arena growth: steady state re-anchors
+        if m is not None:
+            prev = m
+    base = anchor or mem0
+    delta = now - base if base else 0
+    pct = f"{delta / base * 100:+.1f}%" if base else "n/a"
+    total = f"{(now - mem0) / mem0 * 100:+.1f}%" if mem0 else "n/a"
+    check("F4 free_mem steady state (flat after arena high-water)",
+          not base or delta > -base // 20,
+          f"start={mem0} end={now} anchor={base} (steady {pct}, total {total})")
 
 
 MANUAL = """
