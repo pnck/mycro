@@ -58,6 +58,27 @@ code{font-family:monospace;background:#f0f0f0;padding:1px 4px}
 <button type="button" id="clAbort">Abort</button>
 </div>
 
+<hr>
+<h3>Pixel Assist</h3>
+<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+<button type="button" id="paCapture">Capture Screen</button>
+<label style="font-size:12px">Zoom:
+<select id="paZoom"><option value="0">Fit width</option><option value="0.5">50%</option><option value="1" selected>100%</option><option value="2">200%</option></select>
+</label>
+<span id="paStatus" style="font-size:12px;color:#666"></span>
+</div>
+<div id="paStage" style="display:none;margin-top:8px;overflow:auto;max-height:70vh">
+<canvas id="paCanvas" style="cursor:crosshair;border:1px solid #999"></canvas>
+</div>
+<div id="paRectBar" style="font-size:12px;margin-top:6px;display:none">
+x <input type="number" id="paX" min="0" style="width:75px">
+y <input type="number" id="paY" min="0" style="width:75px">
+w <input type="number" id="paW" min="1" max="128" style="width:60px">
+h <input type="number" id="paH" min="1" max="128" style="width:60px">
+<span id="paColors"></span>
+</div>
+<div id="paSnips"></div>
+
 <script>
 const form = document.getElementById("macroForm");
 const codeEl = document.getElementById("macroCode");
@@ -193,6 +214,227 @@ clStart.addEventListener("click", () => {
 });
 
 clAbort.addEventListener("click", doAbort);
+
+// --- Pixel Assist: one lossless capture, all reads local ---
+const paCapture = document.getElementById("paCapture");
+const paStatus = document.getElementById("paStatus");
+const paStage = document.getElementById("paStage");
+const paCanvas = document.getElementById("paCanvas");
+const paCtx = paCanvas.getContext("2d", {willReadFrequently: true});
+const paZoom = document.getElementById("paZoom");
+const paRectBar = document.getElementById("paRectBar");
+const paSnips = document.getElementById("paSnips");
+const paIn = ["paX", "paY", "paW", "paH"].map(id => document.getElementById(id));
+let paImg = null;   // native-resolution bitmap; PNG readback is exact
+let paSel = null;   // {x,y,w,h} in native pixels
+let paDrag = null;
+
+function paApplyZoom() {
+	if (!paImg) return;
+	const z = parseFloat(paZoom.value);
+	paCanvas.style.width = z > 0 ? (paImg.width * z) + "px" : "100%";
+}
+
+function paDraw() {
+	if (!paImg) return;
+	paCtx.drawImage(paImg, 0, 0);
+	if (paSel) {
+		paCtx.strokeStyle = "#f33";
+		paCtx.lineWidth = 1;
+		paCtx.strokeRect(paSel.x + 0.5, paSel.y + 0.5, paSel.w, paSel.h);
+	}
+}
+
+function paEventPos(e) {
+	const r = paCanvas.getBoundingClientRect();
+	return {
+		x: Math.floor((e.clientX - r.left) * paImg.width / r.width),
+		y: Math.floor((e.clientY - r.top) * paImg.height / r.height)
+	};
+}
+
+function paHex(r, g, b) {
+	return "0x" + ((r << 16) | (g << 8) | b).toString(16).toUpperCase().padStart(6, "0");
+}
+
+function paPixel(x, y) {
+	const d = paCtx.getImageData(x, y, 1, 1).data;
+	return [d[0], d[1], d[2]];
+}
+
+function paRectLiteral(x, y, w, h) {
+	const data = paCtx.getImageData(x, y, w, h).data;
+	const rows = [];
+	for (let j = 0; j < h; j++) {
+		const cells = [];
+		for (let i = 0; i < w; i++) {
+			const o = (j * w + i) * 4;
+			cells.push(paHex(data[o], data[o + 1], data[o + 2]));
+		}
+		rows.push("\\row{" + cells.join(",") + "}");
+	}
+	return "\\rect{" + rows.join(",\n  ") + "}";
+}
+
+function paSnipCard(title, code) {
+	const div = document.createElement("div");
+	div.style.cssText = "border:1px solid #ddd;padding:6px;margin:6px 0;background:#fafafa";
+	const head = document.createElement("div");
+	head.innerHTML = "<strong style='font-size:12px'></strong> ";
+	head.firstChild.textContent = title;
+	const ins = document.createElement("button");
+	ins.type = "button"; ins.textContent = "Insert into editor";
+	ins.onclick = () => {
+		codeEl.value += (codeEl.value && !codeEl.value.endsWith("\n") ? "\n" : "") + code + "\n";
+	};
+	const cp = document.createElement("button");
+	cp.type = "button"; cp.textContent = "Copy";
+	cp.onclick = () => navigator.clipboard.writeText(code);
+	const pre = document.createElement("pre");
+	pre.style.cssText = "white-space:pre-wrap;background:#fff;padding:6px;font-size:12px";
+	pre.textContent = code;
+	head.appendChild(ins); head.appendChild(cp);
+	div.appendChild(head); div.appendChild(pre);
+	return div;
+}
+
+function paAnalyze() {
+	paSnips.innerHTML = "";
+	const cs = document.getElementById("paColors");
+	cs.innerHTML = "";
+	if (!paSel || !paImg) return;
+	let {x, y, w, h} = paSel;
+	x = Math.max(0, Math.min(x, paImg.width - 1));
+	y = Math.max(0, Math.min(y, paImg.height - 1));
+	w = Math.max(1, Math.min(w, 128, paImg.width - x));
+	h = Math.max(1, Math.min(h, 128, paImg.height - y));
+	paSel = {x, y, w, h};
+	[paIn[0].value, paIn[1].value, paIn[2].value, paIn[3].value] = [x, y, w, h];
+	// swatches: corners + center, exact native pixels
+	const pts = [[x, y], [x + w - 1, y], [x, y + h - 1], [x + w - 1, y + h - 1],
+		[x + (w >> 1), y + (h >> 1)]];
+	const seen = {};
+	for (const [px, py] of pts) {
+		const [r, g, b] = paPixel(px, py);
+		const hex = paHex(r, g, b);
+		if (seen[hex]) continue;
+		seen[hex] = 1;
+		const sw = document.createElement("span");
+		sw.style.cssText = "display:inline-block;width:14px;height:14px;border:1px solid #888;vertical-align:-2px;margin-left:8px";
+		sw.style.background = "rgb(" + r + "," + g + "," + b + ")";
+		sw.title = hex;
+		cs.appendChild(sw);
+		const lb = document.createElement("span");
+		lb.style.fontSize = "11px";
+		lb.textContent = " " + hex;
+		cs.appendChild(lb);
+	}
+	if (w === 1 && h === 1) {
+		const [r, g, b] = paPixel(x, y);
+		const hex = paHex(r, g, b);
+		paSnips.appendChild(paSnipCard("Point color check (at)", [
+			"\\use{img}",
+			"\\call{img.snap}{" + x + "," + y + ",1,1}\\set{px}{$ret}",
+			"\\ifnum{$ret}{<}{0}{\\call{net.send}{cap-fail}}",
+			"\\call{img.at}{$px}{0,0}",
+			"\\ifnum{$ret}{=}{" + hex + "}{\\# hit\n}{\\# miss\n}"
+		].join("\n")));
+		paSnips.appendChild(paSnipCard("Point color check (literal ref + diff)", [
+			"\\use{img}",
+			"\\set{ref}{" + paRectLiteral(x, y, 1, 1) + "}",
+			"\\call{img.snap}{" + x + "," + y + ",1,1}\\set{cur}{$ret}",
+			"\\call{img.diff}{$ref}{$cur}{16}",
+			"\\ifnum{$ret}{=}{0}{\\# same\n}{\\# changed\n}"
+		].join("\n")));
+	} else {
+		const wh = x + "," + y + "," + w + "," + h;
+		paSnips.appendChild(paSnipCard("Region watch (runtime reference)", [
+			"\\use{img}",
+			"\\call{img.snap}{" + wh + "}\\set{ref}{$ret}",
+			"\\rep{600}{\\call{img.snap}{" + wh + "}\\set{cur}{$ret}",
+			"\\call{img.diff}{$ref}{$cur}{16}",
+			"\\ifnum{$ret}{>}{0}{\\# changed\n}\\delay{0.5}}",
+		].join("\n")));
+		paSnips.appendChild(paSnipCard("Region consistency (literal reference)", [
+			"\\use{img}",
+			"\\set{ref}{" + paRectLiteral(x, y, w, h) + "}",
+			"\\call{img.snap}{" + wh + "}\\set{cur}{$ret}",
+			"\\call{img.diff}{$ref}{$cur}{16}",
+			"\\ifnum{$ret}{=}{0}{\\# identical\n}{\\# diverged\n}"
+		].join("\n")));
+	}
+}
+
+paCapture.addEventListener("click", () => {
+	paStatus.textContent = "capturing...";
+	paSnips.innerHTML = "";
+	fetch("/img/capture", {method: "POST", headers: headers()})
+	.then(r => r.text())
+	.then(t => {
+		if (t !== "started") { paStatus.textContent = t; return; }
+		const poll = () => {
+			fetch("/img/capture", {headers: headers()})
+			.then(r => {
+				if (r.status === 204) { setTimeout(poll, 500); return; }
+				if (r.status !== 200) {
+					return r.text().then(t2 => { paStatus.textContent = "capture: " + t2; });
+				}
+				return r.blob().then(b => {
+					const url = URL.createObjectURL(b);
+					const img = new Image();
+					img.onload = () => {
+						paImg = img;
+						paCanvas.width = img.width;
+						paCanvas.height = img.height;
+						paStage.style.display = "";
+						paRectBar.style.display = "";
+						paSel = null;
+						paApplyZoom();
+						paDraw();
+						paStatus.textContent = img.width + "x" + img.height + " — drag to select";
+						URL.revokeObjectURL(url);
+					};
+					img.src = url;
+				});
+			})
+			.catch(e => { paStatus.textContent = "capture: " + e; });
+		};
+		setTimeout(poll, 400);
+	})
+	.catch(e => { paStatus.textContent = "capture: " + e; });
+});
+
+paZoom.addEventListener("change", paApplyZoom);
+
+paCanvas.addEventListener("mousedown", e => {
+	if (!paImg) return;
+	const p = paEventPos(e);
+	paDrag = p;
+	paSel = {x: p.x, y: p.y, w: 1, h: 1};
+	paDraw();
+});
+paCanvas.addEventListener("mousemove", e => {
+	if (!paDrag) return;
+	const p = paEventPos(e);
+	paSel = {
+		x: Math.min(paDrag.x, p.x), y: Math.min(paDrag.y, p.y),
+		w: Math.abs(p.x - paDrag.x) + 1, h: Math.abs(p.y - paDrag.y) + 1
+	};
+	paDraw();
+	paAnalyze();
+});
+window.addEventListener("mouseup", () => {
+	if (!paDrag) return;
+	paDrag = null;
+	paAnalyze();
+});
+paIn.forEach(el => el.addEventListener("change", () => {
+	if (!paImg) return;
+	paSel = {x: +paIn[0].value || 0, y: +paIn[1].value || 0,
+		w: +paIn[2].value || 1, h: +paIn[3].value || 1};
+	paDraw();
+	paAnalyze();
+}));
 </script>
 
 <details class="ref">
@@ -267,7 +509,7 @@ clAbort.addEventListener("click", doAbort);
 <summary><h5>Variables & Interpolation (v3)</h5></summary>
 <table>
 <tr><th>Syntax</th><th>Description</th></tr>
-<tr><td><code>\set{x}{5}</code></td><td>Set variable x (16 i32 registers; 0x hex ok)</td></tr>
+<tr><td><code>\set{x}{5}</code></td><td>Set variable x (32 i32 registers; 0x hex ok)</td></tr>
 <tr><td><code>\add{x}{-1}</code></td><td>Add to variable</td></tr>
 <tr><td><code>$x</code> <code>${x}</code></td><td>Variable value — only in value positions (counts, seconds, keycodes, coords)</td></tr>
 <tr><td><code>\val{x}</code></td><td>Type out the variable's decimal digits</td></tr>
@@ -294,8 +536,11 @@ clAbort.addEventListener("click", doAbort);
 <tr><td><code>\call{sys.free}</code></td><td>Call an ext function; return value goes to <code>$ret</code></td></tr>
 <tr><td><code>\wait{sig}{5}</code></td><td>Wait for signal sig up to 5s (0 = forever); sets <code>$timeout</code></td></tr>
 <tr><td><code>$sig.field</code></td><td>Read a signal's payload slot (0 if unset)</td></tr>
+<tr><td><code>\call{img.snap}{x,y,w,h}</code></td><td>Snapshot a screen rect (native px) → handle in $ret</td></tr>
+<tr><td><code>\call{img.at}{$s}{x,y}</code> <code>\call{img.diff}{$a}{$b}{tol}</code></td><td>Read pixel color / count divergent pixels</td></tr>
+<tr><td><code>\rect{\row{0xFF0000,…},…}</code></td><td>Pixel literal — compile-time reference snapshot</td></tr>
 </table>
-<p><small>Namespaces/signals are registered by the runtime; this firmware provides <code>sys</code> (sys.free). net/img arrive in later phases.</small></p>
+<p><small>Namespaces/signals are registered by the runtime; this firmware provides <code>sys</code> (free/const), <code>net</code> (send + net.msg signal), <code>img</code> (snap/at/diff). Use the Pixel Assist above to grab coordinates and colors.</small></p>
 </details>
 
 <details open>

@@ -164,8 +164,9 @@ class ImgFail(Exception):
     pass
 
 
-def capture():
-    """Fresh screenshot of the configured source as a PIL RGB image."""
+def _grab_file():
+    """Fresh screenshot of the configured source; returns the file path.
+    The caller reads and deletes the file."""
     global _shot
     if not source_name:
         raise ImgFail("no capture source configured")
@@ -180,15 +181,38 @@ def capture():
             _shot = None
             raise ImgFail("screenshot timed out")
         _shot = None
-        path = obs.obs_frontend_get_last_screenshot()
+        return obs.obs_frontend_get_last_screenshot()
+
+
+def capture():
+    """Fresh screenshot as a PIL RGB image."""
+    path = _grab_file()
+    try:
+        with Image.open(path) as im:
+            return im.convert("RGB").copy()
+    finally:
         try:
-            with Image.open(path) as im:
-                return im.convert("RGB").copy()
-        finally:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def capture_png():
+    """Fresh screenshot as (png_bytes, width, height) — the file's bytes
+    pass through untouched (no decode, no re-encode)."""
+    path = _grab_file()
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        raise ImgFail("screenshot is not a PNG (HDR/JXR capture?)")
+    w, h = struct.unpack(">II", data[16:24])
+    return data, w, h
 
 
 def gray_of(rgb_bytes):
@@ -266,10 +290,20 @@ def handle_frame(s, rid, p):
         return _rect(s, rid, p["rect"])
     if "points" in p:
         return _points(s, rid, p["points"])
+    if str(p.get("format", "")) == "png":
+        return _png(s, rid)
     if "w" in p and "h" in p:
         return _scaled(s, rid, int(p["w"]), int(p["h"]),
                        str(p.get("format", "")))
-    raise ImgFail("img.frame needs one of: rect / points / w+h")
+    raise ImgFail("img.frame needs one of: rect / points / w+h / format:png")
+
+
+def _png(s, rid):
+    """Whole source, native resolution, as the untouched PNG file bytes
+    (the Pixel Assist preview path — nothing is re-encoded anywhere)."""
+    data, w, h = capture_png()
+    send_stream(s, "img.frame.ok", rid,
+                {"width": w, "height": h, "format": "png"}, data)
 
 
 def _rect(s, rid, rect):
