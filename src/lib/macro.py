@@ -57,6 +57,7 @@ TAG_STR = 2  # string table index (ext args only)
 
 # Register space
 MAX_REGS = 32  # user registers 0x00-0x1F (spec/vm.md: profile constant, u8 ceiling 256)
+RECT_MAX_EDGE = 128  # \rect literal / snapshot edge cap
 REG_SCRATCH = 0xFD  # reserved (special-register guard boundary)
 REG_TIMEOUT = 0xFE  # $timeout
 REG_RET = 0xFF  # $ret
@@ -176,6 +177,8 @@ class Macro:
         self._strs = []
         self._strmap = {}
         self._nest_stack = []
+        if self.runtime is not None:
+            self.runtime.clear_consts()  # const resources belong to one compilation
 
         try:
             self._emit(MAGIC, VERSION, 0)  # header placeholder, rebuilt below
@@ -563,6 +566,11 @@ class Macro:
             handler(pos)
             return
 
+        if name == "rect":
+            raise MacroError(
+                "\\rect{...} is a value-position literal (valid inside "
+                "\\set{h}{...} or a handle argument)", pos)
+
         # User-defined macro: \name{arg}... (compile-time expansion)
         if name in self._defs:
             self._expand_macro(name, pos)
@@ -873,6 +881,68 @@ class Macro:
         self._emit(OP_PACE)
         self._emit_typed(v, 2)
 
+    def _parse_rect_literal(self, t, pos):
+        r"""Parse \rect{\row{0xRRGGBB,...},...} -> (w, h, rgb bytes).
+
+        Compile-time pixel constant: the data goes to the middleware's
+        const store, never into the bytecode (spec/dsl.md §3)."""
+        i = t.find("{")
+        if i < 0 or not t.endswith("}"):
+            raise MacroError("rect requires {\\row{...},...}", pos)
+        rows = []
+        for part in t[i + 1 : -1].split("\\row"):
+            part = part.strip()
+            if not part:
+                continue
+            part = part.rstrip(",").strip()
+            if not part.startswith("{") or not part.endswith("}"):
+                raise MacroError(r"rect: rows must be \row{...}", pos)
+            row = []
+            for tok in part[1:-1].split(","):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                v = self._parse_int_literal(tok, pos)
+                if not 0 <= v <= 0xFFFFFF:
+                    raise MacroError("rect: color out of 0xRRGGBB range", pos)
+                row.append(v)
+            rows.append(row)
+        if not rows or not rows[0]:
+            raise MacroError("rect: empty literal", pos)
+        w = len(rows[0])
+        h = len(rows)
+        for r in rows:
+            if len(r) != w:
+                raise MacroError("rect: ragged rows", pos)
+        if w > RECT_MAX_EDGE or h > RECT_MAX_EDGE:
+            raise MacroError(f"rect: edge capped at {RECT_MAX_EDGE}", pos)
+        data = bytearray()
+        for r in rows:
+            for v in r:
+                data += bytes((v >> 16, (v >> 8) & 0xFF, v & 0xFF))
+        return w, h, bytes(data)
+
+    def _try_rect_literal(self, s, pos, reserved=()):
+        r"""If s is a \rect{...} literal: register its pixels in the
+        middleware const store and emit CALL_EXT sys.const <cid> + SET into
+        a temp register (the ownership then flows through the normal
+        claim/move machinery). Returns (TAG_REG, reg) or None."""
+        t = s.strip()
+        if not t.startswith("\\rect"):
+            return None
+        if self.runtime is None:
+            raise MacroError("rect literal requires a runtime registry", pos)
+        w, h, data = self._parse_rect_literal(t, pos)
+        cid = self.runtime.add_const("snap", {"w": w, "h": h, "rgb": data})
+        reg = self._alloc_temp(reserved, pos)
+        self._emit(OP_CALL_EXT, self._str_idx("sys", pos),
+                   self._str_idx("const", pos), 1)
+        self._emit(TAG_IMM)
+        self._emit_i32(cid)
+        self._emit(OP_SET, reg)
+        self._emit(TAG_REG, REG_RET)
+        return TAG_REG, reg
+
     def _cmd_set(self, pos):
         r"""\set{x}{i32|$var} — assign an i32 variable."""
         name = self._read_braces()
@@ -883,6 +953,13 @@ class Macro:
         arg = self._read_braces()
         if arg is None:
             raise MacroError("set requires {value}", self._pos)
+        rect = self._try_rect_literal(arg, pos)
+        if rect is not None:
+            # \set{h}{\rect{...}}: emissions already precede; just land it
+            self._emit(OP_SET, reg)
+            self._emit(TAG_REG, rect[1])
+            self._types[name] = "snap"
+            return
         v = self._parse_value(arg, pos)  # parse first: slot desugars emit READSLOT
         self._emit(OP_SET, reg)
         self._emit_typed(v, 4)
@@ -1072,9 +1149,14 @@ class Macro:
             return (TAG_STR, self._str_idx(s, pos))
         if typ in ("int", "color"):
             return self._parse_value(a, pos, reserved)
-        # handle types (snap, tpl, ...): only a variable whose recorded
-        # type matches — compile-time environment check (spec/vm.md)
+        # handle types (snap, tpl, ...): a \rect{...} literal desugars to a
+        # fresh const handle, or a variable whose recorded type matches —
+        # compile-time environment check (spec/vm.md)
         s = a.strip()
+        if s.startswith("\\rect"):
+            if typ != "snap":
+                raise MacroError(f"{target}: \\rect literal is a snap handle", pos)
+            return self._try_rect_literal(s, pos, reserved)
         if not s.startswith("$"):
             raise MacroError(f"{target}: {typ} arg must be a variable ($handle)", pos)
         reg = self._parse_var_ref(s, pos, reserved)
