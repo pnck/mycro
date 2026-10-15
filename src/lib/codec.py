@@ -126,6 +126,9 @@ class Reassembler:
 
     def __init__(self):
         self._buf = bytearray(self.CAPACITY)
+        # tail bounce for compaction: two memcpys, zero allocation
+        # (a bytearray slice copy would allocate per compaction)
+        self._bounce = bytearray(MAX_BINARY_CHUNK + 8)
         self._have = 0
         self._pos = 0  # consumed prefix, compacted lazily next cycle
 
@@ -133,8 +136,9 @@ class Reassembler:
         if self._pos:
             tail = self._have - self._pos
             if tail:
-                tmp = bytes(self._buf[self._pos:self._have])
-                self._buf[:tail] = tmp
+                memoryview(self._bounce)[:tail] = \
+                    memoryview(self._buf)[self._pos:self._have]
+                memoryview(self._buf)[:tail] = memoryview(self._bounce)[:tail]
             self._have = tail
             self._pos = 0
 
