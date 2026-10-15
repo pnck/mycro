@@ -933,7 +933,10 @@ class Macro:
         if self.runtime is None:
             raise MacroError("rect literal requires a runtime registry", pos)
         w, h, data = self._parse_rect_literal(t, pos)
-        cid = self.runtime.add_const("snap", {"w": w, "h": h, "rgb": data})
+        try:
+            cid = self.runtime.add_const("snap", {"w": w, "h": h, "rgb": data})
+        except ValueError as e:
+            raise MacroError("rect: {}".format(e), pos)
         reg = self._alloc_temp(reserved, pos)
         self._emit(OP_CALL_EXT, self._str_idx("sys", pos),
                    self._str_idx("const", pos), 1)

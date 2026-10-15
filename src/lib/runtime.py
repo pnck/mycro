@@ -26,6 +26,71 @@ except AttributeError:  # very old asyncio
 REG_RET = 0xFF
 REG_TIMEOUT = 0xFE
 
+# --- static backing store (spec/vm.md Part II §6) ---
+# Profile constants, same standing as MAX_REGS: platform budgets, not
+# spec limits. Bulk byte data NEVER comes from the GC heap per-operation;
+# it lives in these arenas, allocated once at boot and managed here.
+SNAP_SLOT_BYTES = 128 * 128 * 3  # one full-size snapshot (RECT_MAX_EDGE^2 RGB)
+SNAP_SLOTS = 8                   # live snapshots a macro may hold at once
+CONST_ARENA_BYTES = 256 * 1024   # \rect literal pixels, per-compile lifetime
+
+
+class SlotArena:
+    """A static pool of equal-size slots over one bytearray.
+
+    alloc/free are free-list operations on slot indices — no heap
+    involvement after construction, no GC churn, no fragmentation.
+    Exhaustion returns None; the caller fails the operation
+    deterministically ($ret < 0), never a GC retry storm."""
+
+    def __init__(self, slot_bytes, count):
+        self._buf = bytearray(slot_bytes * count)
+        self.slot_bytes = slot_bytes
+        self._free = list(range(count))
+
+    def alloc(self):
+        """Slot index, or None when the pool is exhausted."""
+        if self._free:
+            return self._free.pop()
+        return None
+
+    def free(self, slot):
+        self._free.append(slot)
+
+    def view(self, slot, nbytes):
+        """Writable view of the slot's first nbytes."""
+        base = slot * self.slot_bytes
+        return memoryview(self._buf)[base:base + nbytes]
+
+
+class BumpArena:
+    """A static bump allocator for compile-lifetime constants.
+
+    Allocation is a pointer bump; reset() frees everything at once.
+    Matches the const store's compile-time lifetime exactly
+    (spec/vm.md Part II §5) — per-compile garbage is a pointer reset,
+    not garbage at all."""
+
+    def __init__(self, nbytes):
+        self._buf = bytearray(nbytes)
+        self._used = 0
+
+    def add(self, data):
+        """Offset of the stored bytes, or None when the arena is full."""
+        n = len(data)
+        if self._used + n > len(self._buf):
+            return None
+        off = self._used
+        self._buf[off:off + n] = data
+        self._used = off + n
+        return off
+
+    def view(self, off, nbytes):
+        return memoryview(self._buf)[off:off + nbytes]
+
+    def reset(self):
+        self._used = 0
+
 
 class Runtime:
     def __init__(self):
@@ -37,20 +102,40 @@ class Runtime:
         self._handle_seq = 0
         self._reg_handles = {}  # register index -> handle id
         self._fresh = None      # newest unclaimed handle id
+        # static backing store (§6): snapshot slot pool + const bump arena
+        self.snap_pool = SlotArena(SNAP_SLOT_BYTES, SNAP_SLOTS)
+        self._const_arena = BumpArena(CONST_ARENA_BYTES)
         # compile-time constant resources (spec/vm.md Part II §5):
         # \rect literals land here, NOT in the bytecode; reset per compile
         self._consts = []       # [{"kind": str, "data": any}]
 
     def clear_consts(self):
         self._consts.clear()
+        self._const_arena.reset()
 
     def add_const(self, kind, data):
+        """Store a compile-time constant. A "rgb" bytes payload is moved
+        into the const bump arena (§6); overflow raises ValueError — the
+        compiler turns it into a compile error."""
+        if isinstance(data, dict) and isinstance(data.get("rgb"), (bytes, bytearray)):
+            off = self._const_arena.add(data["rgb"])
+            if off is None:
+                raise ValueError("const arena full ({}B budget)".format(
+                    CONST_ARENA_BYTES))
+            data = dict(data, _off=off, _n=len(data["rgb"]))
+            del data["rgb"]
         self._consts.append({"kind": kind, "data": data})
         return len(self._consts) - 1
 
     def const_entry(self, cid):
         if 0 <= cid < len(self._consts):
-            return self._consts[cid]
+            e = self._consts[cid]
+            data = e["data"]
+            if isinstance(data, dict) and "_off" in data:
+                return {"kind": e["kind"], "data": {
+                    "w": data["w"], "h": data["h"],
+                    "rgb": self._const_arena.view(data["_off"], data["_n"])}}
+            return e
         return None
 
     # --- registration (platform side) ---
@@ -127,10 +212,20 @@ class Runtime:
                 self._reg_handles[dst] = h
 
     def _release(self, hid):
-        self._handles.pop(hid, None)  # may be deferred/async in ports
+        e = self._handles.pop(hid, None)  # may be deferred/async in ports
+        if e is not None:
+            d = e["data"]
+            # arena-backed resources return their slot to the pool (§6);
+            # plain data just drops out of the table
+            if isinstance(d, dict) and d.get("_arena") is not None:
+                d["_arena"].free(d["_slot"])
 
     def release_all(self):
         """Execution bracket: start and every exit path."""
+        for hid in self._handles:
+            d = self._handles[hid]["data"]
+            if isinstance(d, dict) and d.get("_arena") is not None:
+                d["_arena"].free(d["_slot"])
         self._handles.clear()
         self._reg_handles.clear()
         self._fresh = None

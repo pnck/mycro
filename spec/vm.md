@@ -236,9 +236,37 @@ middleware-side **const store** (`add_const`/`const_entry`), reset on
 each compilation. The bytecode references them by small integer id via
 `CALL_EXT sys.const <cid>`, which materializes a normal handle — no
 bytecode format change, and the standard ownership rules (claim/move/
-overwrite-release/exit-release) apply unchanged.
+overwrite-release/exit-release) apply unchanged. Const bytes live in
+the bump arena (§6), so a per-compile reset is a pointer bump, not
+garbage collection.
 
-## 6. Peripheral abstraction
+## 6. Static backing store
+
+Bulk byte data MUST NOT be allocated from the host heap per operation.
+The middleware owns static storage, allocated once at startup and
+managed by the implementation layer — never by the runtime GC:
+
+- **Stream assembly**: one arena sized to the stream cap. Reverse
+  requests are single-in-flight, so a single buffer serves every
+  stream; chunks land by offset.
+- **Handle payloads**: a fixed-slot pool (equal slots, free-list).
+  An arena-backed handle carries its pool reference in the handle
+  entry; release (§4, any path) returns the slot. Pool exhaustion
+  fails the producing call deterministically (error convention,
+  `$ret < 0`) — never a GC retry.
+- **Const store** (§5): a bump arena, reset wholesale per compilation.
+
+Arena sizes are profile constants with the same standing as MAX_REGS
+(Part I §2) — platform budgets, not spec limits. The GC heap remains
+for small control-plane objects only (envelopes, bytecode, tables);
+steady-state bulk traffic MUST NOT allocate. Consequences: no GC
+sawtooth from pixel traffic, no heap fragmentation over long sessions,
+deterministic latency. Transports SHOULD receive into static
+reassembly storage and hand consumers views, so a byte on the receive
+hot path is copied at most twice (socket→reassembly, reassembly→
+destination).
+
+## 7. Peripheral abstraction
 
 All hardware/host interaction goes through providers (HIDProvider today;
 the img capture provider over the Phase 2 channel). The VM and compiler

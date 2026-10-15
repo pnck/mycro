@@ -131,11 +131,12 @@ def test_rect_literal_goes_to_const_store_not_bytecode():
     rt = make_runtime()
     bc = compile_ok("\\set{t}{" + RECT2 + "}", rt)
     assert len(rt._consts) == 1
-    e = rt._consts[0]
+    # the public accessor materializes the arena-backed pixels (Part II §6)
+    e = rt.const_entry(0)
     assert e["kind"] == "snap"
     assert e["data"]["w"] == 2 and e["data"]["h"] == 2
-    assert e["data"]["rgb"] == bytes([255, 0, 0, 0, 255, 0,
-                                      0, 0, 255, 255, 255, 255])
+    assert bytes(e["data"]["rgb"]) == bytes([255, 0, 0, 0, 255, 0,
+                                             0, 0, 255, 255, 255, 255])
     # bytecode carries only the const id, no pixel data
     assert bytes([255, 0, 0, 0, 255, 0]) not in bytes(bc)
 
