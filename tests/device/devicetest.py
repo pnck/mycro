@@ -723,6 +723,69 @@ def g6_handle_overwrite_reuse(ctx):
     c.close()
 
 
+IMG_REFLIT = ("\\use{img}\\use{net}"
+              "\\set{r}{\\rect{\\row{0x002850,0x032B53}}}"
+              "\\call{img.snap}{0,0,2,1}\\set{c}{$ret}"
+              "\\call{img.diff}{$r}{$c}{0}"
+              "\\ifnum{$ret}{=}{0}{\\call{net.send}{ref-ok}}{\\call{net.send}{ref-wrong}}")
+
+
+def g7_capture_passthrough(ctx):
+    """Web UI's Pixel Assist path: POST starts, GET polls, PNG passes
+    through byte-exact and decodes to the reference frame's pixels."""
+    _ensure_provider(ctx)
+    import zlib
+
+    def req(method):
+        r = urllib.request.Request(f"http://{ctx.host}/img/capture",
+                                   method=method)
+        if ctx.token:
+            r.add_header("Authorization", f"Bearer {ctx.token}")
+        return r
+
+    data = None
+    detail = "no result"
+    try:
+        urllib.request.urlopen(req("POST"), timeout=5).read()
+        for _ in range(60):  # provider round trip takes ~1s
+            time.sleep(0.25)
+            r = urllib.request.urlopen(req("GET"), timeout=5)
+            if r.status == 204:
+                continue
+            data = r.read()
+            break
+    except Exception as e:
+        check("G7 /img/capture PNG passthrough", False, str(e))
+        return
+    ok = False
+    if data and data[:8] == b"\x89PNG\r\n\x1a\n":
+        w, h = struct.unpack(">II", data[16:24])
+        i, idat = 8, b""
+        while i < len(data):
+            ln = struct.unpack(">I", data[i:i + 4])[0]
+            if data[i + 4:i + 8] == b"IDAT":
+                idat += data[i + 8:i + 8 + ln]
+            i += 12 + ln
+        raw = zlib.decompress(idat)
+        off = 8 * (w * 3 + 1) + 10 * 3 + 1  # pixel(10,8), filter-0 rows
+        r_, g_, b_ = raw[off], raw[off + 1], raw[off + 2]
+        ok = (w, h) == (80, 60) and (r_, g_, b_) == (70, 110, 150)
+        detail = f"{w}x{h} pixel(10,8)=({r_},{g_},{b_})"
+    check("G7 /img/capture PNG passthrough", ok, detail)
+
+
+def g8_rect_literal(ctx):
+    _ensure_provider(ctx)
+    c = ctx.client()
+    c.call("macro.submit", {"code": IMG_REFLIT})
+    tag = recv_until(c, lambda e: e.get("type") == "net.msg", timeout=15)
+    got = tag["payload"].get("tag") if tag else None
+    res = recv_result(c)
+    check("G8 \\rect literal diffs 0 against the live frame",
+          got == "ref-ok" and res is not None, str(got))
+    c.close()
+
+
 def f4_memory_trend(ctx, mem0):
     c = ctx.client()
     p = c.call("device.info")["payload"]
@@ -782,7 +845,8 @@ def main(argv=None):
              e1_http_status_during_raw, e2_http_submit_broadcasts_to_raw,
              f2_submit_storm, f3_hard_kill, g1_binary_flood, g2_latency_probe,
              g3_img_no_provider, g4_img_snap_at, g5_img_diff,
-             g6_handle_overwrite_reuse]
+             g6_handle_overwrite_reuse, g7_capture_passthrough,
+             g8_rect_literal]
     if not args.skip_slow:
         cases.append(a4_slow_auth_deadline)
     if args.only:

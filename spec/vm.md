@@ -228,7 +228,17 @@ variable cannot leak; macro end frees everything.
 Error convention for resource namespaces: `$ret < 0` on failure, details
 to the debug console.
 
-## 5. Peripheral abstraction
+## 5. Compile-time const store
+
+Compile-time constants too big or too structured for operand encoding
+(e.g. `\rect` pixel literals) are preprocessed by the compiler into a
+middleware-side **const store** (`add_const`/`const_entry`), reset on
+each compilation. The bytecode references them by small integer id via
+`CALL_EXT sys.const <cid>`, which materializes a normal handle — no
+bytecode format change, and the standard ownership rules (claim/move/
+overwrite-release/exit-release) apply unchanged.
+
+## 6. Peripheral abstraction
 
 All hardware/host interaction goes through providers (HIDProvider today;
 the img capture provider over the Phase 2 channel). The VM and compiler

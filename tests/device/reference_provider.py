@@ -21,6 +21,7 @@ import json
 import socket
 import struct
 import threading
+import zlib
 
 PROTO_VERSION = 1
 AUTH_MAGIC = b"MYCR"
@@ -28,6 +29,19 @@ CHUNK_RAW = 8192 - 4  # binary frame payload minus u16 stream_id + u16 flags
 FLAG_STREAM_END = 1
 
 W, H = 80, 60
+
+
+def make_png(w, h, rgb):
+    """Minimal valid PNG (8-bit RGB, filter-0 rows) — stdlib only."""
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    raw = b"".join(b"\x00" + rgb[y * w * 3:(y + 1) * w * 3] for y in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
 def _pixels(which):
@@ -129,8 +143,13 @@ class ReferenceProvider:
                     self._send_env(s, "img.frame.ok", rid,
                                    {"width": W, "height": H,
                                     "format": "colors", "colors": colors})
-                elif "w" in p and "h" in p:
-                    # native is already 80x60: only 1:1 is served
+                elif str(p.get("format", "")) == "png":
+                    sid = (sid + 1) & 0xFFFF
+                    png = make_png(W, H, rgb)
+                    self._send_stream(s, rid, sid,
+                                      {"width": W, "height": H,
+                                       "format": "png"}, png)
+                elif "w" in p and "h" in p:                    # native is already 80x60: only 1:1 is served
                     w, h = int(p["w"]), int(p["h"])
                     fmt = str(p.get("format", ""))
                     if (w, h) != (W, H) or fmt not in ("rgb8", "gray8"):

@@ -78,7 +78,7 @@ machine-readable `payload.code` (`bad_version` / `bad_type` / `bad_id` /
 | `macro.result` | server → clients | `state`, `ms` (execution wall time) | push, `id` = 0 |
 | `net.msg` | server → clients | emitted by `\call{net.send}` | push, `id` = 0 |
 | `img.hello` | capture client → server | `caps`: list | push, `id` = 0; registers the client as the capture provider |
-| `img.frame` | server → capture client | one selector: `rect` {x,y,w,h} → lossless RGB8 crop / `points` [[x,y],…] → exact colors / `w`,`h` + `format` (`rgb8`/`gray8`) → whole-source resample | `img.frame.ok` with `width`/`height` (native dims), selector-specific fields, and for pixel streams `stream_id`/`chunks` followed by kind-1 chunks |
+| `img.frame` | server → capture client | one selector: `rect` {x,y,w,h} → lossless RGB8 crop / `points` [[x,y],…] → exact colors / `w`,`h` + `format` (`rgb8`/`gray8`) → whole-source resample / `format`:`png` → native whole-source PNG bytes, untouched | `img.frame.ok` with `width`/`height` (native dims), selector-specific fields, and for pixel streams `stream_id`/`chunks` followed by kind-1 chunks |
 
 `img.frame` is the **only** provider verb — stateless "current frame":
 every request takes a fresh screenshot and extracts per the selector.
