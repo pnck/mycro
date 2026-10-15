@@ -26,7 +26,7 @@ except AttributeError:  # very old asyncio
 REG_RET = 0xFF
 REG_TIMEOUT = 0xFE
 
-# --- static backing store (spec/vm.md Part II §6) ---
+# --- static backing store (spec/vm.md Appendix A) ---
 # Profile constants, same standing as MAX_REGS: platform budgets, not
 # spec limits. Bulk byte data NEVER comes from the GC heap per-operation;
 # it lives in these arenas. Arenas allocate ON DEMAND (first touch is a

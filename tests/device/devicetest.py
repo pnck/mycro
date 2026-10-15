@@ -853,7 +853,7 @@ IMG_POOL = ("\\use{img}\\use{net}"
 
 
 def g10_snap_pool_exhaustion(ctx):
-    """Snap slot pool (spec/vm.md Part II §6): after SNAP_SLOTS live
+    """Snap slot pool (spec/vm.md Appendix A): after SNAP_SLOTS live
     snapshots the next snap fails deterministically ($ret<0); an
     overwrite-release reopens a slot and the pool keeps working."""
     _ensure_provider(ctx)
