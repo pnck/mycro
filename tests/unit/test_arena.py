@@ -46,7 +46,18 @@ def test_snap_pool_sized_for_full_rect():
     # one slot holds a maximum-size snapshot (RECT_MAX_EDGE^2 RGB)
     assert SNAP_SLOT_BYTES == 128 * 128 * 3
     rt = Runtime()
-    assert len(rt.snap_pool._free) == SNAP_SLOTS
+    # on demand: construction allocates NOTHING (spec/vm.md Part II §6)
+    assert rt.snap_pool._grown == 0 and rt.snap_pool._free == []
+
+
+def test_slot_arena_grows_one_slot_per_first_claim():
+    a = SlotArena(16, 4)
+    assert a._grown == 0
+    s = a.alloc()
+    assert a._grown == 1  # only the claimed slot's buffer exists
+    a.free(s)
+    a.alloc()
+    assert a._grown == 1  # reuse: no further growth
 
 
 def test_handle_release_returns_slot_to_pool():
@@ -56,7 +67,8 @@ def test_handle_release_returns_slot_to_pool():
             "_arena": rt.snap_pool, "_slot": slot}
     hid = rt.new_handle("snap", data)
     rt._release(hid)
-    assert len(rt.snap_pool._free) == SNAP_SLOTS  # slot returned
+    assert len(rt.snap_pool._free) == 1  # slot returned, buffer kept
+    assert rt.snap_pool.alloc() == slot  # and immediately reusable
 
 
 def test_release_all_returns_every_slot():
@@ -75,7 +87,7 @@ def test_plain_handle_release_untouched_by_arenas():
     rt = Runtime()
     hid = rt.new_handle("snap", {"w": 1, "h": 1, "rgb": bytes(3)})  # no _arena
     rt._release(hid)
-    assert len(rt.snap_pool._free) == SNAP_SLOTS  # nothing freed twice
+    assert rt.snap_pool._grown == 0 and rt.snap_pool._free == []
 
 
 def test_const_rgb_lives_in_bump_arena():

@@ -29,29 +29,39 @@ REG_TIMEOUT = 0xFE
 # --- static backing store (spec/vm.md Part II §6) ---
 # Profile constants, same standing as MAX_REGS: platform budgets, not
 # spec limits. Bulk byte data NEVER comes from the GC heap per-operation;
-# it lives in these arenas, allocated once at boot and managed here.
+# it lives in these arenas. Arenas allocate ON DEMAND (first touch is a
+# cold path and may pay for it), are then owned by the middleware
+# forever — never returned to the GC — and the steady-state hot path
+# allocates nothing.
 SNAP_SLOT_BYTES = 128 * 128 * 3  # one full-size snapshot (RECT_MAX_EDGE^2 RGB)
 SNAP_SLOTS = 8                   # live snapshots a macro may hold at once
 CONST_ARENA_BYTES = 256 * 1024   # \rect literal pixels, per-compile lifetime
 
 
 class SlotArena:
-    """A static pool of equal-size slots over one bytearray.
+    """A pool of equal-size slots, grown on demand up to a fixed count.
 
-    alloc/free are free-list operations on slot indices — no heap
-    involvement after construction, no GC churn, no fragmentation.
+    Each slot's buffer is allocated on first claim (cold path, one time)
+    and kept forever after; free/alloc past warmup are pure free-list
+    operations — no heap involvement, no GC churn, no fragmentation.
     Exhaustion returns None; the caller fails the operation
     deterministically ($ret < 0), never a GC retry storm."""
 
     def __init__(self, slot_bytes, count):
-        self._buf = bytearray(slot_bytes * count)
+        self._slots = [None] * count  # index -> bytearray, lazily allocated
         self.slot_bytes = slot_bytes
-        self._free = list(range(count))
+        self._free = []      # indices of allocated-and-free slots
+        self._grown = 0      # high-water count of allocated slots
 
     def alloc(self):
         """Slot index, or None when the pool is exhausted."""
         if self._free:
             return self._free.pop()
+        if self._grown < len(self._slots):
+            i = self._grown
+            self._slots[i] = bytearray(self.slot_bytes)  # one-time, cold
+            self._grown += 1
+            return i
         return None
 
     def free(self, slot):
@@ -59,26 +69,30 @@ class SlotArena:
 
     def view(self, slot, nbytes):
         """Writable view of the slot's first nbytes."""
-        base = slot * self.slot_bytes
-        return memoryview(self._buf)[base:base + nbytes]
+        return memoryview(self._slots[slot])[:nbytes]
 
 
 class BumpArena:
-    """A static bump allocator for compile-lifetime constants.
+    """A bump allocator for compile-lifetime constants, allocated on
+    first use and then self-managed.
 
-    Allocation is a pointer bump; reset() frees everything at once.
-    Matches the const store's compile-time lifetime exactly
-    (spec/vm.md Part II §5) — per-compile garbage is a pointer reset,
-    not garbage at all."""
+    The backing buffer appears on the first add (compile is a cold path
+    by definition); reset() frees everything logically — the buffer
+    itself is KEPT. Per-compile churn is a pointer bump, not garbage."""
 
     def __init__(self, nbytes):
-        self._buf = bytearray(nbytes)
+        self._cap = nbytes
+        self._buf = None  # allocated on first add
         self._used = 0
 
     def add(self, data):
         """Offset of the stored bytes, or None when the arena is full."""
         n = len(data)
-        if self._used + n > len(self._buf):
+        if n > self._cap:
+            return None
+        if self._buf is None:
+            self._buf = bytearray(self._cap)  # one-time, cold
+        if self._used + n > self._cap:
             return None
         off = self._used
         self._buf[off:off + n] = data

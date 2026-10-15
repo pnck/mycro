@@ -20,11 +20,22 @@ OUTBOX_CAP = 32       # per-client queued push frames; beyond this the peer is n
 
 # img namespace (exact pixel matching; spec/vm.md + docs/protocol.md)
 IMG_TIMEOUT_S = 20    # reverse-request ceiling
-IMG_STREAM_MAX = 4 * 1024 * 1024  # armed-stream total payload cap
-# Static stream assembly arena (spec/vm.md Part II §6): reverse requests
-# are single-in-flight, so one buffer serves every stream — zero heap
-# churn no matter how much pixel traffic flows.
-_stream_arena = bytearray(IMG_STREAM_MAX)
+IMG_STREAM_MAX = 2 * 1024 * 1024  # armed-stream rejection cap (not a reservation)
+# Stream assembly buffer (spec/vm.md Part II §6): allocated ON DEMAND and
+# grown to the workload's high-water mark, then owned by the middleware
+# forever — never returned to the GC. Reverse requests are
+# single-in-flight, so one buffer serves every stream; steady-state
+# traffic allocates nothing.
+_stream_buf = None
+
+
+def _stream_buffer(total):
+    """A total-byte view of the stream buffer, growing it if needed.
+    Growth is a cold path (first/largest stream); never shrinks."""
+    global _stream_buf
+    if _stream_buf is None or len(_stream_buf) < total:
+        _stream_buf = bytearray(total)  # one-time growth, cold
+    return memoryview(_stream_buf)[:total]
 SNAP_MAX_EDGE = RECT_MAX_EDGE  # snapshot edge cap (128x128 RGB = 48KB)
 
 try:
@@ -255,7 +266,7 @@ async def _img_capture_task():
     try:
         _payload, stream = await _img_request("img.frame", {"format": "png"})
         if stream:
-            # isolate from the shared stream arena: the UI holds this
+            # isolate from the shared stream buffer: the UI holds this
             # across later img traffic until the browser fetches it.
             # Human-click frequency — one copy is fine here.
             _img_ui["data"] = bytes(stream)
@@ -481,9 +492,9 @@ def _img_resolve(c, env):
         ent["sid"] = sid
         total = p.get("bytes")
         if isinstance(total, int) and 0 < total <= IMG_STREAM_MAX:
-            # static arena: each chunk lands by offset, no allocation,
-            # no O(n^2) growth copies
-            ent["stream"] = memoryview(_stream_arena)[:total]
+            # self-managed buffer: each chunk lands by offset, no
+            # allocation, no O(n^2) growth copies
+            ent["stream"] = _stream_buffer(total)
             ent["have"] = 0
         else:
             ent["stream"] = bytearray()
