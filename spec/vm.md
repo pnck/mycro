@@ -243,28 +243,38 @@ garbage collection.
 ## 6. Static backing store
 
 Bulk byte data MUST NOT be allocated from the host heap per operation.
-The middleware owns static storage, allocated once at startup and
-managed by the implementation layer — never by the runtime GC:
+The middleware owns self-managed storage and never returns it to the
+GC. The allocation discipline is **on demand, then owned forever**:
+buffers appear on first touch and grow to the workload's high-water
+mark — cold paths (first snapshot, first stream, first compile, a
+larger stream than any before) MAY pay one-time allocation cost; the
+steady-state hot path MUST NOT allocate. Nothing speculative is
+reserved: an arena the workload never touches costs nothing, which
+keeps main memory available for other subsystems (e.g. vision models).
 
-- **Stream assembly**: one arena sized to the stream cap. Reverse
-  requests are single-in-flight, so a single buffer serves every
-  stream; chunks land by offset.
-- **Handle payloads**: a fixed-slot pool (equal slots, free-list).
-  An arena-backed handle carries its pool reference in the handle
-  entry; release (§4, any path) returns the slot. Pool exhaustion
-  fails the producing call deterministically (error convention,
-  `$ret < 0`) — never a GC retry.
-- **Const store** (§5): a bump arena, reset wholesale per compilation.
+- **Stream assembly**: one buffer grown on demand to the largest
+  stream actually seen, never shrunk. Reverse requests are
+  single-in-flight, so a single buffer serves every stream; chunks
+  land by offset. The stream cap is a rejection limit, not a
+  reservation.
+- **Handle payloads**: a slot pool grown slot-by-slot on first claim,
+  up to a fixed count. An arena-backed handle carries its pool
+  reference in the handle entry; release (§4, any path) returns the
+  slot to the pool's free list — not to the GC. Pool exhaustion fails
+  the producing call deterministically (error convention, `$ret < 0`)
+  — never a GC retry.
+- **Const store** (§5): a bump arena allocated on first use, reset
+  wholesale per compilation (the buffer is kept; only the bump
+  pointer resets).
 
-Arena sizes are profile constants with the same standing as MAX_REGS
+Arena caps are profile constants with the same standing as MAX_REGS
 (Part I §2) — platform budgets, not spec limits. The GC heap remains
-for small control-plane objects only (envelopes, bytecode, tables);
-steady-state bulk traffic MUST NOT allocate. Consequences: no GC
-sawtooth from pixel traffic, no heap fragmentation over long sessions,
-deterministic latency. Transports SHOULD receive into static
-reassembly storage and hand consumers views, so a byte on the receive
-hot path is copied at most twice (socket→reassembly, reassembly→
-destination).
+for small control-plane objects only (envelopes, bytecode, tables).
+Consequences: no GC sawtooth from pixel traffic, no heap fragmentation
+over long sessions, deterministic hot-path latency. Transports SHOULD
+receive into self-managed reassembly storage and hand consumers views,
+so a byte on the receive hot path is copied at most twice
+(socket→reassembly, reassembly→destination).
 
 ## 7. Peripheral abstraction
 
