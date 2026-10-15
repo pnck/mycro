@@ -786,6 +786,28 @@ def g8_rect_literal(ctx):
     c.close()
 
 
+def g9_stream_throughput(ctx, n=10):
+    """Max sustained throughput on the REAL binary path (G1 measures the
+    rejection path): the macro snaps a 128x128 RGB rect n times; each
+    snap is a 48KB stream request -> provider -> device -> handle.
+    Throughput = n * 49152 / macro wall time (from macro.result)."""
+    _ensure_provider(ctx)
+    c = ctx.client()
+    c.call("macro.submit",
+           {"code": "\\use{img}\\rep{%d}{\\call{img.snap}{0,0,128,128}"
+                    "\\set{s}{$ret}}" % n})
+    res = recv_result(c, timeout=120)
+    ok = res is not None and res["payload"].get("state") == "done"
+    detail = "no result"
+    if ok:
+        ms = res["payload"].get("ms", 0)
+        kbs = n * 49152 / max(ms, 1) * 1000 / 1024
+        detail = f"{n}x48KB in {ms}ms -> {kbs:.0f} KB/s"
+        ok = ms > 0
+    check("G9 sustained stream throughput", ok, detail)
+    c.close()
+
+
 def f4_memory_trend(ctx, mem0):
     c = ctx.client()
     p = c.call("device.info")["payload"]
@@ -846,7 +868,7 @@ def main(argv=None):
              f2_submit_storm, f3_hard_kill, g1_binary_flood, g2_latency_probe,
              g3_img_no_provider, g4_img_snap_at, g5_img_diff,
              g6_handle_overwrite_reuse, g7_capture_passthrough,
-             g8_rect_literal]
+             g8_rect_literal, g9_stream_throughput]
     if not args.skip_slow:
         cases.append(a4_slow_auth_deadline)
     if args.only:
