@@ -853,7 +853,8 @@ def _mem_now(ctx):
 
 def f4_memory_trend(ctx, mem0, marks=None):
     if marks:
-        print("memory trend per case (KB free, delta vs previous):")
+        print("memory trend per case (KB free, delta vs previous;"
+              " sawtooth = GC cycles):")
         prev = mem0
         for name, m in marks:
             if m is None:
@@ -863,6 +864,26 @@ def f4_memory_trend(ctx, mem0, marks=None):
             prev = m
             flag = "  <-- big drop" if d < -65536 else ""
             print(f"  {name}: {m // 1024} KB ({d / 1024:+.0f}){flag}")
+    # Steady-state measurement: churn a few macro runs so a GC sweep fires,
+    # then take the best of several samples — a trough sample taken right
+    # before a sweep reads as a phantom leak (the sawtooth above).
+    samples = []
+    for _ in range(4):
+        try:
+            c = ctx.client()
+            c.call("macro.submit", {"code": "\\set{x}{1}"})
+            recv_result(c, timeout=3)
+            samples.append(c.call("device.info")["payload"].get("free_mem", 0))
+            c.close()
+        except Exception:
+            pass
+        time.sleep(0.3)
+    now = max(samples) if samples else 0
+    delta = now - mem0 if mem0 else 0
+    pct = f"{delta / mem0 * 100:+.1f}%" if mem0 else "n/a"
+    check("F4 free_mem steady state (post-GC peak; warn if <-20%)",
+          not mem0 or delta > -mem0 // 5,
+          f"start={mem0} end={now} ({pct})")
     c = ctx.client()
     p = c.call("device.info")["payload"]
     c.close()
@@ -900,8 +921,20 @@ def main(argv=None):
         c.call("macro.abort")  # preflight: force idle
         recv_result(c, timeout=2)
         info = c.call("device.info")["payload"]
-        mem0 = info.get("free_mem")
         print(f"device: {info}")
+        # warm up first-use allocations (http pool, asyncio internals, img
+        # machinery) before the baseline, or F4 measures one-time settling
+        for _ in range(3):
+            c.call("macro.submit", {"code": "\\set{x}{1}"})
+            recv_result(c, timeout=3)
+        time.sleep(0.3)
+        samples = []
+        for _ in range(3):
+            samples.append(c.call("device.info")["payload"].get("free_mem", 0))
+            c.call("macro.submit", {"code": "\\set{x}{1}"})
+            recv_result(c, timeout=3)
+        samples.append(c.call("device.info")["payload"].get("free_mem", 0))
+        mem0 = max(samples)
         c.close()
     except Exception as e:
         print(f"preflight failed — is the device up and the token right? {e}")
