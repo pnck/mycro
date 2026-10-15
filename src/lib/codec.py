@@ -74,6 +74,8 @@ def encode_envelope(env):
 
 
 def decode_envelope(data):
+    if not isinstance(data, (bytes, bytearray)):
+        data = bytes(data)  # memoryview from the reassembler; JSON is small
     try:
         env = json.loads(data.decode("utf-8"))
     except (ValueError, UnicodeError) as e:
@@ -92,33 +94,63 @@ def pack_frame(kind, payload):
 
 
 def split_chunk(payload):
-    """Parse a kind-1 payload: u16 LE stream_id + u16 LE flags + raw."""
+    """Parse a kind-1 payload: u16 LE stream_id + u16 LE flags + raw.
+    The raw part is a VIEW of the payload, not a copy — valid until the
+    caller's next reassembler feed."""
     if len(payload) < 4:
         raise CodecError("binary chunk shorter than its 4-byte header")
     sid = payload[0] | (payload[1] << 8)
     flags = payload[2] | (payload[3] << 8)
-    return sid, flags, bytes(payload[4:])
+    return sid, flags, payload[4:]
 
 
 class Reassembler:
-    """Incremental frame reassembly for stream transports.
+    """Incremental frame reassembly over ONE static buffer.
 
-    Feed received bytes; get back all complete frames as (kind, payload)
-    pairs. Raises CodecError on an oversized frame header — the transport
-    should close the connection on CodecError."""
+    The buffer is allocated once per connection and never grows: the
+    transport recv_into()s directly into write_view(), then feed() parses
+    complete frames in place. Frame payloads come back as memoryviews
+    into the buffer — valid until the next write_view/feed cycle — so
+    the hot path copies each byte exactly twice: socket->buffer (the
+    recv itself) and buffer->its final destination (the consumer's
+    slice-assign). No per-chunk heap allocation.
+
+    Capacity fits one full binary frame plus one full read, so after
+    compaction there is always room for a max-size recv."""
+
+    CAPACITY = 2 * (MAX_BINARY_CHUNK + 8)
 
     def __init__(self):
-        self._buf = bytearray()
+        self._buf = bytearray(self.CAPACITY)
+        self._have = 0
+
+    def write_view(self, nbytes=MAX_BINARY_CHUNK):
+        """Writable tail for recv_into: room for up to nbytes."""
+        return memoryview(self._buf)[self._have:self._have + nbytes]
 
     def feed(self, data):
-        self._buf += data
+        """Commit received bytes and extract complete frames.
+
+        `data` is either an int (that many bytes already landed in
+        write_view) or a bytes-like to copy in. Returns (kind, payload)
+        pairs; payloads are views valid until the next feed/write_view."""
+        if isinstance(data, int):
+            self._have += data
+        else:
+            n = len(data)
+            if self._have + n > len(self._buf):
+                raise CodecError("reassembler overflow")
+            self._buf[self._have:self._have + n] = data
+            self._have += n
         frames = []
-        while len(self._buf) >= 4:
+        pos = 0
+        while self._have - pos >= 4:
+            i = pos
             hdr = (
-                self._buf[0]
-                | (self._buf[1] << 8)
-                | (self._buf[2] << 16)
-                | (self._buf[3] << 24)
+                self._buf[i]
+                | (self._buf[i + 1] << 8)
+                | (self._buf[i + 2] << 16)
+                | (self._buf[i + 3] << 24)
             )
             kind = KIND_BINARY if hdr & _KIND_SHIFT else KIND_JSON
             length = hdr & _LEN_MASK
@@ -127,9 +159,16 @@ class Reassembler:
                 raise CodecError(
                     "frame {}B over {}B cap (kind {})".format(length, cap, kind)
                 )
-            if len(self._buf) < 4 + length:
+            if self._have - pos < 4 + length:
                 break
-            frames.append((kind, bytes(self._buf[4 : 4 + length])))
-            # CircuitPython bytearray has no slice deletion; reslice instead
-            self._buf = self._buf[4 + length :]
+            payload = memoryview(self._buf)[pos + 4: pos + 4 + length]
+            frames.append((kind, payload))
+            pos += 4 + length
+        if pos:
+            # compact the unconsumed tail to the front; usually empty
+            tail = self._have - pos
+            if tail:
+                tmp = bytes(self._buf[pos:self._have])
+                self._buf[:tail] = tmp
+            self._have = tail
         return frames

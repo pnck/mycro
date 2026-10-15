@@ -840,6 +840,36 @@ def g9_stream_throughput(ctx):
         ctx.provider.set_frame(*_frame_default())
 
 
+IMG_POOL = ("\\use{img}\\use{net}"
+            + "".join(f"\\call{{img.snap}}{{0,0,4,4}}\\set{{{v}}}{{"
+                      f"$ret}}" for v in "abcdefgh")  # fill all SNAP_SLOTS
+            + "\\call{img.snap}{0,0,4,4}\\set{i}{$ret}"  # 9th: pool full
+            "\\ifnum{$i}{<}{0}{\\call{net.send}{pool-full}}"
+            "{\\call{net.send}{pool-nine}}"
+            "\\call{img.snap}{10,8,4,4}\\set{a}{$ret}"  # overwrite frees a slot
+            "\\call{img.at}{$a}{0,0}"
+            "\\ifnum{$ret}{=}{0x466E96}{\\call{net.send}{pool-reused}}"
+            "{\\call{net.send}{pool-bad}}")
+
+
+def g10_snap_pool_exhaustion(ctx):
+    """Snap slot pool (spec/vm.md Part II §6): after SNAP_SLOTS live
+    snapshots the next snap fails deterministically ($ret<0); an
+    overwrite-release reopens a slot and the pool keeps working."""
+    _ensure_provider(ctx)
+    c = ctx.client()
+    c.call("macro.submit", {"code": IMG_POOL})
+    tags = []
+    for _ in range(2):
+        e = recv_until(c, lambda m: m.get("type") == "net.msg", timeout=15)
+        tags.append(e["payload"].get("tag") if e else None)
+    res = recv_result(c)
+    check("G10 snap pool: exhaustion fails clean, release reopens a slot",
+          tags == ["pool-full", "pool-reused"] and res is not None,
+          str(tags))
+    c.close()
+
+
 def _mem_now(ctx):
     """free_mem probe; its own short connection is uniform per case."""
     try:
@@ -934,7 +964,7 @@ def main(argv=None):
              f2_submit_storm, f3_hard_kill, g1_binary_flood, g2_latency_probe,
              g3_img_no_provider, g4_img_snap_at, g5_img_diff,
              g6_handle_overwrite_reuse, g7_capture_passthrough,
-             g8_rect_literal, g9_stream_throughput]
+             g8_rect_literal, g9_stream_throughput, g10_snap_pool_exhaustion]
     if not args.skip_slow:
         cases.append(a4_slow_auth_deadline)
     if args.only:

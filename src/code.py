@@ -21,6 +21,10 @@ OUTBOX_CAP = 32       # per-client queued push frames; beyond this the peer is n
 # img namespace (exact pixel matching; spec/vm.md + docs/protocol.md)
 IMG_TIMEOUT_S = 20    # reverse-request ceiling
 IMG_STREAM_MAX = 4 * 1024 * 1024  # armed-stream total payload cap
+# Static stream assembly arena (spec/vm.md Part II §6): reverse requests
+# are single-in-flight, so one buffer serves every stream — zero heap
+# churn no matter how much pixel traffic flows.
+_stream_arena = bytearray(IMG_STREAM_MAX)
 SNAP_MAX_EDGE = RECT_MAX_EDGE  # snapshot edge cap (128x128 RGB = 48KB)
 
 try:
@@ -251,6 +255,9 @@ async def _img_capture_task():
     try:
         _payload, stream = await _img_request("img.frame", {"format": "png"})
         if stream:
+            # isolate from the shared stream arena: the UI holds this
+            # across later img traffic until the browser fetches it.
+            # Human-click frequency — one copy is fine here.
             _img_ui["data"] = bytes(stream)
         else:
             _img_ui["err"] = "empty response"
@@ -474,13 +481,13 @@ def _img_resolve(c, env):
         ent["sid"] = sid
         total = p.get("bytes")
         if isinstance(total, int) and 0 < total <= IMG_STREAM_MAX:
-            # preallocated: each chunk lands by offset, no O(n^2) growth
-            # copies (bytearray += realloc-copies per chunk)
-            ent["stream"] = bytearray(total)
+            # static arena: each chunk lands by offset, no allocation,
+            # no O(n^2) growth copies
+            ent["stream"] = memoryview(_stream_arena)[:total]
             ent["have"] = 0
         else:
             ent["stream"] = bytearray()
-            ent["have"] = -1  # unknown length: append path
+            ent["have"] = -1  # unknown length: append path (heap fallback)
     else:
         ent["event"].set()
 
@@ -503,6 +510,10 @@ def _img_chunk(c, payload):
         ent["stream"][ent["have"]:end] = data
         ent["have"] = end
     else:
+        if len(ent["stream"]) + len(data) > IMG_STREAM_MAX:
+            ent["err"] = "stream_overrun"  # unannounced length over the cap
+            ent["event"].set()
+            return True
         ent["stream"] += data
     if flags & codec.FLAG_STREAM_END:
         if 0 <= ent["have"] < len(ent["stream"]):
@@ -534,8 +545,15 @@ def _img_snap(x, y, w, h):
         if len(stream) != cw * ch * 3:
             print("img.snap: bad stream")
             return -1
-        return runtime.new_handle("snap", {"w": cw, "h": ch,
-                                           "rgb": bytes(stream)})
+        slot = runtime.snap_pool.alloc()
+        if slot is None:
+            print("img.snap: snapshot pool exhausted (release a snapshot)")
+            return -1
+        view = runtime.snap_pool.view(slot, len(stream))
+        view[:] = stream  # arena -> slot memcpy, no heap involved
+        return runtime.new_handle("snap", {"w": cw, "h": ch, "rgb": view,
+                                           "_arena": runtime.snap_pool,
+                                           "_slot": slot})
     return run()
 
 
@@ -587,17 +605,28 @@ def _recv(conn, nbytes):
 
     CircuitPython's socketpool.Socket has recv_into, not recv; on-device
     probe: no data raises EAGAIN, a closed peer raises ENOTCONN. Returns
-    bytes, b"" when the peer is gone, None when nothing is available."""
+    bytes, b"" when the peer is gone, None when nothing is available.
+    Cold paths only (auth prologue) — the hot loop uses _recv_into."""
     buf = bytearray(nbytes)
+    r = _recv_into(conn, buf)
+    if r is None:
+        return None
+    if r == 0:
+        return b""
+    return bytes(buf[:r])
+
+
+def _recv_into(conn, view):
+    """recv_into a caller-owned (static) buffer: zero allocation.
+
+    Returns the byte count, 0 when the peer is gone, None on EAGAIN."""
     try:
-        n = conn.recv_into(buf)
+        n = conn.recv_into(view)
     except OSError as e:
         if e.args and e.args[0] == 11:
             return None  # EAGAIN: no data right now
-        return b""  # ENOTCONN (128) et al: peer is gone
-    if not n:
-        return b""
-    return bytes(buf[:n])
+        return 0  # ENOTCONN (128) et al: peer is gone
+    return n
 
 
 def _service(c, now):
@@ -626,20 +655,22 @@ def _service(c, now):
                 c.alive = False
         return True
     for _ in range(8):  # bounded reads per tick so one client can't starve others
-        data = _recv(conn, 8192)
-        if data is None:
+        # recv straight into the reassembler's static buffer: the hot
+        # path allocates nothing, each byte is copied exactly twice
+        r = _recv_into(conn, c.reasm.write_view())
+        if r is None:
             break  # no more data right now
         active = True
-        if data == b"":
+        if r == 0:
             c.alive = False
             return True
         try:
-            frames = c.reasm.feed(data)
+            frames = c.reasm.feed(r)
         except codec.CodecError as e:
             print("raw frame error:", c.addr, e)
             c.alive = False
             return
-        print(f"raw rx {len(data)}B -> {len(frames)} frame(s)")
+        print(f"raw rx {r}B -> {len(frames)} frame(s)")
         for kind, payload in frames:
             if kind != codec.KIND_JSON:
                 resp = None if _img_chunk(c, payload) else proto.error_response(
