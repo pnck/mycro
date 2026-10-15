@@ -668,17 +668,17 @@ def g3_img_no_provider(ctx):
 
 def _frame_default():
     rp = reference_provider
-    return rp.W, rp.H, rp.frame_gradient()
+    return rp.W, rp.H, rp.frame_default()
 
 
-def _frame_nonlinear():
+def _frame_changed():
     rp = reference_provider
-    return rp.W, rp.H, rp.frame_nonlinear()
+    return rp.W, rp.H, rp.frame_changed()
 
 
-def _frame_big():
+def _frame_fullhd():
     rp = reference_provider
-    return rp.BIG_W, rp.BIG_H, rp.frame_big()
+    return rp.BIG_W, rp.BIG_H, rp.frame_fullhd()
 
 
 def _ensure_provider(ctx):
@@ -708,7 +708,7 @@ def g5_img_diff(ctx):
         c.call("macro.submit", {"code": IMG_DIFF})
         snapped = recv_tag(c, "snapped", timeout=15)
         if snapped:
-            ctx.provider.set_frame(*_frame_nonlinear())
+            ctx.provider.set_frame(*_frame_changed())
             c.call("event.push", {"name": "net.msg", "fields": {}})
         tag = recv_until(
             c,
@@ -814,7 +814,7 @@ def g9_stream_throughput(ctx):
             r.add_header("Authorization", f"Bearer {ctx.token}")
         return r
 
-    ctx.provider.set_frame(*_frame_big())
+    ctx.provider.set_frame(*_frame_fullhd())
     try:
         urllib.request.urlopen(req("POST"), timeout=5).read()
         t0 = time.monotonic()
