@@ -227,6 +227,56 @@ def macro_abort(request: Request):
     return Response(request, "No macro running", content_type="text/plain")
 
 
+# --- Pixel Assist (web UI): single-lossless-capture passthrough ---
+# HTTP handlers are synchronous, so the capture runs as a task and the
+# browser polls. The device never decodes the PNG — pure passthrough.
+
+_img_ui = {"pending": False, "data": None, "err": None}
+
+
+@server.route("/img/capture", methods=["POST"])
+def img_capture_start(request: Request):
+    if not _authorized(request):
+        return _unauth(request)
+    if _img_ui["pending"]:
+        return Response(request, "busy", status=(409, "Conflict"),
+                        content_type="text/plain")
+    _img_ui.update(pending=True, data=None, err=None)
+    asyncio.create_task(_img_capture_task())
+    return Response(request, "started", content_type="text/plain")
+
+
+async def _img_capture_task():
+    try:
+        _payload, stream = await _img_request("img.frame", {"format": "png"})
+        if stream:
+            _img_ui["data"] = bytes(stream)
+        else:
+            _img_ui["err"] = "empty response"
+    except ImgError as e:
+        _img_ui["err"] = str(e)
+    except Exception as e:
+        _img_ui["err"] = f"{type(e).__name__}: {e}"
+    finally:
+        _img_ui["pending"] = False
+
+
+@server.route("/img/capture", methods=["GET"])
+def img_capture_poll(request: Request):
+    if not _authorized(request):
+        return _unauth(request)
+    if _img_ui["pending"]:
+        return Response(request, "", status=(204, "No Content"),
+                        content_type="text/plain")
+    if _img_ui["err"]:
+        return Response(request, _img_ui["err"], status=(502, "Bad Gateway"),
+                        content_type="text/plain")
+    if _img_ui["data"] is None:
+        return Response(request, "none", status=(404, "Not Found"),
+                        content_type="text/plain")
+    return Response(request, body=_img_ui["data"], content_type="image/png")
+
+
 @server.route("/compile", methods=["POST"])
 def compile_macro(request: Request):
     global click_hold_ms
