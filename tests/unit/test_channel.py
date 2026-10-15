@@ -35,7 +35,7 @@ class FakeCtx:
     def abort(self):
         return False
 
-    def device_info(self):
+    def device_info(self, gc_first=False):
         return {"board": "testboard"}
 
 
