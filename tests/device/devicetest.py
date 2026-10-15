@@ -666,6 +666,21 @@ def g3_img_no_provider(ctx):
     c.close()
 
 
+def _frame_default():
+    rp = reference_provider
+    return rp.W, rp.H, rp.frame_gradient()
+
+
+def _frame_nonlinear():
+    rp = reference_provider
+    return rp.W, rp.H, rp.frame_nonlinear()
+
+
+def _frame_big():
+    rp = reference_provider
+    return rp.BIG_W, rp.BIG_H, rp.frame_big()
+
+
 def _ensure_provider(ctx):
     if getattr(ctx, "provider", None) is None:
         ctx.provider = reference_provider.ReferenceProvider(
@@ -693,7 +708,7 @@ def g5_img_diff(ctx):
         c.call("macro.submit", {"code": IMG_DIFF})
         snapped = recv_tag(c, "snapped", timeout=15)
         if snapped:
-            ctx.provider.set_frame("b")
+            ctx.provider.set_frame(*_frame_nonlinear())
             c.call("event.push", {"name": "net.msg", "fields": {}})
         tag = recv_until(
             c,
@@ -707,7 +722,7 @@ def g5_img_diff(ctx):
               f"snapped={'ok' if snapped else 'FAIL'} diff={got}")
     finally:
         if getattr(ctx, "provider", None) is not None:
-            ctx.provider.set_frame("a")
+            ctx.provider.set_frame(*_frame_default())
         c.close()
 
 
@@ -799,7 +814,7 @@ def g9_stream_throughput(ctx):
             r.add_header("Authorization", f"Bearer {ctx.token}")
         return r
 
-    ctx.provider.set_frame("big")
+    ctx.provider.set_frame(*_frame_big())
     try:
         urllib.request.urlopen(req("POST"), timeout=5).read()
         t0 = time.monotonic()
@@ -822,7 +837,7 @@ def g9_stream_throughput(ctx):
     except Exception as e:
         check("G9 full-screen stream throughput", False, str(e))
     finally:
-        ctx.provider.set_frame("a")
+        ctx.provider.set_frame(*_frame_default())
 
 
 def f4_memory_trend(ctx, mem0):

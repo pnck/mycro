@@ -3,12 +3,14 @@ img.* e2e without a running OBS).
 
 A formal reference implementation of the provider side of protocol v1
 (docs/protocol.md): auth prologue, img.hello, the img.frame verb with
-all three extraction selectors (rect / points / w+h+format). Pixels come
-from a deterministic synthetic 80x60 frame (native resolution), shared
-by construction with the G-group cases in devicetest.py:
+all extraction selectors (rect / points / w+h+format / format:png).
 
-    frame "a": v(x,y) = (x*3 + y*5) % 256 as (v, v+40, v+80)
-    frame "b": nonlinear field (v = x*x + y*y*3 + 7), for diff tests
+The provider's screen content is explicit frame DATA, not named modes —
+a real screen changes over time, and tests set it directly:
+`provider.set_frame(w, h, rgb888_bytes)`. Frame builders:
+`frame_gradient()` (default; G4/G7/G8 read exact pixels from it),
+`frame_nonlinear()` (the change G5 must detect), `frame_big()`
+(1920x1080, G9's full-screen throughput case).
 
 gray8 uses the integer BT.601 luma shared with src/lib/imgmatch.py and
 obs/obs_mycro.py: (r*77 + g*150 + b*29) >> 8.
@@ -29,34 +31,47 @@ CHUNK_RAW = 8192 - 4  # binary frame payload minus u16 stream_id + u16 flags
 FLAG_STREAM_END = 1
 
 W, H = 80, 60
-BIG_W, BIG_H = 1920, 1080  # "big" frame: the full-screen throughput case
-
-_pixels_cache = {}
+BIG_W, BIG_H = 1920, 1080
 
 
-def _dims(which):
-    return (BIG_W, BIG_H) if which == "big" else (W, H)
+def frame_gradient(w=W, h=H):
+    """Deterministic base frame: v(x,y) = (x*3 + y*5) % 256 as (v, v+40,
+    v+80). G4/G7/G8 read exact pixels from this."""
+    out = bytearray(w * h * 3)
+    i = 0
+    for y in range(h):
+        for x in range(w):
+            v = (x * 3 + y * 5) % 256
+            out[i] = v
+            out[i + 1] = (v + 40) % 256
+            out[i + 2] = (v + 80) % 256
+            i += 3
+    return bytes(out)
 
 
-def make_png(w, h, rgb):
-    """Minimal valid PNG (8-bit RGB, filter-0 rows) — stdlib only."""
+def frame_nonlinear(w=W, h=H):
+    """A different field (v = x*x + y*y*3 + 7) — the changed content G5
+    must detect via img.diff."""
+    out = bytearray(w * h * 3)
+    i = 0
+    for y in range(h):
+        for x in range(w):
+            v = (x * x + y * y * 3 + 7) % 256
+            out[i] = v
+            out[i + 1] = (v * 2) % 256
+            out[i + 2] = 255 - v
+            i += 3
+    return bytes(out)
 
-    def chunk(tag, data):
-        return (struct.pack(">I", len(data)) + tag + data
-                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
 
-    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
-    raw = b"".join(b"\x00" + rgb[y * w * 3:(y + 1) * w * 3] for y in range(h))
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
-            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+_big_cache = None
 
 
-def _pixels(which):
-    if which in _pixels_cache:
-        return _pixels_cache[which]
-    if which == "big":
-        # per-pixel variation keeps PNG compression honest for the
-        # throughput measurement (a flat field would deflate to nothing)
+def frame_big():
+    """1920x1080 with per-pixel variation (PNG deflate stays honest) —
+    the full-screen throughput case for G9. Computed once."""
+    global _big_cache
+    if _big_cache is None:
         out = bytearray(BIG_W * BIG_H * 3)
         i = 0
         for y in range(BIG_H):
@@ -66,21 +81,8 @@ def _pixels(which):
                 out[i + 1] = (v + 40) % 256
                 out[i + 2] = (v + 80) % 256
                 i += 3
-        _pixels_cache[which] = bytes(out)
-        return _pixels_cache[which]
-    out = bytearray(W * H * 3)
-    for y in range(H):
-        for x in range(W):
-            if which == "b":
-                v = (x * x + y * y * 3 + 7) % 256
-                r, g, b = v, (v * 2) % 256, 255 - v
-            else:
-                v = (x * 3 + y * 5) % 256
-                r, g, b = v, (v + 40) % 256, (v + 80) % 256
-            i = (y * W + x) * 3
-            out[i], out[i + 1], out[i + 2] = r, g, b
-    _pixels_cache[which] = bytes(out)
-    return _pixels_cache[which]
+        _big_cache = bytes(out)
+    return _big_cache
 
 
 def _gray(rgb):
@@ -95,13 +97,15 @@ def _gray(rgb):
 class ReferenceProvider:
     def __init__(self, host, port, token):
         self.host, self.port, self.token = host, port, token
-        self.which = "a"
+        self._frame = (W, H, frame_gradient())
         self.ready = threading.Event()
         self._stop = threading.Event()
         self._thread = None
 
-    def set_frame(self, which):
-        self.which = which
+    def set_frame(self, w, h, rgb):
+        """The screen now shows this: (width, height, RGB888 bytes)."""
+        assert len(rgb) == w * h * 3
+        self._frame = (w, h, rgb)
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -141,8 +145,7 @@ class ReferenceProvider:
                 env = json.loads(payload.decode("utf-8"))
                 t, rid = env.get("type"), env.get("id", 0)
                 p = env.get("payload", {})
-                rgb = _pixels(self.which)
-                w0, h0 = _dims(self.which)
+                w0, h0, rgb = self._frame
                 if t != "img.frame":
                     continue  # pushes (macro.result et al.) are ignored
                 if "rect" in p:
