@@ -274,7 +274,11 @@ def img_capture_poll(request: Request):
     if _img_ui["data"] is None:
         return Response(request, "none", status=(404, "Not Found"),
                         content_type="text/plain")
-    return Response(request, body=_img_ui["data"], content_type="image/png")
+    # read-once: hand the bytes to the response and release the slot
+    # immediately — a full-screen PNG is >1MB of heap we must not retain
+    data = _img_ui["data"]
+    _img_ui["data"] = None
+    return Response(request, body=data, content_type="image/png")
 
 
 @server.route("/compile", methods=["POST"])
@@ -572,17 +576,20 @@ def _recv(conn, nbytes):
 
 
 def _service(c, now):
+    """Service one client for this tick. Returns True when any bytes moved
+    (the server loop yields instead of sleeping while traffic flows)."""
+    active = False
     conn = c.conn
     if not c.authed:
         if now > c.deadline:
             c.alive = False
-            return
+            return True
         chunk = _recv(conn, codec.AUTH_LEN - len(c.inbuf))
         if chunk is None:
-            return  # no data yet
+            return False  # no data yet
         if chunk == b"":
             c.alive = False
-            return
+            return True
         c.inbuf += chunk
         if len(c.inbuf) >= codec.AUTH_LEN:
             authed = sum(1 for x in _raw_clients if x.authed)
@@ -592,14 +599,15 @@ def _service(c, now):
             else:
                 print("raw auth rejected:", c.addr)
                 c.alive = False
-        return
-    for _ in range(4):  # bounded reads per tick so one client can't starve others
-        data = _recv(conn, 1024)
+        return True
+    for _ in range(8):  # bounded reads per tick so one client can't starve others
+        data = _recv(conn, 8192)
         if data is None:
             break  # no more data right now
+        active = True
         if data == b"":
             c.alive = False
-            return
+            return True
         try:
             frames = c.reasm.feed(data)
         except codec.CodecError as e:
@@ -636,11 +644,13 @@ def _service(c, now):
             sent = conn.send(frame[off:])
         except OSError:
             break  # EAGAIN: retry next tick
+        active = True
         off += sent
         if off >= len(frame):
             c.outbox.pop(0)
         else:
             c.outbox[0] = (frame, off)
+    return active
 
 
 async def _http_loop():
@@ -672,6 +682,7 @@ async def _raw_server():
         s.listen(MAX_CLIENTS)
         print(f"Raw protocol on :{RAW_PORT} (v{codec.PROTO_VERSION})")
         while True:
+            busy = False
             while True:
                 try:
                     conn, addr = s.accept()
@@ -680,10 +691,11 @@ async def _raw_server():
                 conn.settimeout(0)
                 _raw_clients.append(_Client(conn, addr))
                 print("raw conn from", addr)
+                busy = True
             now = time.monotonic()
             for c in _raw_clients[:]:
                 try:
-                    _service(c, now)
+                    busy = _service(c, now) or busy
                 except Exception as e:
                     print("raw client error:", c.addr, e)
                     traceback.print_exception(e)  # full traceback to serial
@@ -695,7 +707,9 @@ async def _raw_server():
                         c.conn.close()
                     except Exception:
                         pass
-            await asyncio.sleep(0.01)
+                    busy = True
+            # traffic flows -> just yield; idle -> sleep a tick
+            await asyncio.sleep(0 if busy else 0.01)
     except Exception as e:
         print("raw server disabled:", e)
         traceback.print_exception(e)
