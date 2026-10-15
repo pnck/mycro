@@ -73,12 +73,12 @@ machine-readable `payload.code` (`bad_version` / `bad_type` / `bad_id` /
 | `macro.submit` | client → server | `code`: DSL source string | `bytes`: compiled bytecode size |
 | `macro.status` | client → server | — | `state`: `idle`/`running`/`done`/`aborted`/`error`, optional `detail` |
 | `macro.abort` | client → server | — | — (error `state` when nothing is running) |
-| `device.info` | client → server | — | `board`, `fw`, `free_mem`, `proto` (protocol version) |
+| `device.info` | client → server | optional `gc`: true → reading taken after a GC sweep (steady-state truth) | `board`, `fw`, `free_mem`, `proto` (protocol version) |
 | `event.push` | client → server | `name`: signal name, `fields`: object of i32 slot values | — (error `unknown_signal` for unregistered signals) |
 | `macro.result` | server → clients | `state`, `ms` (execution wall time) | push, `id` = 0 |
 | `net.msg` | server → clients | emitted by `\call{net.send}` | push, `id` = 0 |
 | `img.hello` | capture client → server | `caps`: list | push, `id` = 0; registers the client as the capture provider |
-| `img.frame` | server → capture client | one selector: `rect` {x,y,w,h} → lossless RGB8 crop / `points` [[x,y],…] → exact colors / `w`,`h` + `format` (`rgb8`/`gray8`) → whole-source resample / `format`:`png` → native whole-source PNG bytes, untouched | `img.frame.ok` with `width`/`height` (native dims), selector-specific fields, and for pixel streams `stream_id`/`chunks` followed by kind-1 chunks |
+| `img.frame` | server → capture client | one selector: `rect` {x,y,w,h} → lossless RGB8 crop / `points` [[x,y],…] → exact colors / `w`,`h` + `format` (`rgb8`/`gray8`) → whole-source resample / `format`:`png` → native whole-source PNG bytes, untouched | `img.frame.ok` with `width`/`height` (native dims), selector-specific fields, and for pixel streams `stream_id`/`chunks`/`bytes` (total payload length) followed by kind-1 chunks |
 
 `img.frame` is the **only** provider verb — stateless "current frame":
 every request takes a fresh screenshot and extracts per the selector.
@@ -167,7 +167,13 @@ persistent *client* of the device's :7373 listener (same auth prologue).
 and responses flow back with the request's `id` — the envelope/frame
 rules are symmetric, so no new listener, port, or protocol exists.
 Binary responses use kind-1 frames correlated by `stream_id` to their
-metadata envelope, exactly as the frame layer already describes.
+metadata envelope, exactly as the frame layer already describes. The
+metadata also carries `bytes`, the stream's total payload length: the
+receiver preallocates the buffer and lands each chunk by offset (chunk
+order is the TCP order), avoiding O(n²) append-growth copies on a large
+stream. Senders SHOULD set it; a receiver must fall back to append when
+it is absent, and must reject a stream that overruns its announced
+length.
 
 **Coordinate space.** All coordinates are native source pixels and
 pixel-exact paths never resample. Every `img.frame` response carries

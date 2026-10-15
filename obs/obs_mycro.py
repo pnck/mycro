@@ -245,7 +245,8 @@ def send_stream(s, ok_type, rid, meta, data):
     _stream_id = (_stream_id + 1) & 0xFFFF
     sid = _stream_id
     chunks = (len(data) + CHUNK_RAW - 1) // CHUNK_RAW
-    meta = dict(meta, stream_id=sid, chunks=chunks)
+    meta = dict(meta, stream_id=sid, chunks=chunks,
+                bytes=len(data))
     send_env(s, ok_type, rid, meta)
     for i in range(chunks):
         part = data[i * CHUNK_RAW:(i + 1) * CHUNK_RAW]

@@ -32,7 +32,7 @@ class FakeCtx:
         self.aborted = True
         return was
 
-    def device_info(self):
+    def device_info(self, gc_first=False):
         return {"board": "testboard", "fw": "10.3.0"}
 
 

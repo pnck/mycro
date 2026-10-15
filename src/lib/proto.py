@@ -9,7 +9,7 @@ device, fakes in tests):
     ctx.submit(code) -> (bytecode_len | None, err | None)  compile + start
     ctx.status() -> (state, detail | None)
     ctx.abort() -> bool                                     False = was idle
-    ctx.device_info() -> dict
+    ctx.device_info(gc_first=False) -> dict
     ctx.runtime                                             Runtime registry
 
 Responses leave ts = 0; the transport stamps it at send time.
@@ -97,7 +97,9 @@ def _h_abort(payload, ctx, _env):
 
 
 def _h_device_info(payload, ctx, _env):
-    info = dict(ctx.device_info())
+    # {"gc": true} asks for a post-collection reading (memory forensics);
+    # plain calls (e.g. latency probes) skip the collect pause
+    info = dict(ctx.device_info(gc_first=bool(payload.get("gc"))))
     info["proto"] = PROTO_VERSION
     return ("ok", info)
 

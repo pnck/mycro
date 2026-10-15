@@ -20,6 +20,7 @@ OUTBOX_CAP = 32       # per-client queued push frames; beyond this the peer is n
 
 # img namespace (exact pixel matching; spec/vm.md + docs/protocol.md)
 IMG_TIMEOUT_S = 20    # reverse-request ceiling
+IMG_STREAM_MAX = 4 * 1024 * 1024  # armed-stream total payload cap
 SNAP_MAX_EDGE = RECT_MAX_EDGE  # snapshot edge cap (128x128 RGB = 48KB)
 
 try:
@@ -345,7 +346,9 @@ class _ProtoCtx:
             return True
         return False
 
-    def device_info(self):
+    def device_info(self, gc_first=False):
+        if gc_first:
+            gc.collect()  # post-GC truth for memory forensics (devicetest F4)
         u = os.uname()
         return {"board": u.machine, "fw": u.release, "free_mem": gc.mem_free()}
 
@@ -436,7 +439,8 @@ async def _img_request(type_, payload):
         raise ImgError("no_provider")
     _img_req_id = (_img_req_id + 1) & 0x7FFFFFFF
     ent = {"id": _img_req_id, "event": asyncio.Event(), "client": c,
-           "resp": None, "err": None, "sid": -1, "stream": None}
+           "resp": None, "err": None, "sid": -1, "stream": None,
+           "have": -1}
     _img_pending = ent
     env = {"v": codec.PROTO_VERSION, "type": type_, "id": ent["id"],
            "ts": _now_ms(), "payload": payload}
@@ -468,7 +472,15 @@ def _img_resolve(c, env):
     if env.get("type") != "error" and isinstance(sid, int) \
             and p.get("chunks", 0) > 0:
         ent["sid"] = sid
-        ent["stream"] = bytearray()  # completion deferred to _img_chunk
+        total = p.get("bytes")
+        if isinstance(total, int) and 0 < total <= IMG_STREAM_MAX:
+            # preallocated: each chunk lands by offset, no O(n^2) growth
+            # copies (bytearray += realloc-copies per chunk)
+            ent["stream"] = bytearray(total)
+            ent["have"] = 0
+        else:
+            ent["stream"] = bytearray()
+            ent["have"] = -1  # unknown length: append path
     else:
         ent["event"].set()
 
@@ -482,8 +494,21 @@ def _img_chunk(c, payload):
     sid, flags, data = codec.split_chunk(payload)
     if sid != ent["sid"]:
         return False
-    ent["stream"] += data
+    if ent["have"] >= 0:
+        end = ent["have"] + len(data)
+        if end > len(ent["stream"]):
+            ent["err"] = "stream_overrun"  # provider lied about its length
+            ent["event"].set()
+            return True
+        ent["stream"][ent["have"]:end] = data
+        ent["have"] = end
+    else:
+        ent["stream"] += data
     if flags & codec.FLAG_STREAM_END:
+        if 0 <= ent["have"] < len(ent["stream"]):
+            # provider ended short of its announced length: trim so the
+            # consumer's length check rejects it instead of trusting zeros
+            ent["stream"] = ent["stream"][:ent["have"]]
         ent["event"].set()
     return True
 

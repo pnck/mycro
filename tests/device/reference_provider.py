@@ -231,7 +231,8 @@ class ReferenceProvider:
     @staticmethod
     def _send_stream(s, rid, sid, meta, data):
         chunks = (len(data) + CHUNK_RAW - 1) // CHUNK_RAW
-        meta = dict(meta, stream_id=sid, chunks=chunks)
+        meta = dict(meta, stream_id=sid, chunks=chunks,
+                    bytes=len(data))
         ReferenceProvider._send_env(s, "img.frame.ok", rid, meta)
         for i in range(chunks):
             part = data[i * CHUNK_RAW:(i + 1) * CHUNK_RAW]
