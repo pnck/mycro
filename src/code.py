@@ -21,7 +21,7 @@ OUTBOX_CAP = 32       # per-client queued push frames; beyond this the peer is n
 # img namespace (exact pixel matching; spec/vm.md + docs/protocol.md)
 IMG_TIMEOUT_S = 20    # reverse-request ceiling
 IMG_STREAM_MAX = 2 * 1024 * 1024  # armed-stream rejection cap (not a reservation)
-# Stream assembly buffer (spec/vm.md Part II §6): allocated ON DEMAND and
+# Stream assembly buffer (spec/vm.md Appendix A): allocated ON DEMAND and
 # grown to the workload's high-water mark, then owned by the middleware
 # forever — never returned to the GC. Reverse requests are
 # single-in-flight, so one buffer serves every stream; steady-state

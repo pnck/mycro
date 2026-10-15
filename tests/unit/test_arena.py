@@ -1,4 +1,4 @@
-"""Static backing store (spec/vm.md Part II §6): SlotArena / BumpArena
+"""Static backing store (spec/vm.md Appendix A): SlotArena / BumpArena
 semantics and their integration with handle ownership.
 
 The point of the arenas is that bulk byte data never touches the GC
@@ -46,7 +46,7 @@ def test_snap_pool_sized_for_full_rect():
     # one slot holds a maximum-size snapshot (RECT_MAX_EDGE^2 RGB)
     assert SNAP_SLOT_BYTES == 128 * 128 * 3
     rt = Runtime()
-    # on demand: construction allocates NOTHING (spec/vm.md Part II §6)
+    # on demand: construction allocates NOTHING (spec/vm.md Appendix A)
     assert rt.snap_pool._grown == 0 and rt.snap_pool._free == []
 
 

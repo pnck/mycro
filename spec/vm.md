@@ -236,45 +236,30 @@ middleware-side **const store** (`add_const`/`const_entry`), reset on
 each compilation. The bytecode references them by small integer id via
 `CALL_EXT sys.const <cid>`, which materializes a normal handle — no
 bytecode format change, and the standard ownership rules (claim/move/
-overwrite-release/exit-release) apply unchanged. Const bytes live in
-the bump arena (§6), so a per-compile reset is a pointer bump, not
-garbage collection.
+overwrite-release/exit-release) apply unchanged. Const bytes are
+batch-lifetime bulk resources (§6): a per-compile reset invalidates
+them wholesale.
 
-## 6. Static backing store
+## 6. Bulk resource backing
 
-Bulk byte data MUST NOT be allocated from the host heap per operation.
-The middleware owns self-managed storage and never returns it to the
-GC. The allocation discipline is **on demand, then owned forever**:
-buffers appear on first touch and grow to the workload's high-water
-mark — cold paths (first snapshot, first stream, first compile, a
-larger stream than any before) MAY pay one-time allocation cost; the
-steady-state hot path MUST NOT allocate. Nothing speculative is
-reserved: an arena the workload never touches costs nothing, which
-keeps main memory available for other subsystems (e.g. vision models).
+Bulk byte resources (handle payloads, const-store pixels) are backed by
+middleware-managed storage, not by per-operation allocation from the
+host runtime's default memory manager. Only the observable behavior is
+normative here:
 
-- **Stream assembly**: one buffer grown on demand to the largest
-  stream actually seen, never shrunk. Reverse requests are
-  single-in-flight, so a single buffer serves every stream; chunks
-  land by offset. The stream cap is a rejection limit, not a
-  reservation.
-- **Handle payloads**: a slot pool grown slot-by-slot on first claim,
-  up to a fixed count. An arena-backed handle carries its pool
-  reference in the handle entry; release (§4, any path) returns the
-  slot to the pool's free list — not to the GC. Pool exhaustion fails
-  the producing call deterministically (error convention, `$ret < 0`)
-  — never a GC retry.
-- **Const store** (§5): a bump arena allocated on first use, reset
-  wholesale per compilation (the buffer is kept; only the bump
-  pointer resets).
+- A handle's backing storage is bound to the handle entry; release
+  through ANY path (§4) returns the storage to the managing layer,
+  where it is reusable by later operations.
+- Backing budgets are profile constants with the same standing as
+  MAX_REGS (Part I §2) — platform budgets, not spec limits.
+- Budget exhaustion fails the producing operation deterministically
+  (error convention, `$ret < 0`; a compile error at compile time) —
+  never silently, never by stalling on the host allocator.
 
-Arena caps are profile constants with the same standing as MAX_REGS
-(Part I §2) — platform budgets, not spec limits. The GC heap remains
-for small control-plane objects only (envelopes, bytecode, tables).
-Consequences: no GC sawtooth from pixel traffic, no heap fragmentation
-over long sessions, deterministic hot-path latency. Transports SHOULD
-receive into self-managed reassembly storage and hand consumers views,
-so a byte on the receive hot path is copied at most twice
-(socket→reassembly, reassembly→destination).
+How the middleware organizes that storage — arena structures, growth
+policy, copy discipline — is an implementation matter and does not
+belong to this contract; the current implementation's design is
+recorded in Appendix A.
 
 ## 7. Peripheral abstraction
 
@@ -286,6 +271,48 @@ never import runtime-specific modules.
 
 # Appendix A — Implementation notes (non-normative but binding for ports)
 
+- **Bulk-memory discipline** (the current implementation of Part II §6;
+  revise freely as long as §6's observable behavior holds). On a
+  memory-constrained embedded target the host runtime's default memory
+  management is never acceptable for bulk data; the GC heap is for
+  small control-plane objects only (envelopes, bytecode, tables,
+  handle entries). Five rules bind every bulk buffer:
+  1. *On demand*: buffers appear on first touch, never speculatively
+     at boot; an arena the workload never touches costs nothing.
+  2. *Own forever*: once allocated, owned by the managing layer, never
+     returned to the GC; may grow to the workload's high-water mark,
+     never shrinks.
+  3. *Hot path allocates nothing*: steady state does pointer
+     arithmetic and free-list moves only; cold paths (first use,
+     growth past the previous high-water mark) may allocate, once.
+  4. *Deterministic failure*: exhaustion/overflow fails the operation
+     itself — never a GC retry or an allocation stall.
+  5. *Copy budget*: a byte on the receive hot path is copied at most
+     twice (socket→reassembly, reassembly→destination); transports
+     receive into self-managed storage and hand consumers views.
+     Isolating copies off the hot path (e.g. UI-held data that must
+     outlive later traffic) are permitted and must be justified in a
+     comment.
+- **Arena taxonomy** (structure follows access pattern — axes:
+  concurrent live count, entry size, lifetime): *slot pool* (several
+  concurrent, fixed-size, independent lifetimes — snapshots; future
+  match frames); *bump arena* (many, variable-size, batch lifetime —
+  the const store, reset wholesale per compile); *high-water buffer*
+  (one tenant, variable size, short lifetime — stream assembly, one
+  buffer because reverse requests are single-in-flight). Do not force
+  one structure on all buffers: a contiguous consumer cannot gather
+  from scattered pool slots without an extra full-size copy;
+  batch-free is O(1) under a bump arena but O(n) under a pool;
+  arbitrary-order release inside one flat buffer is a general heap —
+  the fragmentation this discipline exists to prevent.
+- **Current budgets** (profile constants, Part II §6): snapshot slot
+  48 KiB (128² RGB) × 8; const arena 256 KiB; stream rejection cap
+  2 MiB; per-connection reassembly 2×(8 KiB+8).
+- **Memory verification**: steady-state free_mem stays flat under
+  sustained bulk traffic; pool exhaustion fails deterministically and
+  recovers on release. A hot path found allocating (GC audit, a
+  traffic-correlated free_mem sawtooth) is a defect, not a tuning
+  issue.
 - **Cache discipline**: handle-ownership flags must be stored adjacent
   to the register file (same struct, same cache line). In compiled
   implementations, hoist the flags word into a dispatch-loop local so
