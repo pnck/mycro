@@ -536,10 +536,14 @@ paIn.forEach(el => el.addEventListener("change", () => {
 <tr><td><code>\call{sys.free}</code></td><td>Call an ext function; return value goes to <code>$ret</code></td></tr>
 <tr><td><code>\wait{sig}{5}</code></td><td>Wait for signal sig up to 5s (0 = forever); sets <code>$timeout</code></td></tr>
 <tr><td><code>$sig.field</code></td><td>Read a signal's payload slot (0 if unset)</td></tr>
-<tr><td><code>\call{img.snap}{x,y,w,h}</code></td><td>Snapshot a screen rect (native px) → handle in $ret</td></tr>
-<tr><td><code>\call{img.at}{$s}{x,y}</code> <code>\call{img.diff}{$a}{$b}{tol}</code></td><td>Read pixel color / count divergent pixels</td></tr>
-<tr><td><code>\rect{\row{0xFF0000,…},…}</code></td><td>Pixel literal — compile-time reference snapshot</td></tr>
+<tr><td><code>\call{net.send}{tag}</code></td><td>Push a net.msg to all connected hosts ($ret = clients reached)</td></tr>
+<tr><td><code>\wait{net.msg}{30}</code></td><td>Wait for a host's event.push; read fields as <code>$net.msg.x</code></td></tr>
+<tr><td><code>\call{img.snap}{x,y,w,h}</code></td><td>Snapshot a screen rect (native px, lossless) → handle in <code>$ret</code> ($ret&lt;0 = error)</td></tr>
+<tr><td><code>\call{img.at}{$s}{x,y}</code></td><td>Pixel color in a snapshot → packed <code>0xRRGGBB</code></td></tr>
+<tr><td><code>\call{img.diff}{$a}{$b}{tol}</code></td><td>Count pixels diverging beyond tol (0 = identical)</td></tr>
+<tr><td><code>\set{r}{\rect{\row{0xFF0000,…},…}}</code></td><td>Pixel literal — compile-time reference snapshot (handle)</td></tr>
 </table>
+<p><small>Handles: overwrite releases, <code>\set</code> moves, macro exit frees all — a polling loop cannot leak. Requires the capture provider (OBS plugin) connected.</small></p>
 <p><small>Namespaces/signals are registered by the runtime; this firmware provides <code>sys</code> (free/const), <code>net</code> (send + net.msg signal), <code>img</code> (snap/at/diff). Use the Pixel Assist above to grab coordinates and colors.</small></p>
 </details>
 
@@ -556,6 +560,7 @@ paIn.forEach(el => el.addEventListener("change", () => {
 <tr><td><code>\def{cp}[1]{\ctrl+#1}\cp{c}\cp{v}</code></td><td>Define & use a macro (v3)</td></tr>
 <tr><td><code>\set{n}{3}\rep{$n}{ab\enter}</code></td><td>Variable repeat count (v3)</td></tr>
 <tr><td><code>\call{sys.free}\val{ret}</code></td><td>Call ext fn, type the result (v3)</td></tr>
+<tr><td><code>\call{img.snap}{350,220,1,1}\set{p}{$ret}\call{img.at}{$p}{0,0}\ifnum{$ret}{=}{0xFF0000}{yes}</code></td><td>Type "yes" if the pixel at (350,220) is red</td></tr>
 </table>
 </details>
 
