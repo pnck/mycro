@@ -110,3 +110,15 @@ def test_const_arena_overflow_is_a_compile_error():
         assert False, "expected ValueError"
     except ValueError as e:
         assert "const arena" in str(e)
+
+
+def test_slot_arena_double_free_prevented():
+    a = SlotArena(16, 2)
+    s = a.alloc()
+    a.free(s)
+    a.free(s)  # duplicate free must not corrupt free-list
+    assert len(a._free) == 1
+    assert a.alloc() == s
+    assert a.alloc() is not None
+    assert a.alloc() is None  # pool exhausted cleanly, no phantom slot
+
