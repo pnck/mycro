@@ -140,10 +140,15 @@ class Dispatcher:
         if bad:
             code, msg = bad
             return error_response(env, code, msg)
-        handler = self._handlers.get(env["type"])
+        t = env["type"]
+        if t == "error" or t.endswith(".ok"):
+            # Terminal responses and error notices must never generate error replies,
+            # or a stray packet / timeout could trigger an infinite error storm.
+            return None
+        handler = self._handlers.get(t)
         if handler is None:
             return error_response(env, "unknown_type",
-                                  "unknown type: {}".format(env["type"]))
+                                  "unknown type: {}".format(t))
         try:
             outcome = handler(env.get("payload", {}), ctx, env)
         except Exception as e:

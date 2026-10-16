@@ -198,3 +198,18 @@ def test_event_push_actually_wakes_waiter():
         return await task
 
     assert asyncio.run(scenario())
+
+
+def test_error_envelope_silently_dropped_without_error_reply():
+    ctx = FakeCtx()
+    # Inbound error from peer must never generate an error reply (RFC 1122 error loop prevention)
+    r = dispatch(ctx, "error", {"code": "unknown_type", "message": "msg"}, id_=123)
+    assert r is None
+
+
+def test_terminal_ok_response_silently_dropped():
+    ctx = FakeCtx()
+    # Inbound stray .ok response (e.g. timed out img.frame.ok) must never generate an error reply
+    r = dispatch(ctx, "img.frame.ok", {"width": 80, "height": 60}, id_=456)
+    assert r is None
+
