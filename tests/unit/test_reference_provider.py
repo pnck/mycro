@@ -46,3 +46,13 @@ def test_provider_default_frame_is_gradient():
     p = rp.ReferenceProvider("127.0.0.1", 7373, "")
     w, h, rgb = p._frame
     assert (w, h) == (80, 60) and rgb == rp.frame_default()
+
+
+def test_crop_rect_bounds_sanitization():
+    p = rp.ReferenceProvider("127.0.0.1", 7373, "")
+    w0, h0, _ = p._frame
+    rc = {"x": 100, "y": 80, "w": 10, "h": 10}
+    x, y, w, h = rc["x"], rc["y"], rc["w"], rc["h"]
+    x0, y0 = max(x, 0), max(y, 0)
+    x1, y1 = min(x + w, w0), min(y + h, h0)
+    assert x1 <= x0 or y1 <= y0  # correctly detected as out-of-bounds

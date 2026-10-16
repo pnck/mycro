@@ -166,21 +166,30 @@ class ReferenceProvider:
                     rc = p["rect"]
                     x, y = int(rc["x"]), int(rc["y"])
                     w, h = int(rc["w"]), int(rc["h"])
-                    cw, ch = min(w, w0 - max(x, 0)), min(h, h0 - max(y, 0))
+                    x0, y0 = max(x, 0), max(y, 0)
+                    x1, y1 = min(x + w, w0), min(y + h, h0)
+                    if x1 <= x0 or y1 <= y0:
+                        self._send_env(s, "error", rid,
+                                       {"code": "capture_failed",
+                                        "message": "crop rect outside frame bounds"})
+                        continue
+                    cw, ch = x1 - x0, y1 - y0
                     out = bytearray(cw * ch * 3)
                     for yy in range(ch):
-                        src = ((y + yy) * w0 + x) * 3
+                        src = ((y0 + yy) * w0 + x0) * 3
                         out[yy * cw * 3:(yy + 1) * cw * 3] = \
                             rgb[src:src + cw * 3]
                     sid = (sid + 1) & 0xFFFF
                     self._send_stream(s, rid, sid,
                                       {"width": w0, "height": h0,
-                                       "crop_w": cw, "crop_h": ch,
-                                       "format": "rgb8"}, bytes(out))
+                                        "crop_w": cw, "crop_h": ch,
+                                        "format": "rgb8"}, bytes(out))
                 elif "points" in p:
                     colors = []
                     for x, y in p["points"]:
-                        i = (int(y) * w0 + int(x)) * 3
+                        nx = min(max(int(x), 0), w0 - 1)
+                        ny = min(max(int(y), 0), h0 - 1)
+                        i = (ny * w0 + nx) * 3
                         colors.append([rgb[i], rgb[i + 1], rgb[i + 2]])
                     self._send_env(s, "img.frame.ok", rid,
                                    {"width": w0, "height": h0,
