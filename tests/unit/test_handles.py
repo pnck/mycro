@@ -194,3 +194,17 @@ def test_rect_literal_errors():
     assert "value-position" in compile_err("\\rect{\\row{0xFF0000}}", rt)
     _, err = Macro(MockHID()).compile("\\set{t}{\\rect{\\row{0xFF0000}}}")
     assert "runtime registry" in err                        # no runtime
+
+
+def test_unclaimed_fresh_handle_released_immediately():
+    rt = make_runtime()
+    slot = rt.snap_pool.alloc()
+    hid = rt.new_handle("snap", {"w": 1, "h": 1, "rgb": rt.snap_pool.view(slot, 3),
+                                 "_arena": rt.snap_pool, "_slot": slot})
+    assert len(rt.snap_pool._free) == 0
+    # If the VM writes a non-matching value (e.g. error -1 or different id),
+    # the orphan handle is freed immediately so the slot is not leaked.
+    rt.claim(0xFF, -1)
+    assert len(rt.snap_pool._free) == 1  # returned immediately!
+    assert hid not in rt._handles
+

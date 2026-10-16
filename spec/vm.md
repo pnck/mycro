@@ -218,7 +218,9 @@ the middleware owns tables, per-register ownership flags, and release.
    (the source register reverts to a plain integer; reusing it as a
    handle fails at the middleware).
 3. If a handle-returning CALL_EXT has just completed and `dst` is 0xFF →
-   the pending handle is claimed by `$ret`.
+   the pending handle is claimed by `$ret`. If an extension minted a handle
+   but the return value fails to claim it (e.g. error sentinel or mismatch),
+   the orphan resource is released immediately so slots are never leaked.
 
 `release_all()` runs at execution start and on every exit path.
 Consequences: live handles are bounded by the register count; overwrite
@@ -239,6 +241,10 @@ bytecode format change, and the standard ownership rules (claim/move/
 overwrite-release/exit-release) apply unchanged. Const bytes are
 batch-lifetime bulk resources (§6): a per-compile reset invalidates
 them wholesale.
+
+Consequently, any compilation request while a macro is actively running
+MUST be rejected as busy (`state: busy`) to prevent clobbering the active
+macro's constant store.
 
 ## 6. Bulk resource backing
 
@@ -286,7 +292,9 @@ never import runtime-specific modules.
      arithmetic and free-list moves only; cold paths (first use,
      growth past the previous high-water mark) may allocate, once.
   4. *Deterministic failure*: exhaustion/overflow fails the operation
-     itself — never a GC retry or an allocation stall.
+     itself — never a GC retry or an allocation stall. Allocators encountering
+     MemoryError fail the operation gracefully (returning None / error sentinels)
+     rather than letting an uncaught exception crash the server task.
   5. *Copy budget*: a byte on the receive hot path is copied at most
      twice (socket→reassembly, reassembly→destination); transports
      receive into self-managed storage and hand consumers views.

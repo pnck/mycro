@@ -54,18 +54,22 @@ class SlotArena:
         self._grown = 0      # high-water count of allocated slots
 
     def alloc(self):
-        """Slot index, or None when the pool is exhausted."""
+        """Slot index, or None when the pool is exhausted or allocation fails."""
         if self._free:
             return self._free.pop()
         if self._grown < len(self._slots):
             i = self._grown
-            self._slots[i] = bytearray(self.slot_bytes)  # one-time, cold
+            try:
+                self._slots[i] = bytearray(self.slot_bytes)  # one-time, cold
+            except MemoryError:
+                return None
             self._grown += 1
             return i
         return None
 
     def free(self, slot):
-        self._free.append(slot)
+        if slot is not None and slot not in self._free:
+            self._free.append(slot)
 
     def view(self, slot, nbytes):
         """Writable view of the slot's first nbytes."""
@@ -86,12 +90,15 @@ class BumpArena:
         self._used = 0
 
     def add(self, data):
-        """Offset of the stored bytes, or None when the arena is full."""
+        """Offset of the stored bytes, or None when the arena is full or allocation fails."""
         n = len(data)
         if n > self._cap:
             return None
         if self._buf is None:
-            self._buf = bytearray(self._cap)  # one-time, cold
+            try:
+                self._buf = bytearray(self._cap)  # one-time, cold
+            except MemoryError:
+                return None
         if self._used + n > self._cap:
             return None
         off = self._used
@@ -210,9 +217,14 @@ class Runtime:
 
     def claim(self, reg, value):
         """Claim the fresh handle for reg when the value written is it."""
-        if self._fresh is not None and value == self._fresh:
-            self._reg_handles[reg] = value
-            self._fresh = None
+        if self._fresh is not None:
+            if value == self._fresh:
+                self._reg_handles[reg] = value
+                self._fresh = None
+            else:
+                orphan = self._fresh
+                self._fresh = None
+                self._release(orphan)
 
     def reg_write(self, dst, src=None):
         """Mediate a register write: overwrite releases; a register
@@ -236,10 +248,8 @@ class Runtime:
 
     def release_all(self):
         """Execution bracket: start and every exit path."""
-        for hid in self._handles:
-            d = self._handles[hid]["data"]
-            if isinstance(d, dict) and d.get("_arena") is not None:
-                d["_arena"].free(d["_slot"])
+        for hid in list(self._handles):
+            self._release(hid)
         self._handles.clear()
         self._reg_handles.clear()
         self._fresh = None

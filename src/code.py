@@ -31,11 +31,15 @@ _stream_buf = None
 
 def _stream_buffer(total):
     """A total-byte view of the stream buffer, growing it if needed.
-    Growth is a cold path (first/largest stream); never shrinks."""
+    Growth is a cold path (first/largest stream); never shrinks.
+    Returns None on MemoryError."""
     global _stream_buf
-    if _stream_buf is None or len(_stream_buf) < total:
-        _stream_buf = bytearray(total)  # one-time growth, cold
-    return memoryview(_stream_buf)[:total]
+    try:
+        if _stream_buf is None or len(_stream_buf) < total:
+            _stream_buf = bytearray(total)  # one-time growth, cold
+        return memoryview(_stream_buf)[:total]
+    except MemoryError:
+        return None
 SNAP_MAX_EDGE = RECT_MAX_EDGE  # snapshot edge cap (128x128 RGB = 48KB)
 
 try:
@@ -170,17 +174,20 @@ async def _run(bytecode):
     """Macro execution wrapper: keeps `state` as the source of truth."""
     t0 = _now_ms()
     try:
-        await macro.execute(bytecode, click_hold_ms=click_hold_ms)
-        state["state"] = "done"
-    except asyncio.CancelledError:
-        state["state"] = "aborted"
+        try:
+            await macro.execute(bytecode, click_hold_ms=click_hold_ms)
+            state["state"] = "done"
+        except asyncio.CancelledError:
+            state["state"] = "aborted"
+            _broadcast_result(t0)
+            raise  # cancellation must propagate; keys are released by execute()'s finally
+        except Exception as e:
+            state["state"] = "error"
+            state["detail"] = str(e)
+            print("Macro runtime error:", e)
         _broadcast_result(t0)
-        raise  # cancellation must propagate; keys are released by execute()'s finally
-    except Exception as e:
-        state["state"] = "error"
-        state["detail"] = str(e)
-        print("Macro runtime error:", e)
-    _broadcast_result(t0)
+    finally:
+        gc.collect()
 
 
 @server.route("/macro", methods=["POST"])
@@ -254,6 +261,9 @@ _img_ui = {"pending": False, "data": None, "err": None, "stream_ms": None}
 def img_capture_start(request: Request):
     if not _authorized(request):
         return _unauth(request)
+    if state["state"] == "running":
+        return Response(request, "Busy: Macro is running", status=(409, "Conflict"),
+                        content_type="text/plain")
     if _img_ui["pending"]:
         return Response(request, "busy", status=(409, "Conflict"),
                         content_type="text/plain")
@@ -312,6 +322,8 @@ def compile_macro(request: Request):
     global click_hold_ms
     if not _authorized(request):
         return _unauth(request)
+    if state["state"] == "running":
+        return Response(request, "Busy: Macro is running", content_type="text/plain")
 
     code, hold_ms = _macro_form(request)
     if code is None:
@@ -440,6 +452,8 @@ def _sys_const(cid):
 def _img_register(c):
     global _img_client
     if _img_client is not c:
+        if _img_client is not None:
+            _img_drop(_img_client)
         _img_client = c
         print("img provider:", c.addr)
 
@@ -462,6 +476,8 @@ async def _img_request(type_, payload):
     c = _img_client
     if c is None or not c.alive or not c.authed:
         raise ImgError("no_provider")
+    if _img_pending is not None:
+        raise ImgError("busy")
     _img_req_id = (_img_req_id + 1) & 0x7FFFFFFF
     ent = {"id": _img_req_id, "event": asyncio.Event(), "client": c,
            "resp": None, "err": None, "sid": -1, "stream": None,
@@ -471,16 +487,18 @@ async def _img_request(type_, payload):
            "ts": _now_ms(), "payload": payload}
     c.enqueue(codec.pack_frame(codec.KIND_JSON, codec.encode_envelope(env)))
     try:
-        await asyncio.wait_for(ent["event"].wait(), IMG_TIMEOUT_S)
-    except _TimeoutError:
-        ent["err"] = "timeout"
-    _img_pending = None
-    if ent["err"]:
-        raise ImgError(ent["err"])
-    resp = ent["resp"]
-    if resp.get("type") == "error":
-        raise ImgError(resp.get("payload", {}).get("code", "error"))
-    return resp.get("payload", {}), ent["stream"]
+        try:
+            await asyncio.wait_for(ent["event"].wait(), IMG_TIMEOUT_S)
+        except _TimeoutError:
+            ent["err"] = "timeout"
+        if ent["err"]:
+            raise ImgError(ent["err"])
+        resp = ent["resp"]
+        if resp.get("type") == "error":
+            raise ImgError(resp.get("payload", {}).get("code", "error"))
+        return resp.get("payload", {}), ent["stream"]
+    finally:
+        _img_pending = None
 
 
 def _img_resolve(c, env):
@@ -501,10 +519,20 @@ def _img_resolve(c, env):
         if isinstance(total, int) and 0 < total <= IMG_STREAM_MAX:
             # self-managed buffer: each chunk lands by offset, no
             # allocation, no O(n^2) growth copies
-            ent["stream"] = _stream_buffer(total)
+            buf = _stream_buffer(total)
+            if buf is None:
+                ent["err"] = "out_of_memory"
+                ent["event"].set()
+                return
+            ent["stream"] = buf
             ent["have"] = 0
         else:
-            ent["stream"] = bytearray()
+            try:
+                ent["stream"] = bytearray()
+            except MemoryError:
+                ent["err"] = "out_of_memory"
+                ent["event"].set()
+                return
             ent["have"] = -1  # unknown length: append path (heap fallback)
     else:
         ent["event"].set()
@@ -560,18 +588,26 @@ def _img_snap(x, y, w, h):
             return -1
         cw = payload.get("crop_w", w)  # provider clamps at source borders
         ch = payload.get("crop_h", h)
-        if len(stream) != cw * ch * 3:
+        if not (isinstance(cw, int) and isinstance(ch, int) and 1 <= cw <= w and 1 <= ch <= h):
+            print("img.snap: invalid crop dimensions")
+            return -1
+        if len(stream) != cw * ch * 3 or len(stream) > runtime.snap_pool.slot_bytes:
             print("img.snap: bad stream")
             return -1
         slot = runtime.snap_pool.alloc()
         if slot is None:
             print("img.snap: snapshot pool exhausted (release a snapshot)")
             return -1
-        view = runtime.snap_pool.view(slot, len(stream))
-        view[:] = stream  # arena -> slot memcpy, no heap involved
-        return runtime.new_handle("snap", {"w": cw, "h": ch, "rgb": view,
-                                           "_arena": runtime.snap_pool,
-                                           "_slot": slot})
+        try:
+            view = runtime.snap_pool.view(slot, len(stream))
+            view[:] = stream  # arena -> slot memcpy, no heap involved
+            return runtime.new_handle("snap", {"w": cw, "h": ch, "rgb": view,
+                                               "_arena": runtime.snap_pool,
+                                               "_slot": slot})
+        except Exception as e:
+            print("img.snap slot init error:", e)
+            runtime.snap_pool.free(slot)
+            return -1
     return run()
 
 

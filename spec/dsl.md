@@ -80,8 +80,9 @@ All numeric arguments are value positions (§3).
   freely). The pixel data never enters the bytecode: the compiler
   preprocesses it into the middleware's const store and emits a
   `sys.const` fetch. Rows must be equal-width, edges ≤ 128, colors in
-  0x000000–0xFFFFFF; the constant lives until the next compilation.
-  A 1x1 literal is the exact-color idiom
+  0x000000–0xFFFFFF; the constant lives until the next compilation
+  (compilations while a macro is running are rejected as busy to protect
+  active constants). A 1x1 literal is the exact-color idiom
 
 ## 4. User macros
 
