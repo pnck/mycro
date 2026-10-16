@@ -140,3 +140,15 @@ def test_binary_frame_rejected(server):
     r = c.recv_envelope()
     assert r["payload"]["code"] == "unsupported_kind"
     c.close()
+
+
+def test_error_envelope_not_reflected(server):
+    port, _ = server
+    c = client_mod.Client("127.0.0.1", port, TOKEN)
+    err_body = {"v": 1, "type": "error", "id": 777, "ts": 0,
+                "payload": {"code": "unknown_type", "message": "msg"}}
+    c.send_envelope(err_body)
+    r = c.call("macro.status")
+    assert r["type"] == "macro.status.ok"
+    c.close()
+

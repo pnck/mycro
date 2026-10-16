@@ -68,6 +68,13 @@ machine-readable `payload.code` (`bad_version` / `bad_type` / `bad_id` /
 `bad_ts` / `bad_payload` / `unknown_type` / `field` / `compile_error` /
 `unknown_signal` / `state` / `internal`).
 
+**Asymmetric Error Rule**: Inbound envelopes with `type: "error"` or types
+ending with `.ok` (terminal responses) are responses or notifications, NOT
+requests. Receivers must NEVER send an error envelope in reply to an `error`
+or `.ok` envelope (even if unrecognized or unexpected). Unhandled terminal
+responses, stray packets, or error notices must be dropped or logged silently
+to prevent infinite error reflection storms.
+
 | type | direction | payload | response payload |
 |---|---|---|---|
 | `macro.submit` | client → server | `code`: DSL source string | `bytes`: compiled bytecode size |
