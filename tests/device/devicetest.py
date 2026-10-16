@@ -375,6 +375,57 @@ def c11_event_bad_fields(ctx):
     c.close()
 
 
+def c12_error_envelope_ignored(ctx):
+    """An inbound 'error' envelope must be silently discarded by the device
+    without replying with an error, preventing infinite ping-pong loops."""
+    c = ctx.client()
+    body = json.dumps({"v": PROTO_VERSION, "type": "error", "id": 777,
+                       "ts": 0, "payload": {"code": "client_error", "message": "ignore me"}}).encode()
+    c.sock.sendall(struct.pack("<I", len(body)) + body)
+    time.sleep(0.1)
+    # The device must not have responded with an error, and must still be responsive
+    st = c.call("macro.status")
+    check("C12 inbound error envelope ignored without error reply",
+          st["type"] == "macro.status.ok")
+    c.close()
+
+
+def c13_stray_response_ignored(ctx):
+    """An inbound stray response (e.g. img.frame.ok with unmatched id)
+    must be silently discarded by the device without replying with unknown_type."""
+    c = ctx.client()
+    body = json.dumps({"v": PROTO_VERSION, "type": "img.frame.ok", "id": 888,
+                       "ts": 0, "payload": {"width": 80, "height": 60}}).encode()
+    c.sock.sendall(struct.pack("<I", len(body)) + body)
+    time.sleep(0.1)
+    st = c.call("macro.status")
+    check("C13 stray .ok response ignored without error reply",
+          st["type"] == "macro.status.ok")
+    c.close()
+
+
+def c14_compile_busy_when_running(ctx):
+    """POST /compile must reject with Busy when a macro is running to protect
+    the active macro's const store (spec/vm.md Part II §5)."""
+    c = ctx.client()
+    c.call("macro.submit", {"code": "\\delay{3}"})
+    from urllib.parse import urlencode
+    req = urllib.request.Request(
+        f"http://{ctx.host}/compile",
+        data=urlencode({"code": "\\set{x}{1}"}).encode(),
+        method="POST",
+    )
+    if ctx.token:
+        req.add_header("Authorization", f"Bearer {ctx.token}")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        resp = r.read().decode()
+    c.call("macro.abort")
+    recv_result(c)
+    check("C14 /compile returns Busy while macro running",
+          "Busy" in resp, resp)
+    c.close()
+
+
 # --- D: DSL net roundtrip ---
 
 WAIT_MOVE = "\\use{net}\\wait{net.msg}{30}\\move{$net.msg.x,$net.msg.y}\\call{net.send}{woke}"
@@ -896,6 +947,25 @@ def g10_snap_pool_exhaustion(ctx):
     c.close()
 
 
+IMG_OUT_OF_BOUNDS = ("\\use{img}\\use{net}"
+                     "\\call{img.snap}{9999,9999,10,10}"
+                     "\\ifnum{$ret}{<}{0}{\\call{net.send}{oob-fail}}{\\call{net.send}{oob-ok}}")
+
+
+def g11_img_out_of_bounds_rect(ctx):
+    """Out-of-bounds img.snap rect is rejected by provider (capture_failed),
+    returns $ret < 0 to macro, and keeps the provider link healthy."""
+    _ensure_provider(ctx)
+    c = ctx.client()
+    c.call("macro.submit", {"code": IMG_OUT_OF_BOUNDS})
+    tag = recv_tag(c, "oob-fail", timeout=10)
+    res = recv_result(c)
+    check("G11 out-of-bounds rect rejected cleanly ($ret < 0)",
+          tag is not None and res is not None and res["payload"]["state"] == "done",
+          str(tag))
+    c.close()
+
+
 def _mem_now(ctx):
     """free_mem probe; its own short connection is uniform per case."""
     try:
@@ -997,6 +1067,8 @@ def main(argv=None):
              c4_busy_rejected, c5_abort_running, c6_abort_idle,
              c7_device_info, c8_unknown_type, c9_bad_version,
              c10_event_unknown_signal, c11_event_bad_fields,
+             c12_error_envelope_ignored, c13_stray_response_ignored,
+             c14_compile_busy_when_running,
              d1_wait_wake, d2_wait_timeout, d3_ret_client_count,
              d4_abort_during_wait, d5_stale_signal_dropped,
              d6_slot_state_persists, d7_slot_values_on_wire,
@@ -1004,7 +1076,8 @@ def main(argv=None):
              f2_submit_storm, f3_hard_kill, g1_binary_flood, g2_latency_probe,
              g3_img_no_provider, g4_img_snap_at, g5_img_diff,
              g6_handle_overwrite_reuse, g7_capture_passthrough,
-             g8_rect_literal, g9_stream_throughput, g10_snap_pool_exhaustion]
+             g8_rect_literal, g9_stream_throughput, g10_snap_pool_exhaustion,
+             g11_img_out_of_bounds_rect]
     if not args.skip_slow:
         cases.append(a4_slow_auth_deadline)
     if args.only:
