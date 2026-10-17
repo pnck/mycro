@@ -55,3 +55,59 @@ code {
 	background: #f0f0f0;
 	padding: 1px 4px;
 }
+
+.macro-preset-bar {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+	margin-bottom: 8px;
+	flex-wrap: wrap;
+}
+.macro-preset-bar label {
+	font-size: 12px;
+	font-weight: 600;
+	color: #24292f;
+}
+.macro-preset-bar select,
+.macro-preset-bar input[type="text"] {
+	font-size: 12px;
+	padding: 3px 6px;
+	border: 1px solid #d0d7de;
+	border-radius: 4px;
+	background: #ffffff;
+	color: #24292f;
+	box-sizing: border-box;
+}
+.macro-preset-bar select {
+	max-width: 180px;
+}
+.macro-preset-bar input[type="text"] {
+	width: 130px;
+}
+.macro-preset-bar button {
+	font-size: 12px;
+	padding: 3px 8px;
+	border: 1px solid #d0d7de;
+	border-radius: 4px;
+	background: #f6f8fa;
+	color: #24292f;
+	cursor: pointer;
+	line-height: 1.4;
+}
+.macro-preset-bar button:hover:not(:disabled) {
+	background: #f3f4f6;
+	border-color: rgba(27, 31, 36, 0.15);
+}
+.macro-preset-bar button:active:not(:disabled) {
+	background: #ebecf0;
+}
+.macro-preset-bar button:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+.macro-preset-sep {
+	border-left: 1px solid #d0d7de;
+	height: 16px;
+	margin: 0 2px;
+}
+

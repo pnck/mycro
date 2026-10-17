@@ -8,6 +8,19 @@
 <body>
 	<h2>MYCRO HID Controller</h2>
 	<form id="macroForm" action="/macro" method="POST" accept-charset="utf-8">
+		<div class="macro-preset-bar">
+			<label for="macroPresetSelect">Preset:</label>
+			<select id="macroPresetSelect">
+				<option value="">-- Saved Macros --</option>
+			</select>
+			<input type="text" id="macroPresetName" placeholder="Preset name">
+			<button type="button" id="macroSaveBtn">Save</button>
+			<button type="button" id="macroDeleteBtn" disabled>Delete</button>
+			<span class="macro-preset-sep"></span>
+			<button type="button" id="macroExportBtn">Export</button>
+			<button type="button" id="macroImportBtn">Import</button>
+			<input type="file" id="macroImportFile" accept=".json,application/json" style="display:none">
+		</div>
 		<textarea id="macroCode" name="code" rows="6" placeholder="Example: Hello World\enter"></textarea><br>
 		<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
 			<input type="submit" value="Execute Macro">
