@@ -19,6 +19,11 @@ mpy-cross
 *.uf2
 .circup*
 
+# ── Web 前端构建 ──
+node_modules/
+web/dist/
+.pnpm-debug.log*
+
 # ── 编辑器与操作系统 ──
 .idea/
 .vscode/

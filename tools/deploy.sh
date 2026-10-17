@@ -23,6 +23,38 @@ else
     echo "NOTE: mpy-cross not found - skipping CP syntax gate (pip install mpy-cross)" >&2
 fi
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# --- Web bundle freshness gate: build only if web/ sources have changed ---
+if [ -d "$ROOT/web" ]; then
+    NODE_BIN=""
+    if command -v node >/dev/null 2>&1; then
+        NODE_BIN="node"
+    elif [ -x "/opt/homebrew/bin/node" ]; then
+        NODE_BIN="/opt/homebrew/bin/node"
+    fi
+
+    if [ -n "$NODE_BIN" ]; then
+        if ! "$NODE_BIN" "$ROOT/web/scripts/check.mjs" >/dev/null 2>&1; then
+            echo "  • web bundle outdated - building via vite..."
+            if command -v pnpm >/dev/null 2>&1; then
+                (cd "$ROOT/web" && pnpm build) || exit 1
+            elif [ -x "/Users/pnck/Library/pnpm/pnpm" ]; then
+                (cd "$ROOT/web" && /Users/pnck/Library/pnpm/pnpm build) || exit 1
+            else
+                (cd "$ROOT/web" && "$NODE_BIN" node_modules/vite/bin/vite.js build) || exit 1
+            fi
+        else
+            echo "  + web bundle up-to-date - skipping build"
+        fi
+    elif [ ! -f "$SRC/index.html" ]; then
+        echo "ERROR: src/index.html missing and node is not available to build it." >&2
+        exit 1
+    else
+        echo "NOTE: node not found - skipping web freshness check, using existing src/index.html" >&2
+    fi
+fi
+
 # --- project files: exact-set sync (stale files from older deploys removed) ---
 NEW_FILES="code.py index.html"
 cp "$SRC/code.py" "$MNT/code.py"
