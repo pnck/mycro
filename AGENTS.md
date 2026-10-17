@@ -10,7 +10,8 @@ See [ROADMAP.md](ROADMAP.md) for the evolution plan. **Architectural discipline:
 web/                  Modular Web UI source (TypeScript + CSS + Vite singlefile; build via pnpm build)
 src/
 ├── code.py           → /code.py       Entry point: asyncio main loop (HTTP + macro task + raw stub)
-├── index.html        → /index.html    Web UI (bundled self-contained single-file from web/)
+├── index.html        (local single-file bundle from web/)
+├── index.html.gz     → /index.html.gz Web UI (gzipped bundle deployed to device; served from RAM)
 └── lib/
     ├── macro.py      → /lib/macro.py  Compiler + VM (pure Python, zero adafruit dependencies)
     ├── keymap.py     → /lib/keymap.py HID usage ID constants (page 0x07)

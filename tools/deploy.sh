@@ -47,18 +47,19 @@ if [ -d "$ROOT/web" ]; then
         else
             echo "  + web bundle up-to-date - skipping build"
         fi
-    elif [ ! -f "$SRC/index.html" ]; then
-        echo "ERROR: src/index.html missing and node is not available to build it." >&2
+    elif [ ! -f "$SRC/index.html.gz" ]; then
+        echo "ERROR: src/index.html.gz missing and node is not available to build it." >&2
         exit 1
     else
-        echo "NOTE: node not found - skipping web freshness check, using existing src/index.html" >&2
+        echo "NOTE: node not found - skipping web freshness check, using existing src/index.html.gz" >&2
     fi
 fi
 
 # --- project files: exact-set sync (stale files from older deploys removed) ---
-NEW_FILES="code.py index.html"
+NEW_FILES="code.py index.html.gz"
 cp "$SRC/code.py" "$MNT/code.py"
-cp "$SRC/index.html" "$MNT/index.html"
+cp "$SRC/index.html.gz" "$MNT/index.html.gz"
+[ ! -f "$MNT/index.html" ] || { rm "$MNT/index.html"; echo "  - removed uncompressed index.html"; }
 mkdir -p "$MNT/lib"
 for f in "$SRC/lib/"*.py; do
     cp "$f" "$MNT/lib/"

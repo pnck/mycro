@@ -1,5 +1,6 @@
 import asyncio
 import gc
+import hashlib
 import os
 import time
 import traceback
@@ -140,12 +141,54 @@ def _unauth(request):
                     content_type="text/plain")
 
 
+# --- Static Web UI serving (in-memory pre-loaded gzip with ETag / 304 caching) ---
+_INDEX_BODY = None
+_INDEX_ETAG = None
+_INDEX_IS_GZ = False
+
+
+def _init_web_ui():
+    global _INDEX_BODY, _INDEX_ETAG, _INDEX_IS_GZ
+    for path, is_gz in (("/index.html.gz", True), ("/index.html", False)):
+        try:
+            with open(path, "rb") as f:
+                _INDEX_BODY = f.read()
+            _INDEX_IS_GZ = is_gz
+            # Compute a compact 16-hex ETag from content hash
+            digest = hashlib.new("sha256", _INDEX_BODY).digest()
+            _INDEX_ETAG = '"' + "".join(f"{b:02x}" for b in digest[:8]) + '"'
+            print(f"Web UI: loaded {path} ({len(_INDEX_BODY)}B, etag {_INDEX_ETAG})")
+            return
+        except OSError:
+            continue
+    print("Web UI: neither /index.html.gz nor /index.html found")
+
+
 @server.route("/")
 def index(request: Request):
-    try:
-        return FileResponse(request, "/index.html", "/", content_type="text/html; charset=utf-8")
-    except Exception:
-        return Response(request, "<h1>index.html not found</h1>", content_type="text/html; charset=utf-8")
+    if not _INDEX_BODY:
+        return Response(request, "<h1>index.html not found</h1>", status=(404, "Not Found"),
+                        content_type="text/html; charset=utf-8")
+
+    # 304 Not Modified negotiation via If-None-Match
+    inm = request.headers.get("if-none-match")
+    if inm and _INDEX_ETAG and _INDEX_ETAG in inm:
+        return Response(request, status=(304, "Not Modified"))
+
+    headers = {
+        "Cache-Control": "public, max-age=86400, must-revalidate",
+    }
+    if _INDEX_ETAG:
+        headers["ETag"] = _INDEX_ETAG
+    if _INDEX_IS_GZ:
+        headers["Content-Encoding"] = "gzip"
+
+    return Response(request, _INDEX_BODY, headers=headers, content_type="text/html; charset=utf-8")
+
+
+@server.route("/favicon.ico")
+def favicon(request: Request):
+    return Response(request, status=(204, "No Content"), content_type="image/x-icon")
 
 
 def _macro_form(request):
@@ -860,6 +903,7 @@ async def _wifi_connect(attempts=3):
 
 async def _main():
     if await _wifi_connect():
+        _init_web_ui()
         ip = str(wifi.radio.ipv4_address)
         server.start(ip, 80)
         print(f"HTTP server at http://{ip}")
