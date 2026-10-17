@@ -107,6 +107,46 @@
 - **Stages A, B, C**: all landed before Phase 2 (as planned); the `\call` argument convention feeds into Phase 2 protocol design
 - **Stage C namespaces**: `sys` minimal validation done; `net` semantics with Phase 2, `img` semantics with Phase 3
 
+### Future Evolution: DSL v3.1 / v4 Planning (Layout Pragmas & Whitespace Semantics)
+- **The Core Problem**: In v1/v2, macros were "typewriter-first" (verbatim keystroke streams with escape commands). In v3+, macros became "programming language-first" (`\set`, `\ifnum`, `\use`, `\call`, `\wait`). Formatting structured code requires both horizontal indentation and vertical line breaks. Under typewriter lexing, these emit unwanted `KEY_SPACE` and `KEY_ENTER` events to the host machine unless each line is ended with a trailing `\` line continuation.
+- **Deconstructing the Design Space**:
+  - *Why naive line heuristics fail*: Rules like "lines starting with `\` swallow newlines" break common patterns (e.g. typing macros starting with `\pace{}` or using `\rep{}`).
+  - *Why "trailing enter only" is incomplete*: If only newlines are suppressed but indentation spaces still emit `KEY_SPACE`, indented code still corrupts target OS input. Whitespace must be governed as a cohesive two-dimensional layout model (spaces + tabs + newlines).
+  - *Why generic imports must not switch modes*: Importing a runtime extension like `\use{img}` must never implicitly alter lexing rules (avoids action-at-a-distance).
+- **Directive Taxonomy: Compiler Pragma (`\pragma`) vs Namespace Overload (`\use`)**:
+  - **Option A (Recommended: Dedicated `\pragma{...}`)**:
+    Clean separation of architectural concerns:
+    - `\use{ns}` — Declares *runtime extension dependencies* (`sys`, `net`, `img`), resolved against the runtime registry in `runtime.py`.
+    - `\pragma{...}` — Declares *compile-time frontend options*, processed strictly by the compiler lexer; completely unknown to the runtime and VM.
+  - **Option B (Namespaced `\use{syntax.*}`)**:
+    Reuses the existing `\use` token by partitioning namespaces into runtime extensions vs compiler directives (e.g. `\use{syntax.layout.free}`). Preserves single-brace syntax at the cost of conflating capability imports with lexer configurations.
+- **Settled Semantic Model: Explicit Layout Dialects**:
+  - **Baseline: `typewriter` (default, 100% backward-compatible)**:
+    - Whitespace outside command braces emits HID events (` ` → Space, `\n` → Enter).
+    - Multi-line statements in logic macros require trailing `\` line continuations.
+  - **Structured Code: `\pragma{layout: free}` (or `\use{syntax.layout.free}`)**:
+    - **Structural Whitespace**: Inter-token spaces, tabs, and newlines outside string literals emit zero HID events. Arbitrary indentation and line breaks are valid.
+    - **Explicit Text Emission**: Text output must be declared explicitly via `\type{hello}` or quoted strings `"hello"` (which desugar to `\type{hello}`). Bare unquoted text at top-level is rejected at compile time to catch syntax typos early.
+    - **Natural Delimitation**: Commands and statements span across lines naturally without trailing `\`.
+- **Comparative Example (Structured Mode)**:
+  ```dsl
+  \pragma{layout: free}
+  \use{img}
+
+  \def{ensure_ready}[1]{
+      \call{img.snap}{#1}
+      \ifnum{$ret > 0}{
+          \type{admin}
+          \enter
+          \delay{200}
+      }
+  }
+  ```
+- **Microcontroller Feasibility & Bounded Resource Proof**:
+  - In `src/lib/macro.py`, free-layout lexing is a single boolean flag (`self.free_layout`). Skipping `c in ' \t\r\n'` is O(1) in time and memory, requires zero AST allocation, and adds fewer than 20 lines to the streaming compiler.
+  - Bytecode output is identical to v3; the VM opcode set (`OP_PRESS`, `OP_TYPE`, etc.) and execution loop are completely untouched.
+- **Discipline & Freeze**: DSL v3 remains strictly frozen in its landed state (minor fixes only; trailing `\` in snippets remains standard for v3). This pragma mechanism is scheduled for the next major DSL evolution (v3.1 / v4).
+
 ---
 
 ## Phase 2 — Network Message Protocol
