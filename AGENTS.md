@@ -7,9 +7,10 @@ See [ROADMAP.md](ROADMAP.md) for the evolution plan. **Architectural discipline:
 ## 1. Repo Structure & Deployment
 
 ```
+web/                  Modular Web UI source (TypeScript + CSS + Vite singlefile; build via pnpm build)
 src/
 ├── code.py           → /code.py       Entry point: asyncio main loop (HTTP + macro task + raw stub)
-├── index.html        → /index.html    Web UI (macro edit/run + Auto Clicker + cheat sheet)
+├── index.html        → /index.html    Web UI (bundled self-contained single-file from web/)
 └── lib/
     ├── macro.py      → /lib/macro.py  Compiler + VM (pure Python, zero adafruit dependencies)
     ├── keymap.py     → /lib/keymap.py HID usage ID constants (page 0x07)
