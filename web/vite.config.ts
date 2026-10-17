@@ -225,6 +225,7 @@ function mycroOutputPlugin(): Plugin {
     closeBundle() {
       const distHtml = path.resolve(__dirname, 'dist', 'index.html');
       const targetHtml = path.resolve(__dirname, '..', 'src', 'index.html');
+      const targetGz = path.resolve(__dirname, '..', 'src', 'index.html.gz');
       if (!fs.existsSync(distHtml)) return;
 
       const hash = computeSourceHash(__dirname);
@@ -233,7 +234,9 @@ function mycroOutputPlugin(): Plugin {
       html += `\n<!-- MYCRO_BUILD_HASH:${hash} -->\n`;
 
       fs.writeFileSync(targetHtml, html, 'utf-8');
-      console.log(`  [mycro] Synced bundle to src/index.html (hash: ${hash.slice(0, 12)})`);
+      const gzipped = zlib.gzipSync(Buffer.from(html, 'utf-8'), { level: 9 });
+      fs.writeFileSync(targetGz, gzipped);
+      console.log(`  [mycro] Synced bundle to src/index.html (${(html.length / 1024).toFixed(1)} KB) & src/index.html.gz (${(gzipped.length / 1024).toFixed(1)} KB, hash: ${hash.slice(0, 12)})`);
     }
   };
 }
