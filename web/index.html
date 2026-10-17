@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>MYCRO</title>
+</head>
+<body>
+	<h2>MYCRO HID Controller</h2>
+	<form id="macroForm" action="/macro" method="POST" accept-charset="utf-8">
+		<textarea id="macroCode" name="code" rows="6" placeholder="Example: Hello World\enter"></textarea><br>
+		<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+			<input type="submit" value="Execute Macro">
+			<button type="button" id="compileBtn">Compile Only</button>
+			<button type="button" id="abortBtn">Abort</button>
+			<label style="font-size:12px">Click hold (ms):
+				<input type="number" id="holdMs" name="hold_ms" value="10" min="0" max="1000" style="width:70px">
+			</label>
+			<label style="font-size:12px">Token:
+				<input type="password" id="token" style="width:110px" placeholder="if set on device">
+			</label>
+		</div>
+	</form>
+	<pre id="macroOutput" style="white-space:pre-wrap;background:#f8f8f8;border:1px solid #ddd;padding:8px;margin-top:10px"></pre>
+
+	<hr>
+	<h3>Auto Clicker</h3>
+	<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+		<select id="clType">
+			<option value="mouse">Mouse</option>
+			<option value="keyboard">Keyboard</option>
+		</select>
+		<select id="clBtn">
+			<option value="L">Left</option>
+			<option value="R">Right</option>
+			<option value="M">Middle</option>
+			<option value="back">Back (X1)</option>
+			<option value="forward">Forward (X2)</option>
+		</select>
+		<input type="text" id="clKey" placeholder="one key: a / 1 / enter / f1..." style="width:180px;display:none">
+		<label style="font-size:12px">Count:
+			<input type="number" id="clCount" value="10" min="1" max="65279" style="width:80px">
+		</label>
+		<button type="button" id="clStart">Start</button>
+		<button type="button" id="clAbort">Abort</button>
+	</div>
+
+	<hr>
+	<h3>Pixel Assist</h3>
+	<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+		<button type="button" id="paOpenBtn" class="pa-btn pa-btn-primary">Launch Pixel Assist</button>
+		<span id="paMainStatus" style="font-size:12px;color:#57606a">Precision color picker &amp; region watcher (overlay workspace)</span>
+	</div>
+
+	<!-- Standalone Pixel Assist Overlay Workspace -->
+	<div id="paOverlay">
+		<div id="paTopBar">
+			<div style="display:flex;align-items:center;gap:12px">
+				<button type="button" id="paCloseBtn" class="pa-btn pa-btn-danger">Close (Esc)</button>
+				<span style="font-weight:600;font-size:14px;letter-spacing:0.3px">Pixel Assist</span>
+				<span id="paResBadge" class="pa-badge" style="display:none">0×0</span>
+				<button type="button" id="paShieldWarning" class="pa-badge pa-badge-warn" style="display:none;cursor:pointer;border:1px solid #d4a72c" title="Click for details on browser canvas noise">Anti-Fingerprint Active</button>
+			</div>
+			<div style="display:flex;align-items:center;gap:10px">
+				<span id="paCaptureStatus" style="font-size:12px;color:#57606a"></span>
+				<button type="button" id="paCaptureBtn" class="pa-btn pa-btn-primary">Capture Screen</button>
+				<div class="pa-toggle-group">
+					<button type="button" id="paModePoint" class="pa-toggle-btn active">Point</button>
+					<button type="button" id="paModeRegion" class="pa-toggle-btn">Region</button>
+				</div>
+				<div style="display:flex;align-items:center;gap:4px">
+					<button type="button" id="paZoomOutBtn" class="pa-btn" style="padding:4px 8px;font-size:12px" title="Zoom Out">−</button>
+					<select id="paZoomSelect" style="background:#ffffff;color:#24292f;border:1px solid #d0d7de;border-radius:4px;padding:3px 6px;font-size:12px;font-weight:500;min-width:76px;text-align:center">
+						<option id="paZoomCustomOpt" value="custom" style="display:none">100%</option>
+						<option value="fit">Fit</option>
+						<option value="0.25">25%</option>
+						<option value="0.5">50%</option>
+						<option value="1">100%</option>
+						<option value="2">200%</option>
+						<option value="4">400%</option>
+						<option value="8">800%</option>
+						<option value="16">1600%</option>
+					</select>
+					<button type="button" id="paZoomInBtn" class="pa-btn" style="padding:4px 8px;font-size:12px" title="Zoom In">+</button>
+					<button type="button" id="paZoomFitBtn" class="pa-btn" style="padding:4px 8px;font-size:12px" title="Fit to Viewport">Fit</button>
+					<button type="button" id="paGridToggleBtn" class="pa-btn" style="padding:4px 8px;font-size:12px;font-weight:600" title="Toggle Pixel Grid (auto-activates at 400%+ zoom)">Grid</button>
+				</div>
+			</div>
+		</div>
+
+		<div id="paViewport">
+			<div id="paEmptyPrompt" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#57606a;text-align:center">
+				<p style="font-size:15px;margin-bottom:12px;color:#24292f;font-weight:500">No screenshot active</p>
+				<p style="font-size:12px;color:#57606a;margin-bottom:16px">Connect your capture provider (OBS plugin) and click below.</p>
+				<button type="button" id="paCapturePromptBtn" class="pa-btn pa-btn-primary" style="font-size:14px;padding:8px 18px">Capture Screen Now</button>
+			</div>
+			<div id="paStageContainer" style="display:none">
+				<canvas id="paDisplayCanvas"></canvas>
+				<svg id="paOverlaySvg">
+					<defs>
+						<pattern id="paPixelGridPattern" width="4" height="4" patternUnits="userSpaceOnUse">
+							<path id="paPixelGridPath" d="M 4 0 L 0 0 0 4" fill="none" stroke="rgba(128, 128, 128, 0.35)" stroke-width="1"></path>
+						</pattern>
+					</defs>
+					<rect id="paPixelGridRect" x="0" y="0" width="100%" height="100%" fill="url(#paPixelGridPattern)" style="display:none;pointer-events:none;"></rect>
+					<g id="paSvgSelectionGroup" style="display:none">
+						<rect id="paSvgBoxBody" x="0" y="0" width="0" height="0" fill="rgba(9, 105, 218, 0.1)"></rect>
+						<rect id="paSvgBox" x="0" y="0" width="0" height="0" fill="none" stroke="#0969da" stroke-width="1.5" style="pointer-events:none;"></rect>
+						<rect id="paSvgBoxOuter" x="0" y="0" width="0" height="0" fill="none" stroke="#ffffff" stroke-width="1" stroke-dasharray="3,3" style="pointer-events:none;"></rect>
+						<g id="paSvgHandles" style="display:none">
+							<rect class="pa-handle" data-handle="nw" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="n" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="ne" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="e" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="se" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="s" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="sw" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="w" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+						</g>
+					</g>
+				</svg>
+			</div>
+		</div>
+
+		<!-- Anti-Fingerprint Noise Blocking Modal -->
+		<div id="paShieldModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.65);z-index:10005;align-items:center;justify-content:center;">
+			<div class="pa-shield-card">
+				<h4 style="margin:0 0 12px 0;display:flex;align-items:center;gap:8px;color:#cf222e;font-size:16px;font-weight:600">
+					Canvas Noise Detected — Color Picker Blocked
+				</h4>
+				<p style="font-size:13px;line-height:1.5;margin-bottom:12px;color:#57606a">
+					Your browser or an active extension (e.g. Brave Shields, CanvasBlocker, Firefox <code>privacy.resistFingerprinting</code>) is modifying canvas pixel data on readout.
+				</p>
+				<div style="background:#ffebe9;border:1px solid #ff8182;border-radius:6px;padding:12px;font-size:12px;line-height:1.5;margin-bottom:14px">
+					<strong style="color:#cf222e">Why sampling is completely blocked:</strong>
+					<p style="margin:4px 0 0 0;color:#57606a">
+						MYCRO macros execute conditional color checks (e.g. <code>\ifnum{$ret}{=}{0xRRGGBB}</code>) requiring exact 24-bit RGB values. Random noise injection corrupts sampled pixel channels, which causes macros to fail on hardware.
+					</p>
+				</div>
+				<div style="font-size:12px;margin-bottom:16px;color:#57606a;line-height:1.5">
+					<strong style="color:#24292f">How to unblock:</strong>
+					<p style="margin:4px 0 0 0">
+						Disable canvas fingerprinting protection for this origin/IP in your browser shield settings, then click <strong>Re-test &amp; Unlock</strong>.
+					</p>
+				</div>
+				<div id="paShieldModalResult" style="display:none;margin-bottom:14px;padding:8px 12px;border-radius:5px;font-size:12px;font-weight:600"></div>
+				<div style="display:flex;justify-content:flex-end;gap:10px">
+					<button type="button" id="paExitShieldModalBtn" class="pa-btn pa-btn-danger">Exit Pixel Assist</button>
+					<button type="button" id="paRetestShieldBtn" class="pa-btn pa-btn-primary">Re-test &amp; Unlock</button>
+				</div>
+			</div>
+		</div>
+
+		<!-- Floating Inspector HUD -->
+		<div id="paInspector" style="display:none">
+			<div style="display:flex;justify-content:space-between;align-items:center">
+				<span class="pa-panel-title">Pixel Loupe (11×11)</span>
+				<span id="paHudModeBadge" class="pa-badge">Point Mode</span>
+			</div>
+
+			<div class="pa-loupe-wrap">
+				<canvas id="paLoupeCanvas" width="132" height="132"></canvas>
+				<div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+					<div id="paColorSwatch" class="pa-color-preview-large"></div>
+					<span id="paColorHexShort" style="font-family:monospace;font-size:11px;font-weight:600;color:#24292f">0x------</span>
+				</div>
+			</div>
+
+			<div>
+				<div class="pa-panel-title">Inspection Values (Pinned)</div>
+				<div style="display:flex;flex-direction:column;gap:5px">
+					<div class="pa-data-row">
+						<span style="color:#57606a">Coordinate:</span>
+						<span id="paCoordText" style="color:#24292f">X: 0, Y: 0</span>
+						<button type="button" class="pa-copy-btn" id="paCopyCoordBtn" title="Copy coordinate (Shortcut: X)">Copy <kbd>X</kbd></button>
+					</div>
+					<div class="pa-data-row">
+						<span style="color:#57606a">Hex (DSL):</span>
+						<span id="paHexDslText" style="color:#24292f">0x000000</span>
+						<button type="button" class="pa-copy-btn" id="paCopyHexDslBtn" title="Copy DSL hex color (Shortcut: C)">Copy <kbd>C</kbd></button>
+					</div>
+					<div class="pa-data-row">
+						<span style="color:#57606a">Hex (CSS):</span>
+						<span id="paHexCssText" style="color:#24292f">#000000</span>
+						<button type="button" class="pa-copy-btn" id="paCopyHexCssBtn" title="Copy CSS hex color">Copy</button>
+					</div>
+					<div class="pa-data-row">
+						<span style="color:#57606a">RGB:</span>
+						<span id="paRgbText" style="color:#24292f">rgb(0, 0, 0)</span>
+						<button type="button" class="pa-copy-btn" id="paCopyRgbBtn" title="Copy RGB color">Copy</button>
+					</div>
+				</div>
+			</div>
+
+			<!-- Region controls (visible in Region Mode) -->
+			<div id="paRegionControls" style="display:none">
+				<div class="pa-panel-title">Region Bounds</div>
+				<div style="grid-template-columns:1fr 1fr;display:grid;gap:6px;font-size:12px">
+					<label style="color:#57606a">X: <input type="number" id="paInX" min="0" style="width:65px;background:#ffffff;color:#24292f;border:1px solid #d0d7de;border-radius:3px;padding:2px 4px"></label>
+					<label style="color:#57606a">Y: <input type="number" id="paInY" min="0" style="width:65px;background:#ffffff;color:#24292f;border:1px solid #d0d7de;border-radius:3px;padding:2px 4px"></label>
+					<label style="color:#57606a">W: <input type="number" id="paInW" min="1" max="128" style="width:65px;background:#ffffff;color:#24292f;border:1px solid #d0d7de;border-radius:3px;padding:2px 4px"></label>
+					<label style="color:#57606a">H: <input type="number" id="paInH" min="1" max="128" style="width:65px;background:#ffffff;color:#24292f;border:1px solid #d0d7de;border-radius:3px;padding:2px 4px"></label>
+				</div>
+				<div id="paRegionSwatches" style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap"></div>
+			</div>
+
+			<div>
+				<div class="pa-panel-title">Macro Snippet</div>
+				<div class="pa-snippet-actions">
+					<button type="button" id="paInsertSnippetBtn" class="pa-btn-insert">Insert into Editor</button>
+					<button type="button" id="paCopySnippetBtn" class="pa-btn-copy-snippet" title="Copy snippet to clipboard (Shortcut: S)">Copy Snippet <kbd>S</kbd></button>
+				</div>
+				<textarea id="paSnippetBox" class="pa-snippet-box" rows="5" spellcheck="false" placeholder="Macro snippet will appear here..."></textarea>
+			</div>
+		</div>
+	</div>
+
+	<details class="ref">
+		<summary><strong>Quick Reference (click to expand)</strong></summary>
+
+		<details open>
+			<summary><h5>Text & Escape</h5></summary>
+			<table>
+				<tr><th>Syntax</th><th>Description</th></tr>
+				<tr><td><code>abc 123</code></td><td>Plain text (space/newline become keys)</td></tr>
+				<tr><td><code>\\</code></td><td>Backslash</td></tr>
+				<tr><td><code>\{</code> <code>\}</code></td><td>Literal braces</td></tr>
+				<tr><td><code>\$</code></td><td>Literal dollar sign ($ is special only in value positions)</td></tr>
+				<tr><td><code>\cmd{}</code></td><td>Empty {} separates command from text</td></tr>
+				<tr><td><code>\</code> + newline</td><td>Line continuation — newline ignored (split logic blocks)</td></tr>
+				<tr><td><code>\# comment</code></td><td>Comment to end of line (no Enter emitted)</td></tr>
+			</table>
+		</details>
+
+		<details>
+			<summary><h5>Special Keys</h5></summary>
+			<table>
+				<tr><th>Command</th><th>Key</th><th>Command</th><th>Key</th></tr>
+				<tr><td><code>\enter</code></td><td>Enter</td><td><code>\tab</code></td><td>Tab</td></tr>
+				<tr><td><code>\esc</code></td><td>Escape</td><td><code>\space</code></td><td>Space</td></tr>
+				<tr><td><code>\bs</code></td><td>Backspace</td><td><code>\del</code></td><td>Delete</td></tr>
+				<tr><td><code>\up \down \left \right</code></td><td>Arrow keys</td><td><code>\home \end</code></td><td>Home/End</td></tr>
+				<tr><td><code>\pgup \pgdn</code></td><td>Page Up/Down</td><td><code>\ins</code></td><td>Insert</td></tr>
+				<tr><td><code>\f1</code> ~ <code>\f12</code></td><td>Function keys</td><td><code>\caps</code></td><td>Caps Lock</td></tr>
+			</table>
+		</details>
+
+		<details>
+			<summary><h5>Combinations & Modifiers</h5></summary>
+			<table>
+				<tr><th>Modifier</th><th>Aliases</th><th>Example</th></tr>
+				<tr><td>Ctrl</td><td><code>\ctrl</code> <code>\control</code></td><td><code>\ctrl+c</code> (copy)</td></tr>
+				<tr><td>Shift</td><td><code>\shift</code></td><td><code>\shift+a</code> (capital A)</td></tr>
+				<tr><td>Alt</td><td><code>\alt</code> <code>\option</code> <code>\opt</code> </td><td><code>\alt+\f4</code> (close window)</td></tr>
+				<tr><td>Win/Cmd</td><td><code>\win</code> <code>\cmd</code> <code>\gui</code></td><td><code>\win+r</code> or <code>\cmd+space</code></td></tr>
+			</table>
+			<p><small><strong>Combo examples:</strong> <code>\ctrl+\shift+t</code> (reopen tab), <code>\alt+tab</code> (switch window)</small></p>
+		</details>
+
+		<details>
+			<summary><h5>Control Commands</h5></summary>
+			<table>
+				<tr><th>Command</th><th>Description</th></tr>
+				<tr><td><code>\delay{0.5}</code></td><td>Sleep once (seconds)</td></tr>
+				<tr><td><code>\pace{0.05}</code></td><td>Set delay after every following action</td></tr>
+				<tr><td><code>\rep{5}{abc}</code></td><td>Repeat "abc" 5 times</td></tr>
+				<tr><td><code>\kdown{ctrl}</code></td><td>Press and hold Ctrl</td></tr>
+				<tr><td><code>\kup{ctrl}</code></td><td>Release Ctrl</td></tr>
+				<tr><td><code>\kup{}</code></td><td>Release all keys</td></tr>
+			</table>
+		</details>
+
+		<details>
+			<summary><h5>Mouse Commands</h5></summary>
+			<table>
+				<tr><th>Command</th><th>Description</th></tr>
+				<tr><td><code>\click{L}</code></td><td>Left click (L/R/M/B/F)</td></tr>
+				<tr><td><code>\click{back}</code></td><td>Side button (back/X1, forward/X2)</td></tr>
+				<tr><td><code>\click{R,3}</code></td><td>Right click 3 times</td></tr>
+				<tr><td><code>\move{100,-50}</code></td><td>Move mouse (x,y)</td></tr>
+				<tr><td><code>\mdown{L}</code></td><td>Press left button (hold)</td></tr>
+				<tr><td><code>\mup{L}</code></td><td>Release left button</td></tr>
+			</table>
+		</details>
+
+		<details>
+			<summary><h5>Variables & Interpolation (v3)</h5></summary>
+			<table>
+				<tr><th>Syntax</th><th>Description</th></tr>
+				<tr><td><code>\set{x}{5}</code></td><td>Set variable x (32 i32 registers; 0x hex ok)</td></tr>
+				<tr><td><code>\add{x}{-1}</code></td><td>Add to variable</td></tr>
+				<tr><td><code>$x</code> <code>${x}</code></td><td>Variable value — only in value positions (counts, seconds, keycodes, coords)</td></tr>
+				<tr><td><code>\val{x}</code></td><td>Type out the variable's decimal digits</td></tr>
+				<tr><td><code>$ret</code> <code>$timeout</code></td><td>Read-only: last \call result / \wait timed-out flag</td></tr>
+			</table>
+		</details>
+
+		<details>
+			<summary><h5>Macros & Flow (v3)</h5></summary>
+			<table>
+				<tr><th>Syntax</th><th>Description</th></tr>
+				<tr><td><code>\def{dbl}[1]{#1#1}</code></td><td>Define a macro (params #1–#9, ## = literal #)</td></tr>
+				<tr><td><code>\dbl{ab}</code></td><td>Call it — expanded at compile time, max 4 nesting levels</td></tr>
+				<tr><td><code>\ifnum{$x}{>=}{10}{a}{b}</code></td><td>If x &gt;= 10 type "a" else "b" (= != &lt; &lt;= &gt; &gt;=)</td></tr>
+				<tr><td><code>\rep{$n}{ab}</code></td><td>Repeat with a variable count</td></tr>
+			</table>
+		</details>
+
+		<details>
+			<summary><h5>Runtime Extension (v3)</h5></summary>
+			<table>
+				<tr><th>Syntax</th><th>Description</th></tr>
+				<tr><td><code>\use{sys}</code></td><td>Declare a namespace dependency (compile-time check)</td></tr>
+				<tr><td><code>\call{sys.free}</code></td><td>Call an ext function; return value goes to <code>$ret</code></td></tr>
+				<tr><td><code>\wait{sig}{5}</code></td><td>Wait for signal sig up to 5s (0 = forever); sets <code>$timeout</code></td></tr>
+				<tr><td><code>$sig.field</code></td><td>Read a signal's payload slot (0 if unset)</td></tr>
+				<tr><td><code>\call{net.send}{tag}</code></td><td>Push a net.msg to all connected hosts ($ret = clients reached)</td></tr>
+				<tr><td><code>\wait{net.msg}{30}</code></td><td>Wait for a host's event.push; read fields as <code>$net.msg.x</code></td></tr>
+				<tr><td><code>\call{img.snap}{x,y,w,h}</code></td><td>Snapshot a screen rect (native px, lossless) → handle in <code>$ret</code> ($ret&lt;0 = error)</td></tr>
+				<tr><td><code>\call{img.at}{$s}{x,y}</code></td><td>Pixel color in a snapshot → packed <code>0xRRGGBB</code></td></tr>
+				<tr><td><code>\call{img.diff}{$a}{$b}{tol}</code></td><td>Count pixels diverging beyond tol (0 = identical)</td></tr>
+				<tr><td><code>\set{r}{\rect{\row{0xFF0000,…},…}}</code></td><td>Pixel literal — compile-time reference snapshot (handle)</td></tr>
+			</table>
+			<p><small>Handles: overwrite releases, <code>\set</code> moves, macro exit frees all — a polling loop cannot leak. Requires the capture provider (OBS plugin) connected.</small></p>
+			<p><small>Namespaces/signals are registered by the runtime; this firmware provides <code>sys</code> (free/const), <code>net</code> (send + net.msg signal), <code>img</code> (snap/at/diff). Use the Pixel Assist above to grab coordinates and colors.</small></p>
+		</details>
+
+		<details open>
+			<summary><h5>Examples</h5></summary>
+			<table>
+				<tr><th>Macro</th><th>Description</th></tr>
+				<tr><td><code>Hello World\enter</code></td><td>Type text and press Enter</td></tr>
+				<tr><td><code>\ctrl+c\delay{0.2}\rep{3}{\ctrl+v}</code></td><td>Copy, wait, paste 3 times</td></tr>
+				<tr><td><code>\win+r\delay{0.3}notepad\enter</code></td><td>Open Notepad (Windows)</td></tr>
+				<tr><td><code>\cmd+space\delay{0.2}terminal\enter</code></td><td>Open Terminal (macOS)</td></tr>
+				<tr><td><code>\mdown{L}\move{100,0}\mup{L}</code></td><td>Drag mouse right 100px</td></tr>
+				<tr><td><code>\kdown{ctrl}ccc\kup{}</code></td><td>Hold Ctrl, type "ccc", release</td></tr>
+				<tr><td><code>\def{cp}[1]{\ctrl+#1}\cp{c}\cp{v}</code></td><td>Define & use a macro (v3)</td></tr>
+				<tr><td><code>\set{n}{3}\rep{$n}{ab\enter}</code></td><td>Variable repeat count (v3)</td></tr>
+				<tr><td><code>\call{sys.free}\val{ret}</code></td><td>Call ext fn, type the result (v3)</td></tr>
+				<tr><td><code>\call{img.snap}{350,220,1,1}\set{p}{$ret}\call{img.at}{$p}{0,0}\ifnum{$ret}{=}{0xFF0000}{yes}</code></td><td>Type "yes" if the pixel at (350,220) is red</td></tr>
+			</table>
+		</details>
+
+		<p><small>Limits: 4096 bytes bytecode, max 4 nesting levels</small></p>
+	</details>
+
+	<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

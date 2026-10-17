@@ -1,570 +1,359 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<meta charset="utf-8">
-<title>MYCRO</title>
-<style>
-body{font-family:sans-serif;margin:20px;max-width:900px}
-textarea{font-family:monospace;width:100%;box-sizing:border-box}
-.ref{background:#f5f5f5;padding:10px;margin:10px 0;border-left:3px solid #666}
-.ref summary{cursor:pointer;padding:5px;user-select:none}
-.ref summary:hover{background:#e8e8e8}
-.ref h5{margin:10px 0 5px 0;display:inline-block}
-.ref code{background:#fff;padding:2px 5px;border-radius:3px}
-details{margin:5px 0}
-table{border-collapse:collapse;width:100%;font-size:12px;margin:5px 0}
-th,td{border:1px solid #ddd;padding:4px;text-align:left}
-th{background:#eee}
-code{font-family:monospace;background:#f0f0f0;padding:1px 4px}
-</style>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>MYCRO</title>
+  <script type="module" crossorigin>(function(){const r=document.createElement("link").relList;if(r&&r.supports&&r.supports("modulepreload"))return;for(const y of document.querySelectorAll('link[rel="modulepreload"]'))E(y);new MutationObserver(y=>{for(const d of y)if(d.type==="childList")for(const x of d.addedNodes)x.tagName==="LINK"&&x.rel==="modulepreload"&&E(x)}).observe(document,{childList:!0,subtree:!0});function p(y){const d={};return y.integrity&&(d.integrity=y.integrity),y.referrerPolicy&&(d.referrerPolicy=y.referrerPolicy),y.crossOrigin==="use-credentials"?d.credentials="include":y.crossOrigin==="anonymous"?d.credentials="omit":d.credentials="same-origin",d}function E(y){if(y.ep)return;y.ep=!0;const d=p(y);fetch(y.href,d)}})();function ve(){const c=document.getElementById("token");return c?c.value.trim():""}function F(c="application/x-www-form-urlencoded"){const r={"Content-Type":c},p=ve();return p&&(r.Authorization="Bearer "+p),r}function we(){const c=document.getElementById("macroForm"),r=document.getElementById("macroCode"),p=document.getElementById("macroOutput"),E=document.getElementById("compileBtn"),y=document.getElementById("abortBtn"),d=document.getElementById("holdMs"),x=c?.querySelector("input[type=submit]");if(!c||!r||!p||!E||!y)return;let D=!1;function S(u){D=u,x&&(x.disabled=u),E&&(E.disabled=u)}function w(){fetch("/macro/status",{headers:F()}).then(u=>u.text()).then(u=>{p&&(p.textContent="Status: "+u),u.indexOf("running")===0&&setTimeout(w,500)}).catch(()=>{})}function B(u,k){if(D)return;S(!0),p&&(p.textContent="Working...");const tt=r?.value||"",st=d?.value||"";fetch(u,{method:"POST",headers:F(),body:"code="+encodeURIComponent(tt)+"&hold_ms="+encodeURIComponent(st)}).then(R=>R.text()).then(R=>{p&&(p.textContent=R),R.indexOf("Started")===0&&setTimeout(w,300)}).catch(R=>{p&&(p.textContent="Error: "+R)}).finally(()=>S(!1))}function I(){fetch("/macro/abort",{method:"POST",headers:F()}).then(u=>u.text()).then(u=>{p&&(p.textContent=u),setTimeout(w,300)}).catch(u=>{p&&(p.textContent="Error: "+u)})}c.addEventListener("submit",u=>{u.preventDefault(),B("/macro")}),E.addEventListener("click",()=>B("/compile")),y.addEventListener("click",I)}const Ee="enter return esc escape tab space bs backspace del delete up down left right home end pgup pgdn ins caps ctrl shift alt win gui cmd f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12".split(" ");function be(c){if(c=c.trim().toLowerCase(),!c)return null;if(c.length===1){if(c==="\\")return"\\\\";if(c==="{")return"\\{";if(c==="}")return"\\}";const r=c.charCodeAt(0);return r>=32&&r<=126?c:null}return Ee.indexOf(c)!==-1?"\\"+c:null}function Be(c,r){if(c<=255)return"\\rep{"+c+"}{"+r+"}";const p=Math.floor(c/255),E=c%255;let y="\\rep{"+p+"}{\\rep{255}{"+r+"}}";return E&&(y+="\\rep{"+E+"}{"+r+"}"),y}function Ce(){const c=document.getElementById("clType"),r=document.getElementById("clBtn"),p=document.getElementById("clKey"),E=document.getElementById("clCount"),y=document.getElementById("clStart"),d=document.getElementById("clAbort"),x=document.getElementById("macroOutput"),D=document.getElementById("holdMs");if(!c||!r||!p||!E||!y||!d)return;c.addEventListener("change",()=>{const w=c.value==="keyboard";p.style.display=w?"":"none",r.style.display=w?"none":""});function S(){fetch("/macro/status",{headers:F()}).then(w=>w.text()).then(w=>{x&&(x.textContent="Status: "+w),w.indexOf("running")===0&&setTimeout(S,500)}).catch(()=>{})}y.addEventListener("click",()=>{let w;if(c.value==="mouse")w="\\click{"+r.value+"}";else if(w=be(p.value),w===null){x&&(x.textContent="Invalid key: exactly ONE key — a single character (a-z, 0-9, symbol) or a key name (enter, esc, f1, ...)");return}const B=parseInt(E.value,10);if(!(B>=1&&B<=65279)){x&&(x.textContent="Count must be 1..65279");return}const I=Be(B,w);x&&(x.textContent="Clicker: "+I);const u=D?.value||"";fetch("/macro",{method:"POST",headers:F(),body:"code="+encodeURIComponent(I)+"&hold_ms="+encodeURIComponent(u)}).then(k=>k.text()).then(k=>{x&&(x.textContent=k),k.indexOf("Started")===0&&setTimeout(S,300)}).catch(k=>{x&&(x.textContent="Error: "+k)})}),d.addEventListener("click",()=>{fetch("/macro/abort",{method:"POST",headers:F()}).then(w=>w.text()).then(w=>{x&&(x.textContent=w),setTimeout(S,300)}).catch(w=>{x&&(x.textContent="Error: "+w)})})}function K(c,r,p){return(c<<16|r<<8|p).toString(16).toUpperCase().padStart(6,"0")}function Ie(c,r,p,E,y){const d=[];for(let x=0;x<y;x++){const D=[];for(let S=0;S<E;S++){const[w,B,I]=c(r+S,p+x);D.push("0x"+K(w,B,I))}d.push("\\row{"+D.join(",")+"}")}return"\\rect{"+d.join(`,
+  `)+"}"}function Me(c,r,p){return["\\use{img}\\",`\\call{img.snap}{${c},${r},1,1}\\set{px}{$ret}\\`,"\\call{img.at}{$px}{0,0}\\",`\\ifnum{$ret}{=}{0x${p}}{\\# color matched`,"}{\\# color mismatched","}"].join(`
+`)}function Se(c,r,p,E,y){const d=`${c},${r},${p},${E}`;return p<=16&&E<=16?["\\use{img}\\",`\\set{ref}{${Ie(y,c,r,p,E)}}\\`,`\\call{img.snap}{${d}}\\set{cur}{$ret}\\`,"\\call{img.diff}{$ref}{$cur}{16}\\","\\ifnum{$ret}{=}{0}{\\# identical","}{\\# changed","}"].join(`
+`):["\\use{img}\\",`\\call{img.snap}{${d}}\\set{ref}{$ret}\\`,`\\call{img.snap}{${d}}\\set{cur}{$ret}\\`,"\\call{img.diff}{$ref}{$cur}{16}\\","\\ifnum{$ret}{=}{0}{\\# identical","}{\\# changed","}"].join(`
+`)}function Le(){const c=document.getElementById("paOverlay"),r=document.getElementById("paViewport"),p=document.getElementById("paInspector"),E=document.getElementById("paShieldModal"),y=document.getElementById("paShieldWarning"),d=document.getElementById("paShieldModalResult"),x=document.getElementById("paExitShieldModalBtn"),D=document.getElementById("paRetestShieldBtn"),S=document.getElementById("paOpenBtn"),w=document.getElementById("paCloseBtn"),B=document.getElementById("paCaptureBtn"),I=document.getElementById("paCapturePromptBtn"),u=document.getElementById("paCaptureStatus"),k=document.getElementById("paMainStatus"),tt=document.getElementById("paResBadge"),st=document.getElementById("paEmptyPrompt"),R=document.getElementById("paStageContainer"),et=document.getElementById("paDisplayCanvas"),Tt=et.getContext("2d"),At=document.getElementById("paOverlaySvg"),Ot=document.getElementById("paPixelGridRect"),Yt=document.getElementById("paPixelGridPattern"),se=document.getElementById("paPixelGridPath"),Xt=document.getElementById("paSvgSelectionGroup"),ct=document.getElementById("paSvgBox"),lt=document.getElementById("paSvgBoxOuter"),G=document.getElementById("paSvgBoxBody"),Dt=document.getElementById("paSvgHandles"),Ht=document.getElementById("paModePoint"),zt=document.getElementById("paModeRegion"),Ut=document.getElementById("paHudModeBadge"),Wt=document.getElementById("paRegionControls"),nt=document.getElementById("paGridToggleBtn"),Z=document.getElementById("paZoomSelect"),ot=document.getElementById("paZoomCustomOpt"),ce=document.getElementById("paZoomInBtn"),le=document.getElementById("paZoomOutBtn"),de=document.getElementById("paZoomFitBtn"),M=document.getElementById("paLoupeCanvas").getContext("2d");M.imageSmoothingEnabled=!1;const Kt=document.getElementById("paColorSwatch"),Ft=document.getElementById("paColorHexShort"),dt=document.getElementById("paCoordText"),pt=document.getElementById("paHexDslText"),ut=document.getElementById("paHexCssText"),ft=document.getElementById("paRgbText"),gt=document.getElementById("paRegionSwatches"),it=document.getElementById("paSnippetBox"),pe=document.getElementById("paInsertSnippetBtn"),xt=document.getElementById("paCopyCoordBtn"),vt=document.getElementById("paCopyHexDslBtn"),ue=document.getElementById("paCopyHexCssBtn"),fe=document.getElementById("paCopyRgbBtn"),wt=document.getElementById("paCopySnippetBtn"),ht=document.getElementById("macroCode"),Et=document.getElementById("paInX"),bt=document.getElementById("paInY"),Bt=document.getElementById("paInW"),Ct=document.getElementById("paInH");let s=null,C="point",v={x:0,y:0},o={x:0,y:0,w:1,h:1},H=0,z=0,m=1,j=!0,V=!1,q=!1,mt=!1,N=!1;const It=document.createElement("canvas");let Gt=It.getContext("2d",{willReadFrequently:!0}),_=null,Mt=0,Zt=0;function jt(t){It.width=t.width,It.height=t.height,Gt.drawImage(t,0,0),_=Gt.getImageData(0,0,t.width,t.height).data,Mt=t.width,Zt=t.height}function T(t,n){if(!_||t<0||t>=Mt||n<0||n>=Zt)return[0,0,0];const e=(n*Mt+t)*4;return[_[e],_[e+1],_[e+2]]}function Vt(){try{const t=document.createElement("canvas");t.width=4,t.height=4;const n=t.getContext("2d",{willReadFrequently:!0});n.fillStyle="rgb(100, 150, 200)",n.fillRect(0,0,4,4);const e=n.getImageData(1,1,1,1).data;if(e[0]!==100||e[1]!==150||e[2]!==200)return!0;for(let i=0;i<4;i++){const a=n.getImageData(1,1,1,1).data;if(a[0]!==e[0]||a[1]!==e[1]||a[2]!==e[2])return!0}return!1}catch{return!1}}function St(t){V=t,E.style.display=t?"flex":"none",y&&(y.style.display=t?"inline-flex":"none"),d&&(d.style.display=t?"block":"none",t&&(d.style.background="#ffebe9",d.style.color="#cf222e",d.textContent="Color sampling is disabled until browser canvas noise protection is disabled."))}let at={left:0,top:0,width:800,height:600};function Lt(){const t=r.getBoundingClientRect();at={left:t.left,top:t.top,width:t.width,height:t.height}}function W(t,n){if(!s)return{x:0,y:0,inside:!1};const e=t-at.left,i=n-at.top,a=e-H,l=i-z,g=s.width*m,h=s.height*m,b=a>=0&&a<g&&l>=0&&l<h;return{x:Math.max(0,Math.min(s.width-1,Math.floor(a/m))),y:Math.max(0,Math.min(s.height-1,Math.floor(l/m))),inside:b}}function yt(t,n,e){if(!s)return;e=Math.max(.1,Math.min(32,e));const i=(t-H)/m,a=(n-z)/m;m=e,H=t-i*m,z=n-a*m,qt(!1),$t()}function rt(){if(!s)return;Lt();const t=at.width||r.clientWidth||800,n=at.height||r.clientHeight||600,e=48,i=Math.min((t-e*2)/s.width,(n-e*2)/s.height);m=Math.min(i,1),H=Math.round((t-s.width*m)/2),z=Math.round((n-s.height*m)/2),qt(!0),$t()}function qt(t){const n=Math.round(m*100),i=!t&&[.25,.5,1,2,4,8,16].find(a=>Math.round(a*100)===n);i!==void 0?(Z.value=String(i),ot.style.display="none"):(ot.value="custom",ot.textContent=t?`Fit (${n}%)`:`${n}%`,ot.style.display="block",Z.value="custom")}function $t(){if(!s)return;R.style.transform=`translate(${Math.round(H)}px, ${Math.round(z)}px)`;const t=Math.round(s.width*m),n=Math.round(s.height*m);et.style.width=t+"px",et.style.height=n+"px",At.style.width=t+"px",At.style.height=n+"px",L(),Nt()}function Nt(){nt&&(nt.style.color=j?"#0969da":"#57606a",nt.style.borderColor=j?"#0969da":"#d0d7de",nt.style.background=j?"#f0f7ff":"#ffffff"),j&&m>=3.9?(Yt.setAttribute("width",String(m)),Yt.setAttribute("height",String(m)),se.setAttribute("d",`M ${m} 0 L 0 0 0 ${m}`),Ot.style.display="block"):Ot.style.display="none"}function L(){if(!s){Xt.style.display="none";return}Xt.style.display="block";const t=C==="point",n=t?v.x:o.x,e=t?v.y:o.y,i=t?1:o.w,a=t?1:o.h,l=n*m,g=e*m,h=Math.max(1,i*m),b=Math.max(1,a*m);if(ct.setAttribute("x",String(l)),ct.setAttribute("y",String(g)),ct.setAttribute("width",String(h)),ct.setAttribute("height",String(b)),lt.setAttribute("x",String(l-1)),lt.setAttribute("y",String(g-1)),lt.setAttribute("width",String(h+2)),lt.setAttribute("height",String(b+2)),G.setAttribute("x",String(l)),G.setAttribute("y",String(g)),G.setAttribute("width",String(h)),G.setAttribute("height",String(b)),G.style.pointerEvents=t?"none":"all",Dt.style.display=t?"none":"block",!t){const U={nw:[l,g],n:[l+h/2,g],ne:[l+h,g],e:[l+h,g+b/2],se:[l+h,g+b],s:[l+h/2,g+b],sw:[l,g+b],w:[l,g+b/2]};Dt.querySelectorAll(".pa-handle").forEach(X=>{const Q=X.getAttribute("data-handle");Q&&U[Q]&&(X.setAttribute("x",String(U[Q][0]-3.5)),X.setAttribute("y",String(U[Q][1]-3.5)))})}}function A(t,n){if(!s||!_)return;const e=5,i=12;M.fillStyle="#ffffff",M.fillRect(0,0,132,132);for(let g=-e;g<=e;g++)for(let h=-e;h<=e;h++){const b=t+h,$=n+g,P=(h+e)*i,U=(g+e)*i;if(b>=0&&b<s.width&&$>=0&&$<s.height){const[X,Q,xe]=T(b,$);M.fillStyle=`rgb(${X},${Q},${xe})`,M.fillRect(P,U,i,i)}M.strokeStyle="rgba(0,0,0,0.06)",M.strokeRect(P,U,i,i)}const a=e*i,l=e*i;M.strokeStyle="#ffffff",M.lineWidth=2,M.strokeRect(a+1,l+1,i-2,i-2),M.strokeStyle="#0969da",M.lineWidth=1,M.strokeRect(a+2,l+2,i-4,i-4)}function O(t,n){const[e,i,a]=T(t,n),l=K(e,i,a);Kt&&(Kt.style.backgroundColor=`rgb(${e},${i},${a})`),Ft&&(Ft.textContent=`0x${l}`)}function J(){if(!s)return;Et.value=String(o.x),bt.value=String(o.y),Bt.value=String(o.w),Ct.value=String(o.h),dt&&(dt.textContent=`Rect: ${o.x},${o.y} (${o.w}×${o.h})`);const t=o.x+(o.w>>1),n=o.y+(o.h>>1),[e,i,a]=T(t,n),l=K(e,i,a);pt&&(pt.textContent=`0x${l}`),ut&&(ut.textContent=`#${l}`),ft&&(ft.textContent=`rgb(${e}, ${i}, ${a})`),gt&&(gt.innerHTML="",[{name:"TL",x:o.x,y:o.y},{name:"TR",x:o.x+o.w-1,y:o.y},{name:"BL",x:o.x,y:o.y+o.h-1},{name:"BR",x:o.x+o.w-1,y:o.y+o.h-1},{name:"Center",x:t,y:n}].forEach(h=>{const[b,$,P]=T(h.x,h.y),U=K(b,$,P),X=document.createElement("span");X.style.cssText="display:inline-flex;align-items:center;gap:3px;background:#f6f8fa;padding:2px 5px;border-radius:3px;font-size:10px;font-family:monospace;border:1px solid #d0d7de;",X.title=`${h.name}: (${h.x},${h.y}) 0x${U}`,X.innerHTML=`<span style="width:9px;height:9px;border-radius:2px;background:rgb(${b},${$},${P});display:inline-block;border:1px solid #d0d7de"></span> ${h.name}: 0x${U}`,gt.appendChild(X)})),it.value=Se(o.x,o.y,o.w,o.h,T)}function Y(){if(!s)return;if(C==="point"){const[n,e,i]=T(v.x,v.y),a=K(n,e,i);A(v.x,v.y),O(v.x,v.y),dt&&(dt.textContent=`X: ${v.x}, Y: ${v.y}`),pt&&(pt.textContent=`0x${a}`),ut&&(ut.textContent=`#${a}`),ft&&(ft.textContent=`rgb(${n}, ${e}, ${i})`),it.value=Me(v.x,v.y,a)}else{const n=o.x+(o.w>>1),e=o.y+(o.h>>1);A(n,e),O(n,e),J()}}let f=null;function _t(t){if(!s||!q||V)return;if(t.button===1||mt||t.target===r){f={type:"pan",startX:t.clientX,startY:t.clientY,origPanX:H,origPanY:z},r.classList.add("pa-panning"),r.setPointerCapture(t.pointerId),t.preventDefault();return}if(t.button!==0)return;const n=t.target?.closest(".pa-handle");if(n&&C==="region"){f={type:"resize",handle:n.getAttribute("data-handle")||"se",startX:t.clientX,startY:t.clientY,origRegion:{...o}},r.setPointerCapture(t.pointerId);const a=W(t.clientX,t.clientY);A(a.x,a.y),O(a.x,a.y),t.preventDefault();return}if(t.target===G&&C==="region"){f={type:"move",startX:t.clientX,startY:t.clientY,origRegion:{...o}},r.setPointerCapture(t.pointerId);const i=W(t.clientX,t.clientY);A(i.x,i.y),O(i.x,i.y),t.preventDefault();return}const e=W(t.clientX,t.clientY);e.inside&&(C==="point"?(v={x:e.x,y:e.y},L(),Y()):(f={type:"draw",startPt:{x:e.x,y:e.y}},o={x:e.x,y:e.y,w:1,h:1},L(),A(e.x,e.y),O(e.x,e.y),J(),r.setPointerCapture(t.pointerId),t.preventDefault()))}function Jt(t){if(f&&s){if(f.type==="pan"){H=f.origPanX+(t.clientX-f.startX),z=f.origPanY+(t.clientY-f.startY),R.style.transform=`translate(${Math.round(H)}px, ${Math.round(z)}px)`;return}if(f.type==="move"){const e=Math.round((t.clientX-f.startX)/m),i=Math.round((t.clientY-f.startY)/m),a=f.origRegion;o={x:Math.max(0,Math.min(s.width-a.w,a.x+e)),y:Math.max(0,Math.min(s.height-a.h,a.y+i)),w:a.w,h:a.h},L();const l=W(t.clientX,t.clientY);A(l.x,l.y),O(l.x,l.y),J();return}if(f.type==="resize"){const e=Math.round((t.clientX-f.startX)/m),i=Math.round((t.clientY-f.startY)/m),a=f.origRegion;let l=a.x,g=a.y,h=a.w,b=a.h;const $=f.handle;$.includes("e")&&(h=a.w+e),$.includes("w")&&(l=a.x+e,h=a.w-e),$.includes("s")&&(b=a.h+i),$.includes("n")&&(g=a.y+i,b=a.h-i),l=Math.max(0,Math.min(s.width-1,l)),g=Math.max(0,Math.min(s.height-1,g)),h=Math.max(1,Math.min(128,Math.min(s.width-l,Math.max(1,h)))),b=Math.max(1,Math.min(128,Math.min(s.height-g,Math.max(1,b)))),o={x:l,y:g,w:h,h:b},L();const P=W(t.clientX,t.clientY);A(P.x,P.y),O(P.x,P.y),J();return}if(f.type==="draw"){const e=W(t.clientX,t.clientY);let i=f.startPt.x,a=f.startPt.y,l=1,g=1;if(e.x>=f.startPt.x)l=Math.max(1,Math.min(128,Math.min(s.width-i,e.x-i+1)));else{const h=f.startPt.x-e.x+1;l=Math.max(1,Math.min(128,Math.min(f.startPt.x+1,h))),i=f.startPt.x-l+1}if(e.y>=f.startPt.y)g=Math.max(1,Math.min(128,Math.min(s.height-a,e.y-a+1)));else{const h=f.startPt.y-e.y+1;g=Math.max(1,Math.min(128,Math.min(f.startPt.y+1,h))),a=f.startPt.y-g+1}o={x:i,y:a,w:l,h:g},L(),A(e.x,e.y),O(e.x,e.y),J();return}return}if(!s||V)return;const n=W(t.clientX,t.clientY);n.inside?(A(n.x,n.y),O(n.x,n.y)):Y()}function kt(t){if(r.hasPointerCapture(t.pointerId)&&r.releasePointerCapture(t.pointerId),r.classList.remove("pa-panning"),f){const n=f;if(f=null,n.type==="move"||n.type==="resize"||n.type==="draw"){L(),J();const e=W(t.clientX,t.clientY);e.inside?(A(e.x,e.y),O(e.x,e.y)):Y()}}}function Qt(t){kt(t)}function te(){f||!s||V||Y()}function ee(t){if(!(!s||!q||V))if(t.preventDefault(),t.ctrlKey){const n=Math.exp(-t.deltaY*.01);yt(t.clientX,t.clientY,m*n)}else H-=t.deltaX,z-=t.deltaY,$t()}function Pt(t){t&&(t.classList.add("pa-key-active"),setTimeout(()=>t.classList.remove("pa-key-active"),140))}function ne(t){if(!q||V||t.target?.matches("input, textarea"))return;if(t.key==="Escape"){E.style.display!=="none"?E.style.display="none":Rt();return}if(t.code==="Space"){mt=!0,r.classList.add("pa-pan-ready"),t.preventDefault();return}const e=t.key.toLowerCase();if(e==="c"&&!t.metaKey&&!t.ctrlKey){const i=C==="point"?v.x:o.x+(o.w>>1),a=C==="point"?v.y:o.y+(o.h>>1),[l,g,h]=T(i,a);navigator.clipboard.writeText("0x"+K(l,g,h)).catch(()=>{}),Pt(vt),t.preventDefault()}else if(e==="x"&&!t.metaKey&&!t.ctrlKey){const i=C==="point"?`${v.x},${v.y}`:`${o.x},${o.y},${o.w},${o.h}`;navigator.clipboard.writeText(i).catch(()=>{}),Pt(xt),t.preventDefault()}else if(e==="s"&&!t.metaKey&&!t.ctrlKey)navigator.clipboard.writeText(it.value).catch(()=>{}),Pt(wt),t.preventDefault();else if(C==="region"&&s&&["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(t.key)){const i=t.shiftKey?10:1;t.key==="ArrowLeft"&&(o.x=Math.max(0,o.x-i)),t.key==="ArrowRight"&&(o.x=Math.min(s.width-o.w,o.x+i)),t.key==="ArrowUp"&&(o.y=Math.max(0,o.y-i)),t.key==="ArrowDown"&&(o.y=Math.min(s.height-o.h,o.y+i)),t.preventDefault(),L(),Y()}}function oe(t){t.code==="Space"&&(mt=!1,r.classList.remove("pa-pan-ready"));const n=t.key.toLowerCase();n==="c"&&vt?.classList.remove("pa-key-active"),n==="x"&&xt?.classList.remove("pa-key-active"),n==="s"&&wt?.classList.remove("pa-key-active")}function ie(){q&&(Lt(),(Z.value==="fit"||ot.textContent?.startsWith("Fit"))&&rt())}function he(){window.addEventListener("keydown",ne),window.addEventListener("keyup",oe),window.addEventListener("resize",ie),r.addEventListener("pointerdown",_t),r.addEventListener("pointermove",Jt),r.addEventListener("pointerup",kt),r.addEventListener("pointercancel",Qt),r.addEventListener("pointerleave",te),r.addEventListener("wheel",ee,{passive:!1})}function me(){window.removeEventListener("keydown",ne),window.removeEventListener("keyup",oe),window.removeEventListener("resize",ie),r.removeEventListener("pointerdown",_t),r.removeEventListener("pointermove",Jt),r.removeEventListener("pointerup",kt),r.removeEventListener("pointercancel",Qt),r.removeEventListener("pointerleave",te),r.removeEventListener("wheel",ee),f=null,mt=!1,r.classList.remove("pa-pan-ready","pa-panning")}function ye(){q=!0,c.style.display="flex",he(),Lt(),s&&(rt(),L(),Y())}function Rt(){q=!1,c.style.display="none",me()}S?.addEventListener("click",ye),w?.addEventListener("click",Rt);function ae(t){C=t;const n=C==="point";Ht?.classList.toggle("active",n),zt?.classList.toggle("active",!n),Ut&&(Ut.textContent=n?"Point Mode":"Region Mode"),Wt&&(Wt.style.display=n?"none":"block"),L(),Y()}Ht?.addEventListener("click",()=>ae("point")),zt?.addEventListener("click",()=>ae("region")),nt?.addEventListener("click",()=>{j=!j,Nt()}),ce?.addEventListener("click",()=>{const n=[.25,.5,1,2,4,8,16].find(e=>e>m*1.05)??Math.min(16,m*1.5);yt(r.clientWidth/2,r.clientHeight/2,n)}),le?.addEventListener("click",()=>{const n=[...[.25,.5,1,2,4,8,16]].reverse().find(e=>e<m*.95)??Math.max(.1,m/1.5);yt(r.clientWidth/2,r.clientHeight/2,n)}),de?.addEventListener("click",rt),Z?.addEventListener("change",()=>{if(Z.value==="fit")rt();else{const t=parseFloat(Z.value)||1;yt(r.clientWidth/2,r.clientHeight/2,t)}}),[Et,bt,Bt,Ct].forEach(t=>{t?.addEventListener("input",()=>{if(!s||C!=="region")return;const n=Math.max(0,Math.min(s.width-1,parseInt(Et.value,10)||0)),e=Math.max(0,Math.min(s.height-1,parseInt(bt.value,10)||0)),i=Math.max(1,Math.min(128,Math.min(s.width-n,parseInt(Bt.value,10)||1))),a=Math.max(1,Math.min(128,Math.min(s.height-e,parseInt(Ct.value,10)||1)));o={x:n,y:e,w:i,h:a},L(),Y()})}),xt?.addEventListener("click",()=>{const t=C==="point"?`${v.x},${v.y}`:`${o.x},${o.y},${o.w},${o.h}`;navigator.clipboard.writeText(t).catch(()=>{})}),vt?.addEventListener("click",()=>{const t=C==="point"?v.x:o.x+(o.w>>1),n=C==="point"?v.y:o.y+(o.h>>1),[e,i,a]=T(t,n);navigator.clipboard.writeText("0x"+K(e,i,a)).catch(()=>{})}),ue?.addEventListener("click",()=>{const t=C==="point"?v.x:o.x+(o.w>>1),n=C==="point"?v.y:o.y+(o.h>>1),[e,i,a]=T(t,n);navigator.clipboard.writeText("#"+K(e,i,a)).catch(()=>{})}),fe?.addEventListener("click",()=>{const t=C==="point"?v.x:o.x+(o.w>>1),n=C==="point"?v.y:o.y+(o.h>>1),[e,i,a]=T(t,n);navigator.clipboard.writeText(`rgb(${e}, ${i}, ${a})`).catch(()=>{})}),wt?.addEventListener("click",()=>{navigator.clipboard.writeText(it.value).catch(()=>{})}),pe?.addEventListener("click",()=>{const t=it.value;!t||!ht||(ht.value+=(ht.value&&!ht.value.endsWith(`
+`)?`
+`:"")+t+`
+`)}),y?.addEventListener("click",()=>{E.style.display="flex"}),x?.addEventListener("click",()=>{E.style.display="none",Rt()}),D?.addEventListener("click",()=>{d&&(d.style.display="block",Vt()?(d.style.background="#ffebe9",d.style.color="#cf222e",d.textContent="Noise still detected. Please whitelist this origin in Brave/browser shield settings.",St(!0)):(d.style.background="#dafbe1",d.style.color="#1a7f37",d.textContent="Canvas is clean. Unlocking workspace...",s&&jt(s),setTimeout(()=>{St(!1),Y()},600)))});function ge(t,n="Active capture"){const e=URL.createObjectURL(t),i=new Image;i.onload=()=>{s=i,et.width=s.width,et.height=s.height,Tt.imageSmoothingEnabled=!1,Tt.drawImage(s,0,0),jt(s),v={x:Math.floor(s.width/2),y:Math.floor(s.height/2)},o={x:v.x-8,y:v.y-8,w:16,h:16},st&&(st.style.display="none"),R.style.display="inline-block",p.style.display="flex",tt&&(tt.style.display="inline-block",tt.textContent=`${s.width}×${s.height}`),St(Vt()),rt(),L(),Y(),u&&(u.textContent=`Ready (${s.width}×${s.height})`,u.style.cssText="font-size:12px;color:#1a7f37;background:#dafbe1;border:1px solid #4ac26b;border-radius:4px;padding:2px 8px;"),k&&(k.textContent=`${n}: ${s.width}×${s.height}`,k.style.color="#57606a"),URL.revokeObjectURL(e),B&&(B.disabled=!1),I&&(I.disabled=!1),N=!1},i.onerror=()=>{URL.revokeObjectURL(e),u&&(u.textContent="Failed to decode image",u.style.cssText="font-size:12px;color:#cf222e;background:#ffebe9;border:1px solid #ff8182;border-radius:4px;padding:2px 8px;"),B&&(B.disabled=!1),I&&(I.disabled=!1),N=!1},i.src=e}async function re(){if(N)return;N=!0,B&&(B.disabled=!0),I&&(I.disabled=!0),u&&(u.textContent="Requesting screen from capture provider...",u.style.cssText="font-size:12px;color:#0969da;background:#ddf4ff;border:1px solid #54aeff;border-radius:4px;padding:2px 8px;");try{const e=await fetch("/img/capture",{method:"POST",headers:F("application/x-www-form-urlencoded")});if(!e.ok&&e.status!==202&&e.status!==204){const i=await e.text().catch(()=>"");throw new Error(i||`Capture trigger HTTP ${e.status}`)}}catch(e){u&&(u.textContent=e.message||"Failed to trigger capture",u.style.cssText="font-size:12px;color:#cf222e;background:#ffebe9;border:1px solid #ff8182;border-radius:4px;padding:2px 8px;"),B&&(B.disabled=!1),I&&(I.disabled=!1),N=!1;return}const t=Date.now(),n=async()=>{try{const e=await fetch("/img/capture",{method:"GET",headers:F()});if(e.status===200){const i=await e.blob();ge(i,"OBS capture");return}if(Date.now()-t>1e4)throw new Error("Capture timed out (no capture provider responded)");setTimeout(n,300)}catch(e){u&&(u.textContent=e.message||"Capture poll failed",u.style.cssText="font-size:12px;color:#cf222e;background:#ffebe9;border:1px solid #ff8182;border-radius:4px;padding:2px 8px;"),B&&(B.disabled=!1),I&&(I.disabled=!1),N=!1}};setTimeout(n,300)}B?.addEventListener("click",re),I?.addEventListener("click",re)}function $e(){we(),Ce(),Le()}$e();</script>
+  <style rel="stylesheet" crossorigin>body{font-family:sans-serif;margin:20px;max-width:900px;color:#24292f;background:#fff}textarea{font-family:monospace;width:100%;box-sizing:border-box}.ref{background:#f5f5f5;padding:10px;margin:10px 0;border-left:3px solid #666}.ref summary{cursor:pointer;padding:5px;user-select:none}.ref summary:hover{background:#e8e8e8}.ref h5{margin:10px 0 5px;display:inline-block}.ref code{background:#fff;padding:2px 5px;border-radius:3px}details{margin:5px 0}table{border-collapse:collapse;width:100%;font-size:12px;margin:5px 0}th,td{border:1px solid #ddd;padding:4px;text-align:left}th{background:#eee}code{font-family:monospace;background:#f0f0f0;padding:1px 4px}#paOverlay{position:fixed;inset:0;z-index:9999;background:#eef1f5;color:#24292f;display:none;flex-direction:column;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;user-select:none}#paTopBar{height:48px;background:#fff;border-bottom:1px solid #d0d7de;display:flex;align-items:center;justify-content:space-between;padding:0 16px;gap:12px;flex-shrink:0;box-shadow:0 1px 3px #0000000d;cursor:default}.pa-btn{background:#f6f8fa;color:#24292f;border:1px solid #d0d7de;border-radius:6px;padding:5px 12px;font-size:13px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:6px}.pa-btn:hover:not(:disabled){background:#f3f4f6;border-color:#1b1f2433}.pa-btn:disabled{opacity:.5;cursor:not-allowed}.pa-btn-primary{background:#1f883d;border-color:#1a7f37;color:#fff}.pa-btn-primary:hover:not(:disabled){background:#1a7f37;border-color:#156f2e}.pa-btn-danger{background:#fff;border-color:#d0d7de;color:#cf222e}.pa-btn-danger:hover:not(:disabled){background:#ffebe9;border-color:#ff8182}.pa-toggle-group{display:inline-flex;border:1px solid #d0d7de;border-radius:6px;overflow:hidden;background:#f6f8fa}.pa-toggle-btn{background:#f6f8fa;color:#57606a;border:none;padding:5px 12px;font-size:12px;font-weight:500;cursor:pointer;border-right:1px solid #d0d7de}.pa-toggle-btn:last-child{border-right:none}.pa-toggle-btn.active{background:#0969da;color:#fff;font-weight:600}#paViewport{flex:1;overflow:hidden;position:relative;background:#e4e7eb;display:block;cursor:crosshair}#paViewport.pa-pan-ready{cursor:grab}#paViewport.pa-panning{cursor:grabbing}#paSvgBoxBody{cursor:move}#paStageContainer{position:absolute;left:0;top:0;display:inline-block;box-shadow:0 4px 24px #0000002e;border:1px solid #bcc3ce;background-color:#fff;background-image:linear-gradient(45deg,#f0f2f5 25%,transparent 25%),linear-gradient(-45deg,#f0f2f5 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#f0f2f5 75%),linear-gradient(-45deg,transparent 75%,#f0f2f5 75%);background-size:16px 16px;background-position:0 0,0 8px,8px -8px,-8px 0px;transform-origin:0 0;cursor:crosshair;image-rendering:-webkit-optimize-contrast;image-rendering:-moz-crisp-edges;image-rendering:crisp-edges;image-rendering:pixelated}#paDisplayCanvas{display:block;cursor:crosshair;image-rendering:-webkit-optimize-contrast;image-rendering:-moz-crisp-edges;image-rendering:crisp-edges;image-rendering:pixelated}#paOverlaySvg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible;cursor:crosshair}#paPixelGridRect,#paSvgSelectionGroup,#paSvgBox,#paSvgBoxOuter{cursor:crosshair}#paInspector{position:absolute;right:20px;top:60px;bottom:16px;width:330px;max-height:calc(100vh - 76px);overflow-y:auto;overflow-x:hidden;background:#fff;border:1px solid #d0d7de;border-radius:8px;box-shadow:0 8px 28px #8c959f40;padding:14px;display:flex;flex-direction:column;gap:12px;font-size:13px;z-index:10;color:#24292f;box-sizing:border-box;cursor:default}#paInspector::-webkit-scrollbar{width:6px}#paInspector::-webkit-scrollbar-track{background:transparent}#paInspector::-webkit-scrollbar-thumb{background:#d0d7de;border-radius:3px}#paInspector::-webkit-scrollbar-thumb:hover{background:#afb8c1}.pa-panel-title{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:#57606a;margin-bottom:2px}.pa-loupe-wrap{display:flex;gap:12px;align-items:center}#paLoupeCanvas{width:132px;height:132px;border:1px solid #d0d7de;border-radius:4px;background:#fff;image-rendering:pixelated;image-rendering:crisp-edges}.pa-color-preview-large{width:46px;height:46px;border-radius:6px;border:2px solid #d0d7de;box-shadow:0 2px 6px #0000001a}.pa-data-row{display:flex;justify-content:space-between;align-items:center;background:#f6f8fa;padding:4px 8px;border-radius:4px;border:1px solid #d0d7de;font-family:monospace;font-size:12px}.pa-copy-btn{background:#fff;color:#0969da;border:1px solid #d0d7de;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:4px}.pa-copy-btn:hover{background:#f3f4f6;color:#0550ae;border-color:#0969da}.pa-copy-btn:active,.pa-copy-btn.pa-key-active,.pa-btn-copy-snippet:active,.pa-btn-copy-snippet.pa-key-active,.pa-btn-insert:active{transform:translateY(1px);background:#eef1f5;border-color:#0969da}.pa-copy-btn kbd,.pa-btn-copy-snippet kbd{background:#f6f8fa;border:1px solid #d0d7de;border-radius:3px;padding:1px 4px;font-size:10px;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#57606a;line-height:1;box-shadow:0 1px #00000014}.pa-copy-btn:active kbd,.pa-copy-btn.pa-key-active kbd,.pa-btn-copy-snippet:active kbd,.pa-btn-copy-snippet.pa-key-active kbd{background:#d0d7de;border-color:#afb8c1;color:#24292f;box-shadow:none;transform:translateY(1px)}.pa-badge{font-size:11px;padding:2px 6px;border-radius:3px;background:#f6f8fa;color:#57606a;border:1px solid #d0d7de}.pa-badge-warn{background:#fff8c5;color:#9a6700;border:1px solid #d4a72c}.pa-snippet-actions{display:flex;gap:8px;margin-bottom:6px}.pa-btn-insert{flex:1;background:#0969da;color:#fff;border:1px solid #0550ae;border-radius:5px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:5px;box-shadow:0 1px 3px #0969da33}.pa-btn-insert:hover:not(:disabled){background:#0550ae}.pa-btn-copy-snippet{flex:1;background:#fff;color:#24292f;border:1px solid #d0d7de;border-radius:5px;padding:6px 10px;font-size:12px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:5px;box-shadow:0 1px 2px #0000000d}.pa-btn-copy-snippet:hover{background:#f3f4f6;color:#0969da;border-color:#0969da}.pa-snippet-box{width:100%;height:110px;min-height:70px;max-height:220px;box-sizing:border-box;overflow-y:auto;background:#fff;border:1px solid #d0d7de;border-radius:5px;padding:8px;font-size:11px;line-height:1.45;font-family:SFMono-Regular,Consolas,Liberation Mono,Menlo,monospace;margin:0;white-space:pre-wrap;word-break:break-all;color:#1f2328;user-select:text;-webkit-user-select:text;cursor:text;resize:vertical}.pa-snippet-box:focus{outline:none;border-color:#0969da;box-shadow:0 0 0 2px #0969da33}#paShieldModal{cursor:default}.pa-shield-card{background:#fff;border:1px solid #d0d7de;border-radius:10px;padding:24px;max-width:520px;box-shadow:0 16px 48px #00000047;color:#24292f;cursor:default}.pa-btn,.pa-copy-btn,.pa-toggle-btn,.pa-btn-insert,.pa-btn-copy-snippet,.pa-shield-card .pa-btn,#paExitShieldModalBtn,#paRetestShieldBtn{cursor:pointer}.pa-btn *,.pa-copy-btn *,.pa-toggle-btn *,.pa-btn-insert *,.pa-btn-copy-snippet *,.pa-shield-card .pa-btn *,#paExitShieldModalBtn *,#paRetestShieldBtn *{pointer-events:none}.pa-handle{pointer-events:all}.pa-handle[data-handle=nw],.pa-handle[data-handle=se]{cursor:nwse-resize}.pa-handle[data-handle=ne],.pa-handle[data-handle=sw]{cursor:nesw-resize}.pa-handle[data-handle=n],.pa-handle[data-handle=s]{cursor:ns-resize}.pa-handle[data-handle=e],.pa-handle[data-handle=w]{cursor:ew-resize}</style>
 </head>
 <body>
-<h2>MYCRO HID Controller</h2>
-<form id="macroForm" action="/macro" method="POST" accept-charset="utf-8">
-<textarea id="macroCode" name="code" rows="6" placeholder="Example: Hello World\enter"></textarea><br>
-<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-<input type="submit" value="Execute Macro">
-<button type="button" id="compileBtn">Compile Only</button>
-<button type="button" id="abortBtn">Abort</button>
-<label style="font-size:12px">Click hold (ms):
-<input type="number" id="holdMs" name="hold_ms" value="10" min="0" max="1000" style="width:70px">
-</label>
-<label style="font-size:12px">Token:
-<input type="password" id="token" style="width:110px" placeholder="if set on device">
-</label>
-</div>
-</form>
-<pre id="macroOutput" style="white-space:pre-wrap;background:#f8f8f8;border:1px solid #ddd;padding:8px;margin-top:10px"></pre>
+	<h2>MYCRO HID Controller</h2>
+	<form id="macroForm" action="/macro" method="POST" accept-charset="utf-8">
+		<textarea id="macroCode" name="code" rows="6" placeholder="Example: Hello World\enter"></textarea><br>
+		<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+			<input type="submit" value="Execute Macro">
+			<button type="button" id="compileBtn">Compile Only</button>
+			<button type="button" id="abortBtn">Abort</button>
+			<label style="font-size:12px">Click hold (ms):
+				<input type="number" id="holdMs" name="hold_ms" value="10" min="0" max="1000" style="width:70px">
+			</label>
+			<label style="font-size:12px">Token:
+				<input type="password" id="token" style="width:110px" placeholder="if set on device">
+			</label>
+		</div>
+	</form>
+	<pre id="macroOutput" style="white-space:pre-wrap;background:#f8f8f8;border:1px solid #ddd;padding:8px;margin-top:10px"></pre>
 
-<hr>
-<h3>Auto Clicker</h3>
-<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-<select id="clType">
-<option value="mouse">Mouse</option>
-<option value="keyboard">Keyboard</option>
-</select>
-<select id="clBtn">
-<option value="L">Left</option>
-<option value="R">Right</option>
-<option value="M">Middle</option>
-<option value="back">Back (X1)</option>
-<option value="forward">Forward (X2)</option>
-</select>
-<input type="text" id="clKey" placeholder="one key: a / 1 / enter / f1..." style="width:180px;display:none">
-<label style="font-size:12px">Count:
-<input type="number" id="clCount" value="10" min="1" max="65279" style="width:80px">
-</label>
-<button type="button" id="clStart">Start</button>
-<button type="button" id="clAbort">Abort</button>
-</div>
+	<hr>
+	<h3>Auto Clicker</h3>
+	<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+		<select id="clType">
+			<option value="mouse">Mouse</option>
+			<option value="keyboard">Keyboard</option>
+		</select>
+		<select id="clBtn">
+			<option value="L">Left</option>
+			<option value="R">Right</option>
+			<option value="M">Middle</option>
+			<option value="back">Back (X1)</option>
+			<option value="forward">Forward (X2)</option>
+		</select>
+		<input type="text" id="clKey" placeholder="one key: a / 1 / enter / f1..." style="width:180px;display:none">
+		<label style="font-size:12px">Count:
+			<input type="number" id="clCount" value="10" min="1" max="65279" style="width:80px">
+		</label>
+		<button type="button" id="clStart">Start</button>
+		<button type="button" id="clAbort">Abort</button>
+	</div>
 
-<hr>
-<h3>Pixel Assist</h3>
-<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-<button type="button" id="paCapture">Capture Screen</button>
-<label style="font-size:12px">Zoom:
-<select id="paZoom"><option value="0">Fit width</option><option value="0.5">50%</option><option value="1" selected>100%</option><option value="2">200%</option></select>
-</label>
-<span id="paStatus" style="font-size:12px;color:#666"></span>
-</div>
-<div id="paStage" style="display:none;margin-top:8px;overflow:auto;max-height:70vh">
-<canvas id="paCanvas" style="cursor:crosshair;border:1px solid #999"></canvas>
-</div>
-<div id="paRectBar" style="font-size:12px;margin-top:6px;display:none">
-x <input type="number" id="paX" min="0" style="width:75px">
-y <input type="number" id="paY" min="0" style="width:75px">
-w <input type="number" id="paW" min="1" max="128" style="width:60px">
-h <input type="number" id="paH" min="1" max="128" style="width:60px">
-<span id="paColors"></span>
-</div>
-<div id="paSnips"></div>
+	<hr>
+	<h3>Pixel Assist</h3>
+	<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+		<button type="button" id="paOpenBtn" class="pa-btn pa-btn-primary">Launch Pixel Assist</button>
+		<span id="paMainStatus" style="font-size:12px;color:#57606a">Precision color picker &amp; region watcher (overlay workspace)</span>
+	</div>
 
-<script>
-const form = document.getElementById("macroForm");
-const codeEl = document.getElementById("macroCode");
-const outEl = document.getElementById("macroOutput");
-const compileBtn = document.getElementById("compileBtn");
-const abortBtn = document.getElementById("abortBtn");
-const holdMsEl = document.getElementById("holdMs");
-const tokenEl = document.getElementById("token");
-const executeBtn = form.querySelector("input[type=submit]");
-let inFlight = false;
+	<!-- Standalone Pixel Assist Overlay Workspace -->
+	<div id="paOverlay">
+		<div id="paTopBar">
+			<div style="display:flex;align-items:center;gap:12px">
+				<button type="button" id="paCloseBtn" class="pa-btn pa-btn-danger">Close (Esc)</button>
+				<span style="font-weight:600;font-size:14px;letter-spacing:0.3px">Pixel Assist</span>
+				<span id="paResBadge" class="pa-badge" style="display:none">0×0</span>
+				<button type="button" id="paShieldWarning" class="pa-badge pa-badge-warn" style="display:none;cursor:pointer;border:1px solid #d4a72c" title="Click for details on browser canvas noise">Anti-Fingerprint Active</button>
+			</div>
+			<div style="display:flex;align-items:center;gap:10px">
+				<span id="paCaptureStatus" style="font-size:12px;color:#57606a"></span>
+				<button type="button" id="paCaptureBtn" class="pa-btn pa-btn-primary">Capture Screen</button>
+				<div class="pa-toggle-group">
+					<button type="button" id="paModePoint" class="pa-toggle-btn active">Point</button>
+					<button type="button" id="paModeRegion" class="pa-toggle-btn">Region</button>
+				</div>
+				<div style="display:flex;align-items:center;gap:4px">
+					<button type="button" id="paZoomOutBtn" class="pa-btn" style="padding:4px 8px;font-size:12px" title="Zoom Out">−</button>
+					<select id="paZoomSelect" style="background:#ffffff;color:#24292f;border:1px solid #d0d7de;border-radius:4px;padding:3px 6px;font-size:12px;font-weight:500;min-width:76px;text-align:center">
+						<option id="paZoomCustomOpt" value="custom" style="display:none">100%</option>
+						<option value="fit">Fit</option>
+						<option value="0.25">25%</option>
+						<option value="0.5">50%</option>
+						<option value="1">100%</option>
+						<option value="2">200%</option>
+						<option value="4">400%</option>
+						<option value="8">800%</option>
+						<option value="16">1600%</option>
+					</select>
+					<button type="button" id="paZoomInBtn" class="pa-btn" style="padding:4px 8px;font-size:12px" title="Zoom In">+</button>
+					<button type="button" id="paZoomFitBtn" class="pa-btn" style="padding:4px 8px;font-size:12px" title="Fit to Viewport">Fit</button>
+					<button type="button" id="paGridToggleBtn" class="pa-btn" style="padding:4px 8px;font-size:12px;font-weight:600" title="Toggle Pixel Grid (auto-activates at 400%+ zoom)">Grid</button>
+				</div>
+			</div>
+		</div>
 
-function headers() {
-	const h = {"Content-Type": "application/x-www-form-urlencoded"};
-	const t = tokenEl.value.trim();
-	if (t) h["Authorization"] = "Bearer " + t;
-	return h;
-}
+		<div id="paViewport">
+			<div id="paEmptyPrompt" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#57606a;text-align:center">
+				<p style="font-size:15px;margin-bottom:12px;color:#24292f;font-weight:500">No screenshot active</p>
+				<p style="font-size:12px;color:#57606a;margin-bottom:16px">Connect your capture provider (OBS plugin) and click below.</p>
+				<button type="button" id="paCapturePromptBtn" class="pa-btn pa-btn-primary" style="font-size:14px;padding:8px 18px">Capture Screen Now</button>
+			</div>
+			<div id="paStageContainer" style="display:none">
+				<canvas id="paDisplayCanvas"></canvas>
+				<svg id="paOverlaySvg">
+					<defs>
+						<pattern id="paPixelGridPattern" width="4" height="4" patternUnits="userSpaceOnUse">
+							<path id="paPixelGridPath" d="M 4 0 L 0 0 0 4" fill="none" stroke="rgba(128, 128, 128, 0.35)" stroke-width="1"></path>
+						</pattern>
+					</defs>
+					<rect id="paPixelGridRect" x="0" y="0" width="100%" height="100%" fill="url(#paPixelGridPattern)" style="display:none;pointer-events:none;"></rect>
+					<g id="paSvgSelectionGroup" style="display:none">
+						<rect id="paSvgBoxBody" x="0" y="0" width="0" height="0" fill="rgba(9, 105, 218, 0.1)"></rect>
+						<rect id="paSvgBox" x="0" y="0" width="0" height="0" fill="none" stroke="#0969da" stroke-width="1.5" style="pointer-events:none;"></rect>
+						<rect id="paSvgBoxOuter" x="0" y="0" width="0" height="0" fill="none" stroke="#ffffff" stroke-width="1" stroke-dasharray="3,3" style="pointer-events:none;"></rect>
+						<g id="paSvgHandles" style="display:none">
+							<rect class="pa-handle" data-handle="nw" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="n" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="ne" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="e" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="se" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="s" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="sw" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="w" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+						</g>
+					</g>
+				</svg>
+			</div>
+		</div>
 
-function setBusy(busy) {
-	inFlight = busy;
-	if (executeBtn) executeBtn.disabled = busy;
-	if (compileBtn) compileBtn.disabled = busy;
-}
+		<!-- Anti-Fingerprint Noise Blocking Modal -->
+		<div id="paShieldModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.65);z-index:10005;align-items:center;justify-content:center;">
+			<div class="pa-shield-card">
+				<h4 style="margin:0 0 12px 0;display:flex;align-items:center;gap:8px;color:#cf222e;font-size:16px;font-weight:600">
+					Canvas Noise Detected — Color Picker Blocked
+				</h4>
+				<p style="font-size:13px;line-height:1.5;margin-bottom:12px;color:#57606a">
+					Your browser or an active extension (e.g. Brave Shields, CanvasBlocker, Firefox <code>privacy.resistFingerprinting</code>) is modifying canvas pixel data on readout.
+				</p>
+				<div style="background:#ffebe9;border:1px solid #ff8182;border-radius:6px;padding:12px;font-size:12px;line-height:1.5;margin-bottom:14px">
+					<strong style="color:#cf222e">Why sampling is completely blocked:</strong>
+					<p style="margin:4px 0 0 0;color:#57606a">
+						MYCRO macros execute conditional color checks (e.g. <code>\ifnum{$ret}{=}{0xRRGGBB}</code>) requiring exact 24-bit RGB values. Random noise injection corrupts sampled pixel channels, which causes macros to fail on hardware.
+					</p>
+				</div>
+				<div style="font-size:12px;margin-bottom:16px;color:#57606a;line-height:1.5">
+					<strong style="color:#24292f">How to unblock:</strong>
+					<p style="margin:4px 0 0 0">
+						Disable canvas fingerprinting protection for this origin/IP in your browser shield settings, then click <strong>Re-test &amp; Unlock</strong>.
+					</p>
+				</div>
+				<div id="paShieldModalResult" style="display:none;margin-bottom:14px;padding:8px 12px;border-radius:5px;font-size:12px;font-weight:600"></div>
+				<div style="display:flex;justify-content:flex-end;gap:10px">
+					<button type="button" id="paExitShieldModalBtn" class="pa-btn pa-btn-danger">Exit Pixel Assist</button>
+					<button type="button" id="paRetestShieldBtn" class="pa-btn pa-btn-primary">Re-test &amp; Unlock</button>
+				</div>
+			</div>
+		</div>
 
-function pollStatus() {
-	fetch("/macro/status", {headers: headers()})
-	.then(r => r.text())
-	.then(t => {
-		outEl.textContent = "Status: " + t;
-		if (t.indexOf("running") === 0) setTimeout(pollStatus, 500);
-	})
-	.catch(() => {});
-}
+		<!-- Floating Inspector HUD -->
+		<div id="paInspector" style="display:none">
+			<div style="display:flex;justify-content:space-between;align-items:center">
+				<span class="pa-panel-title">Pixel Loupe (11×11)</span>
+				<span id="paHudModeBadge" class="pa-badge">Point Mode</span>
+			</div>
 
-function post(path, codeOverride) {
-	if (inFlight) return;
-	setBusy(true);
-	outEl.textContent = "Working...";
-	const code = (codeOverride !== undefined) ? codeOverride : (codeEl.value || "");
-	fetch(path, {
-		method: "POST",
-		headers: headers(),
-		body: "code=" + encodeURIComponent(code) + "&hold_ms=" + encodeURIComponent(holdMsEl.value || "")
-	})
-	.then(r => r.text())
-	.then(t => {
-		outEl.textContent = t;
-		// Macro started in background — watch it until it leaves "running"
-		if (t.indexOf("Started") === 0) setTimeout(pollStatus, 300);
-	})
-	.catch(e => { outEl.textContent = "Error: " + e; })
-	.finally(() => setBusy(false));
-}
+			<div class="pa-loupe-wrap">
+				<canvas id="paLoupeCanvas" width="132" height="132"></canvas>
+				<div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+					<div id="paColorSwatch" class="pa-color-preview-large"></div>
+					<span id="paColorHexShort" style="font-family:monospace;font-size:11px;font-weight:600;color:#24292f">0x------</span>
+				</div>
+			</div>
 
-function doAbort() {
-	fetch("/macro/abort", {method: "POST", headers: headers()})
-	.then(r => r.text())
-	.then(t => { outEl.textContent = t; setTimeout(pollStatus, 300); })
-	.catch(e => { outEl.textContent = "Error: " + e; });
-}
+			<div>
+				<div class="pa-panel-title">Inspection Values (Pinned)</div>
+				<div style="display:flex;flex-direction:column;gap:5px">
+					<div class="pa-data-row">
+						<span style="color:#57606a">Coordinate:</span>
+						<span id="paCoordText" style="color:#24292f">X: 0, Y: 0</span>
+						<button type="button" class="pa-copy-btn" id="paCopyCoordBtn" title="Copy coordinate (Shortcut: X)">Copy <kbd>X</kbd></button>
+					</div>
+					<div class="pa-data-row">
+						<span style="color:#57606a">Hex (DSL):</span>
+						<span id="paHexDslText" style="color:#24292f">0x000000</span>
+						<button type="button" class="pa-copy-btn" id="paCopyHexDslBtn" title="Copy DSL hex color (Shortcut: C)">Copy <kbd>C</kbd></button>
+					</div>
+					<div class="pa-data-row">
+						<span style="color:#57606a">Hex (CSS):</span>
+						<span id="paHexCssText" style="color:#24292f">#000000</span>
+						<button type="button" class="pa-copy-btn" id="paCopyHexCssBtn" title="Copy CSS hex color">Copy</button>
+					</div>
+					<div class="pa-data-row">
+						<span style="color:#57606a">RGB:</span>
+						<span id="paRgbText" style="color:#24292f">rgb(0, 0, 0)</span>
+						<button type="button" class="pa-copy-btn" id="paCopyRgbBtn" title="Copy RGB color">Copy</button>
+					</div>
+				</div>
+			</div>
 
-form.addEventListener("submit", (e) => {
-	e.preventDefault();
-	post("/macro");
-});
+			<!-- Region controls (visible in Region Mode) -->
+			<div id="paRegionControls" style="display:none">
+				<div class="pa-panel-title">Region Bounds</div>
+				<div style="grid-template-columns:1fr 1fr;display:grid;gap:6px;font-size:12px">
+					<label style="color:#57606a">X: <input type="number" id="paInX" min="0" style="width:65px;background:#ffffff;color:#24292f;border:1px solid #d0d7de;border-radius:3px;padding:2px 4px"></label>
+					<label style="color:#57606a">Y: <input type="number" id="paInY" min="0" style="width:65px;background:#ffffff;color:#24292f;border:1px solid #d0d7de;border-radius:3px;padding:2px 4px"></label>
+					<label style="color:#57606a">W: <input type="number" id="paInW" min="1" max="128" style="width:65px;background:#ffffff;color:#24292f;border:1px solid #d0d7de;border-radius:3px;padding:2px 4px"></label>
+					<label style="color:#57606a">H: <input type="number" id="paInH" min="1" max="128" style="width:65px;background:#ffffff;color:#24292f;border:1px solid #d0d7de;border-radius:3px;padding:2px 4px"></label>
+				</div>
+				<div id="paRegionSwatches" style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap"></div>
+			</div>
 
-compileBtn.addEventListener("click", () => post("/compile"));
+			<div>
+				<div class="pa-panel-title">Macro Snippet</div>
+				<div class="pa-snippet-actions">
+					<button type="button" id="paInsertSnippetBtn" class="pa-btn-insert">Insert into Editor</button>
+					<button type="button" id="paCopySnippetBtn" class="pa-btn-copy-snippet" title="Copy snippet to clipboard (Shortcut: S)">Copy Snippet <kbd>S</kbd></button>
+				</div>
+				<textarea id="paSnippetBox" class="pa-snippet-box" rows="5" spellcheck="false" placeholder="Macro snippet will appear here..."></textarea>
+			</div>
+		</div>
+	</div>
 
-abortBtn.addEventListener("click", doAbort);
+	<details class="ref">
+		<summary><strong>Quick Reference (click to expand)</strong></summary>
 
-// --- Auto Clicker: reuses the macro engine (compile -> background task -> /macro/abort); no dedicated backend ---
-const clType = document.getElementById("clType");
-const clBtn = document.getElementById("clBtn");
-const clKey = document.getElementById("clKey");
-const clCount = document.getElementById("clCount");
-const clStart = document.getElementById("clStart");
-const clAbort = document.getElementById("clAbort");
+		<details open>
+			<summary><h5>Text & Escape</h5></summary>
+			<table>
+				<tr><th>Syntax</th><th>Description</th></tr>
+				<tr><td><code>abc 123</code></td><td>Plain text (space/newline become keys)</td></tr>
+				<tr><td><code>\\</code></td><td>Backslash</td></tr>
+				<tr><td><code>\{</code> <code>\}</code></td><td>Literal braces</td></tr>
+				<tr><td><code>\$</code></td><td>Literal dollar sign ($ is special only in value positions)</td></tr>
+				<tr><td><code>\cmd{}</code></td><td>Empty {} separates command from text</td></tr>
+				<tr><td><code>\</code> + newline</td><td>Line continuation — newline ignored (split logic blocks)</td></tr>
+				<tr><td><code>\# comment</code></td><td>Comment to end of line (no Enter emitted)</td></tr>
+			</table>
+		</details>
 
-const KEY_NAMES = ("enter return esc escape tab space bs backspace del delete up down left right " +
-	"home end pgup pgdn ins caps ctrl shift alt win gui cmd " +
-	"f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12").split(" ");
+		<details>
+			<summary><h5>Special Keys</h5></summary>
+			<table>
+				<tr><th>Command</th><th>Key</th><th>Command</th><th>Key</th></tr>
+				<tr><td><code>\enter</code></td><td>Enter</td><td><code>\tab</code></td><td>Tab</td></tr>
+				<tr><td><code>\esc</code></td><td>Escape</td><td><code>\space</code></td><td>Space</td></tr>
+				<tr><td><code>\bs</code></td><td>Backspace</td><td><code>\del</code></td><td>Delete</td></tr>
+				<tr><td><code>\up \down \left \right</code></td><td>Arrow keys</td><td><code>\home \end</code></td><td>Home/End</td></tr>
+				<tr><td><code>\pgup \pgdn</code></td><td>Page Up/Down</td><td><code>\ins</code></td><td>Insert</td></tr>
+				<tr><td><code>\f1</code> ~ <code>\f12</code></td><td>Function keys</td><td><code>\caps</code></td><td>Caps Lock</td></tr>
+			</table>
+		</details>
 
-clType.addEventListener("change", () => {
-	const kb = clType.value === "keyboard";
-	clKey.style.display = kb ? "" : "none";
-	clBtn.style.display = kb ? "none" : "";
-});
+		<details>
+			<summary><h5>Combinations & Modifiers</h5></summary>
+			<table>
+				<tr><th>Modifier</th><th>Aliases</th><th>Example</th></tr>
+				<tr><td>Ctrl</td><td><code>\ctrl</code> <code>\control</code></td><td><code>\ctrl+c</code> (copy)</td></tr>
+				<tr><td>Shift</td><td><code>\shift</code></td><td><code>\shift+a</code> (capital A)</td></tr>
+				<tr><td>Alt</td><td><code>\alt</code> <code>\option</code> <code>\opt</code> </td><td><code>\alt+\f4</code> (close window)</td></tr>
+				<tr><td>Win/Cmd</td><td><code>\win</code> <code>\cmd</code> <code>\gui</code></td><td><code>\win+r</code> or <code>\cmd+space</code></td></tr>
+			</table>
+			<p><small><strong>Combo examples:</strong> <code>\ctrl+\shift+t</code> (reopen tab), <code>\alt+tab</code> (switch window)</small></p>
+		</details>
 
-// Validate and convert to a macro fragment for exactly ONE key; null on invalid input
-function keyToMacro(k) {
-	k = k.trim().toLowerCase();
-	if (!k) return null;
-	if (k.length === 1) {
-		if (k === "\\") return "\\\\";
-		if (k === "{") return "\\{";
-		if (k === "}") return "\\}";
-		const c = k.charCodeAt(0);
-		if (c >= 32 && c <= 126) return k;  // printable ASCII single char
-		return null;
-	}
-	if (KEY_NAMES.indexOf(k) !== -1) return "\\" + k;  // named key
-	return null;
-}
+		<details>
+			<summary><h5>Control Commands</h5></summary>
+			<table>
+				<tr><th>Command</th><th>Description</th></tr>
+				<tr><td><code>\delay{0.5}</code></td><td>Sleep once (seconds)</td></tr>
+				<tr><td><code>\pace{0.05}</code></td><td>Set delay after every following action</td></tr>
+				<tr><td><code>\rep{5}{abc}</code></td><td>Repeat "abc" 5 times</td></tr>
+				<tr><td><code>\kdown{ctrl}</code></td><td>Press and hold Ctrl</td></tr>
+				<tr><td><code>\kup{ctrl}</code></td><td>Release Ctrl</td></tr>
+				<tr><td><code>\kup{}</code></td><td>Release all keys</td></tr>
+			</table>
+		</details>
 
-// \rep is capped at 255 per level; larger counts use two-level nesting + a remainder level
-function buildRep(n, body) {
-	if (n <= 255) return "\\rep{" + n + "}{" + body + "}";
-	const q = Math.floor(n / 255), r = n % 255;
-	let s = "\\rep{" + q + "}{\\rep{255}{" + body + "}}";
-	if (r) s += "\\rep{" + r + "}{" + body + "}";
-	return s;
-}
+		<details>
+			<summary><h5>Mouse Commands</h5></summary>
+			<table>
+				<tr><th>Command</th><th>Description</th></tr>
+				<tr><td><code>\click{L}</code></td><td>Left click (L/R/M/B/F)</td></tr>
+				<tr><td><code>\click{back}</code></td><td>Side button (back/X1, forward/X2)</td></tr>
+				<tr><td><code>\click{R,3}</code></td><td>Right click 3 times</td></tr>
+				<tr><td><code>\move{100,-50}</code></td><td>Move mouse (x,y)</td></tr>
+				<tr><td><code>\mdown{L}</code></td><td>Press left button (hold)</td></tr>
+				<tr><td><code>\mup{L}</code></td><td>Release left button</td></tr>
+			</table>
+		</details>
 
-clStart.addEventListener("click", () => {
-	let body;
-	if (clType.value === "mouse") {
-		body = "\\click{" + clBtn.value + "}";
-	} else {
-		body = keyToMacro(clKey.value);
-		if (body === null) {
-			outEl.textContent = "Invalid key: exactly ONE key — a single character (a-z, 0-9, symbol) or a key name (enter, esc, f1, ...)";
-			return;
-		}
-	}
-	const n = parseInt(clCount.value, 10);
-	if (!(n >= 1 && n <= 65279)) {
-		outEl.textContent = "Count must be 1..65279";
-		return;
-	}
-	const code = buildRep(n, body);
-	outEl.textContent = "Clicker: " + code;
-	post("/macro", code);
-});
+		<details>
+			<summary><h5>Variables & Interpolation (v3)</h5></summary>
+			<table>
+				<tr><th>Syntax</th><th>Description</th></tr>
+				<tr><td><code>\set{x}{5}</code></td><td>Set variable x (32 i32 registers; 0x hex ok)</td></tr>
+				<tr><td><code>\add{x}{-1}</code></td><td>Add to variable</td></tr>
+				<tr><td><code>$x</code> <code>${x}</code></td><td>Variable value — only in value positions (counts, seconds, keycodes, coords)</td></tr>
+				<tr><td><code>\val{x}</code></td><td>Type out the variable's decimal digits</td></tr>
+				<tr><td><code>$ret</code> <code>$timeout</code></td><td>Read-only: last \call result / \wait timed-out flag</td></tr>
+			</table>
+		</details>
 
-clAbort.addEventListener("click", doAbort);
+		<details>
+			<summary><h5>Macros & Flow (v3)</h5></summary>
+			<table>
+				<tr><th>Syntax</th><th>Description</th></tr>
+				<tr><td><code>\def{dbl}[1]{#1#1}</code></td><td>Define a macro (params #1–#9, ## = literal #)</td></tr>
+				<tr><td><code>\dbl{ab}</code></td><td>Call it — expanded at compile time, max 4 nesting levels</td></tr>
+				<tr><td><code>\ifnum{$x}{>=}{10}{a}{b}</code></td><td>If x &gt;= 10 type "a" else "b" (= != &lt; &lt;= &gt; &gt;=)</td></tr>
+				<tr><td><code>\rep{$n}{ab}</code></td><td>Repeat with a variable count</td></tr>
+			</table>
+		</details>
 
-// --- Pixel Assist: one lossless capture, all reads local ---
-const paCapture = document.getElementById("paCapture");
-const paStatus = document.getElementById("paStatus");
-const paStage = document.getElementById("paStage");
-const paCanvas = document.getElementById("paCanvas");
-const paCtx = paCanvas.getContext("2d", {willReadFrequently: true});
-const paZoom = document.getElementById("paZoom");
-const paRectBar = document.getElementById("paRectBar");
-const paSnips = document.getElementById("paSnips");
-const paIn = ["paX", "paY", "paW", "paH"].map(id => document.getElementById(id));
-let paImg = null;   // native-resolution bitmap; PNG readback is exact
-let paSel = null;   // {x,y,w,h} in native pixels
-let paDrag = null;
+		<details>
+			<summary><h5>Runtime Extension (v3)</h5></summary>
+			<table>
+				<tr><th>Syntax</th><th>Description</th></tr>
+				<tr><td><code>\use{sys}</code></td><td>Declare a namespace dependency (compile-time check)</td></tr>
+				<tr><td><code>\call{sys.free}</code></td><td>Call an ext function; return value goes to <code>$ret</code></td></tr>
+				<tr><td><code>\wait{sig}{5}</code></td><td>Wait for signal sig up to 5s (0 = forever); sets <code>$timeout</code></td></tr>
+				<tr><td><code>$sig.field</code></td><td>Read a signal's payload slot (0 if unset)</td></tr>
+				<tr><td><code>\call{net.send}{tag}</code></td><td>Push a net.msg to all connected hosts ($ret = clients reached)</td></tr>
+				<tr><td><code>\wait{net.msg}{30}</code></td><td>Wait for a host's event.push; read fields as <code>$net.msg.x</code></td></tr>
+				<tr><td><code>\call{img.snap}{x,y,w,h}</code></td><td>Snapshot a screen rect (native px, lossless) → handle in <code>$ret</code> ($ret&lt;0 = error)</td></tr>
+				<tr><td><code>\call{img.at}{$s}{x,y}</code></td><td>Pixel color in a snapshot → packed <code>0xRRGGBB</code></td></tr>
+				<tr><td><code>\call{img.diff}{$a}{$b}{tol}</code></td><td>Count pixels diverging beyond tol (0 = identical)</td></tr>
+				<tr><td><code>\set{r}{\rect{\row{0xFF0000,…},…}}</code></td><td>Pixel literal — compile-time reference snapshot (handle)</td></tr>
+			</table>
+			<p><small>Handles: overwrite releases, <code>\set</code> moves, macro exit frees all — a polling loop cannot leak. Requires the capture provider (OBS plugin) connected.</small></p>
+			<p><small>Namespaces/signals are registered by the runtime; this firmware provides <code>sys</code> (free/const), <code>net</code> (send + net.msg signal), <code>img</code> (snap/at/diff). Use the Pixel Assist above to grab coordinates and colors.</small></p>
+		</details>
 
-function paApplyZoom() {
-	if (!paImg) return;
-	const z = parseFloat(paZoom.value);
-	paCanvas.style.width = z > 0 ? (paImg.width * z) + "px" : "100%";
-}
+		<details open>
+			<summary><h5>Examples</h5></summary>
+			<table>
+				<tr><th>Macro</th><th>Description</th></tr>
+				<tr><td><code>Hello World\enter</code></td><td>Type text and press Enter</td></tr>
+				<tr><td><code>\ctrl+c\delay{0.2}\rep{3}{\ctrl+v}</code></td><td>Copy, wait, paste 3 times</td></tr>
+				<tr><td><code>\win+r\delay{0.3}notepad\enter</code></td><td>Open Notepad (Windows)</td></tr>
+				<tr><td><code>\cmd+space\delay{0.2}terminal\enter</code></td><td>Open Terminal (macOS)</td></tr>
+				<tr><td><code>\mdown{L}\move{100,0}\mup{L}</code></td><td>Drag mouse right 100px</td></tr>
+				<tr><td><code>\kdown{ctrl}ccc\kup{}</code></td><td>Hold Ctrl, type "ccc", release</td></tr>
+				<tr><td><code>\def{cp}[1]{\ctrl+#1}\cp{c}\cp{v}</code></td><td>Define & use a macro (v3)</td></tr>
+				<tr><td><code>\set{n}{3}\rep{$n}{ab\enter}</code></td><td>Variable repeat count (v3)</td></tr>
+				<tr><td><code>\call{sys.free}\val{ret}</code></td><td>Call ext fn, type the result (v3)</td></tr>
+				<tr><td><code>\call{img.snap}{350,220,1,1}\set{p}{$ret}\call{img.at}{$p}{0,0}\ifnum{$ret}{=}{0xFF0000}{yes}</code></td><td>Type "yes" if the pixel at (350,220) is red</td></tr>
+			</table>
+		</details>
 
-function paDraw() {
-	if (!paImg) return;
-	paCtx.drawImage(paImg, 0, 0);
-	if (paSel) {
-		paCtx.strokeStyle = "#f33";
-		paCtx.lineWidth = 1;
-		paCtx.strokeRect(paSel.x + 0.5, paSel.y + 0.5, paSel.w, paSel.h);
-	}
-}
+		<p><small>Limits: 4096 bytes bytecode, max 4 nesting levels</small></p>
+	</details>
 
-function paEventPos(e) {
-	const r = paCanvas.getBoundingClientRect();
-	return {
-		x: Math.floor((e.clientX - r.left) * paImg.width / r.width),
-		y: Math.floor((e.clientY - r.top) * paImg.height / r.height)
-	};
-}
-
-function paHex(r, g, b) {
-	return "0x" + ((r << 16) | (g << 8) | b).toString(16).toUpperCase().padStart(6, "0");
-}
-
-function paPixel(x, y) {
-	const d = paCtx.getImageData(x, y, 1, 1).data;
-	return [d[0], d[1], d[2]];
-}
-
-function paRectLiteral(x, y, w, h) {
-	const data = paCtx.getImageData(x, y, w, h).data;
-	const rows = [];
-	for (let j = 0; j < h; j++) {
-		const cells = [];
-		for (let i = 0; i < w; i++) {
-			const o = (j * w + i) * 4;
-			cells.push(paHex(data[o], data[o + 1], data[o + 2]));
-		}
-		rows.push("\\row{" + cells.join(",") + "}");
-	}
-	return "\\rect{" + rows.join(",\n  ") + "}";
-}
-
-function paSnipCard(title, code) {
-	const div = document.createElement("div");
-	div.style.cssText = "border:1px solid #ddd;padding:6px;margin:6px 0;background:#fafafa";
-	const head = document.createElement("div");
-	head.innerHTML = "<strong style='font-size:12px'></strong> ";
-	head.firstChild.textContent = title;
-	const ins = document.createElement("button");
-	ins.type = "button"; ins.textContent = "Insert into editor";
-	ins.onclick = () => {
-		codeEl.value += (codeEl.value && !codeEl.value.endsWith("\n") ? "\n" : "") + code + "\n";
-	};
-	const cp = document.createElement("button");
-	cp.type = "button"; cp.textContent = "Copy";
-	cp.onclick = () => navigator.clipboard.writeText(code);
-	const pre = document.createElement("pre");
-	pre.style.cssText = "white-space:pre-wrap;background:#fff;padding:6px;font-size:12px";
-	pre.textContent = code;
-	head.appendChild(ins); head.appendChild(cp);
-	div.appendChild(head); div.appendChild(pre);
-	return div;
-}
-
-function paAnalyze() {
-	paSnips.innerHTML = "";
-	const cs = document.getElementById("paColors");
-	cs.innerHTML = "";
-	if (!paSel || !paImg) return;
-	let {x, y, w, h} = paSel;
-	x = Math.max(0, Math.min(x, paImg.width - 1));
-	y = Math.max(0, Math.min(y, paImg.height - 1));
-	w = Math.max(1, Math.min(w, 128, paImg.width - x));
-	h = Math.max(1, Math.min(h, 128, paImg.height - y));
-	paSel = {x, y, w, h};
-	[paIn[0].value, paIn[1].value, paIn[2].value, paIn[3].value] = [x, y, w, h];
-	// swatches: corners + center, exact native pixels
-	const pts = [[x, y], [x + w - 1, y], [x, y + h - 1], [x + w - 1, y + h - 1],
-		[x + (w >> 1), y + (h >> 1)]];
-	const seen = {};
-	for (const [px, py] of pts) {
-		const [r, g, b] = paPixel(px, py);
-		const hex = paHex(r, g, b);
-		if (seen[hex]) continue;
-		seen[hex] = 1;
-		const sw = document.createElement("span");
-		sw.style.cssText = "display:inline-block;width:14px;height:14px;border:1px solid #888;vertical-align:-2px;margin-left:8px";
-		sw.style.background = "rgb(" + r + "," + g + "," + b + ")";
-		sw.title = hex;
-		cs.appendChild(sw);
-		const lb = document.createElement("span");
-		lb.style.fontSize = "11px";
-		lb.textContent = " " + hex;
-		cs.appendChild(lb);
-	}
-	if (w === 1 && h === 1) {
-		const [r, g, b] = paPixel(x, y);
-		const hex = paHex(r, g, b);
-		paSnips.appendChild(paSnipCard("Point color check (at)", [
-			"\\use{img}",
-			"\\call{img.snap}{" + x + "," + y + ",1,1}\\set{px}{$ret}",
-			"\\ifnum{$ret}{<}{0}{\\call{net.send}{cap-fail}}",
-			"\\call{img.at}{$px}{0,0}",
-			"\\ifnum{$ret}{=}{" + hex + "}{\\# hit\n}{\\# miss\n}"
-		].join("\n")));
-		paSnips.appendChild(paSnipCard("Point color check (literal ref + diff)", [
-			"\\use{img}",
-			"\\set{ref}{" + paRectLiteral(x, y, 1, 1) + "}",
-			"\\call{img.snap}{" + x + "," + y + ",1,1}\\set{cur}{$ret}",
-			"\\call{img.diff}{$ref}{$cur}{16}",
-			"\\ifnum{$ret}{=}{0}{\\# same\n}{\\# changed\n}"
-		].join("\n")));
-	} else {
-		const wh = x + "," + y + "," + w + "," + h;
-		paSnips.appendChild(paSnipCard("Region watch (runtime reference)", [
-			"\\use{img}",
-			"\\call{img.snap}{" + wh + "}\\set{ref}{$ret}",
-			"\\rep{600}{\\call{img.snap}{" + wh + "}\\set{cur}{$ret}",
-			"\\call{img.diff}{$ref}{$cur}{16}",
-			"\\ifnum{$ret}{>}{0}{\\# changed\n}\\delay{0.5}}",
-		].join("\n")));
-		paSnips.appendChild(paSnipCard("Region consistency (literal reference)", [
-			"\\use{img}",
-			"\\set{ref}{" + paRectLiteral(x, y, w, h) + "}",
-			"\\call{img.snap}{" + wh + "}\\set{cur}{$ret}",
-			"\\call{img.diff}{$ref}{$cur}{16}",
-			"\\ifnum{$ret}{=}{0}{\\# identical\n}{\\# diverged\n}"
-		].join("\n")));
-	}
-}
-
-paCapture.addEventListener("click", () => {
-	paStatus.textContent = "capturing...";
-	paSnips.innerHTML = "";
-	fetch("/img/capture", {method: "POST", headers: headers()})
-	.then(r => r.text())
-	.then(t => {
-		if (t !== "started") { paStatus.textContent = t; return; }
-		const poll = () => {
-			fetch("/img/capture", {headers: headers()})
-			.then(r => {
-				if (r.status === 204) { setTimeout(poll, 500); return; }
-				if (r.status !== 200) {
-					return r.text().then(t2 => { paStatus.textContent = "capture: " + t2; });
-				}
-				return r.blob().then(b => {
-					const url = URL.createObjectURL(b);
-					const img = new Image();
-					img.onload = () => {
-						paImg = img;
-						paCanvas.width = img.width;
-						paCanvas.height = img.height;
-						paStage.style.display = "";
-						paRectBar.style.display = "";
-						paSel = null;
-						paApplyZoom();
-						paDraw();
-						paStatus.textContent = img.width + "x" + img.height + " — drag to select";
-						URL.revokeObjectURL(url);
-					};
-					img.src = url;
-				});
-			})
-			.catch(e => { paStatus.textContent = "capture: " + e; });
-		};
-		setTimeout(poll, 400);
-	})
-	.catch(e => { paStatus.textContent = "capture: " + e; });
-});
-
-paZoom.addEventListener("change", paApplyZoom);
-
-paCanvas.addEventListener("mousedown", e => {
-	if (!paImg) return;
-	const p = paEventPos(e);
-	paDrag = p;
-	paSel = {x: p.x, y: p.y, w: 1, h: 1};
-	paDraw();
-});
-paCanvas.addEventListener("mousemove", e => {
-	if (!paDrag) return;
-	const p = paEventPos(e);
-	paSel = {
-		x: Math.min(paDrag.x, p.x), y: Math.min(paDrag.y, p.y),
-		w: Math.abs(p.x - paDrag.x) + 1, h: Math.abs(p.y - paDrag.y) + 1
-	};
-	paDraw();
-	paAnalyze();
-});
-window.addEventListener("mouseup", () => {
-	if (!paDrag) return;
-	paDrag = null;
-	paAnalyze();
-});
-paIn.forEach(el => el.addEventListener("change", () => {
-	if (!paImg) return;
-	paSel = {x: +paIn[0].value || 0, y: +paIn[1].value || 0,
-		w: +paIn[2].value || 1, h: +paIn[3].value || 1};
-	paDraw();
-	paAnalyze();
-}));
-</script>
-
-<details class="ref">
-<summary><strong>📖 Quick Reference (click to expand)</strong></summary>
-
-<details open>
-<summary><h5>Text & Escape</h5></summary>
-<table>
-<tr><th>Syntax</th><th>Description</th></tr>
-<tr><td><code>abc 123</code></td><td>Plain text (space/newline become keys)</td></tr>
-<tr><td><code>\\</code></td><td>Backslash</td></tr>
-<tr><td><code>\{</code> <code>\}</code></td><td>Literal braces</td></tr>
-<tr><td><code>\$</code></td><td>Literal dollar sign ($ is special only in value positions)</td></tr>
-<tr><td><code>\cmd{}</code></td><td>Empty {} separates command from text</td></tr>
-<tr><td><code>\</code> + newline</td><td>Line continuation — newline ignored (split logic blocks)</td></tr>
-<tr><td><code>\# comment</code></td><td>Comment to end of line (no Enter emitted)</td></tr>
-</table>
-</details>
-
-<details>
-<summary><h5>Special Keys</h5></summary>
-<table>
-<tr><th>Command</th><th>Key</th><th>Command</th><th>Key</th></tr>
-<tr><td><code>\enter</code></td><td>Enter</td><td><code>\tab</code></td><td>Tab</td></tr>
-<tr><td><code>\esc</code></td><td>Escape</td><td><code>\space</code></td><td>Space</td></tr>
-<tr><td><code>\bs</code></td><td>Backspace</td><td><code>\del</code></td><td>Delete</td></tr>
-<tr><td><code>\up \down \left \right</code></td><td>Arrow keys</td><td><code>\home \end</code></td><td>Home/End</td></tr>
-<tr><td><code>\pgup \pgdn</code></td><td>Page Up/Down</td><td><code>\ins</code></td><td>Insert</td></tr>
-<tr><td><code>\f1</code> ~ <code>\f12</code></td><td>Function keys</td><td><code>\caps</code></td><td>Caps Lock</td></tr>
-</table>
-</details>
-
-<details>
-<summary><h5>Combinations & Modifiers</h5></summary>
-<table>
-<tr><th>Modifier</th><th>Aliases</th><th>Example</th></tr>
-<tr><td>Ctrl</td><td><code>\ctrl</code> <code>\control</code></td><td><code>\ctrl+c</code> (copy)</td></tr>
-<tr><td>Shift</td><td><code>\shift</code></td><td><code>\shift+a</code> (capital A)</td></tr>
-<tr><td>Alt</td><td><code>\alt</code> <code>\option</code> <code>\opt</code> </td><td><code>\alt+\f4</code> (close window)</td></tr>
-<tr><td>Win/Cmd</td><td><code>\win</code> <code>\cmd</code> <code>\gui</code></td><td><code>\win+r</code> or <code>\cmd+space</code></td></tr>
-</table>
-<p><small><strong>Combo examples:</strong> <code>\ctrl+\shift+t</code> (reopen tab), <code>\alt+tab</code> (switch window)</small></p>
-</details>
-
-<details>
-<summary><h5>Control Commands</h5></summary>
-<table>
-<tr><th>Command</th><th>Description</th></tr>
-<tr><td><code>\delay{0.5}</code></td><td>Sleep once (seconds)</td></tr>
-<tr><td><code>\pace{0.05}</code></td><td>Set delay after every following action</td></tr>
-<tr><td><code>\rep{5}{abc}</code></td><td>Repeat "abc" 5 times</td></tr>
-<tr><td><code>\kdown{ctrl}</code></td><td>Press and hold Ctrl</td></tr>
-<tr><td><code>\kup{ctrl}</code></td><td>Release Ctrl</td></tr>
-<tr><td><code>\kup{}</code></td><td>Release all keys</td></tr>
-</table>
-</details>
-
-<details>
-<summary><h5>Mouse Commands</h5></summary>
-<table>
-<tr><th>Command</th><th>Description</th></tr>
-<tr><td><code>\click{L}</code></td><td>Left click (L/R/M/B/F)</td></tr>
-<tr><td><code>\click{back}</code></td><td>Side button (back/X1, forward/X2)</td></tr>
-<tr><td><code>\click{R,3}</code></td><td>Right click 3 times</td></tr>
-<tr><td><code>\move{100,-50}</code></td><td>Move mouse (x,y)</td></tr>
-<tr><td><code>\mdown{L}</code></td><td>Press left button (hold)</td></tr>
-<tr><td><code>\mup{L}</code></td><td>Release left button</td></tr>
-</table>
-</details>
-
-<details>
-<summary><h5>Variables & Interpolation (v3)</h5></summary>
-<table>
-<tr><th>Syntax</th><th>Description</th></tr>
-<tr><td><code>\set{x}{5}</code></td><td>Set variable x (32 i32 registers; 0x hex ok)</td></tr>
-<tr><td><code>\add{x}{-1}</code></td><td>Add to variable</td></tr>
-<tr><td><code>$x</code> <code>${x}</code></td><td>Variable value — only in value positions (counts, seconds, keycodes, coords)</td></tr>
-<tr><td><code>\val{x}</code></td><td>Type out the variable's decimal digits</td></tr>
-<tr><td><code>$ret</code> <code>$timeout</code></td><td>Read-only: last \call result / \wait timed-out flag</td></tr>
-</table>
-</details>
-
-<details>
-<summary><h5>Macros & Flow (v3)</h5></summary>
-<table>
-<tr><th>Syntax</th><th>Description</th></tr>
-<tr><td><code>\def{dbl}[1]{#1#1}</code></td><td>Define a macro (params #1–#9, ## = literal #)</td></tr>
-<tr><td><code>\dbl{ab}</code></td><td>Call it — expanded at compile time, max 4 nesting levels</td></tr>
-<tr><td><code>\ifnum{$x}{>=}{10}{a}{b}</code></td><td>If x &gt;= 10 type "a" else "b" (= != &lt; &lt;= &gt; &gt;=)</td></tr>
-<tr><td><code>\rep{$n}{ab}</code></td><td>Repeat with a variable count</td></tr>
-</table>
-</details>
-
-<details>
-<summary><h5>Runtime Extension (v3)</h5></summary>
-<table>
-<tr><th>Syntax</th><th>Description</th></tr>
-<tr><td><code>\use{sys}</code></td><td>Declare a namespace dependency (compile-time check)</td></tr>
-<tr><td><code>\call{sys.free}</code></td><td>Call an ext function; return value goes to <code>$ret</code></td></tr>
-<tr><td><code>\wait{sig}{5}</code></td><td>Wait for signal sig up to 5s (0 = forever); sets <code>$timeout</code></td></tr>
-<tr><td><code>$sig.field</code></td><td>Read a signal's payload slot (0 if unset)</td></tr>
-<tr><td><code>\call{net.send}{tag}</code></td><td>Push a net.msg to all connected hosts ($ret = clients reached)</td></tr>
-<tr><td><code>\wait{net.msg}{30}</code></td><td>Wait for a host's event.push; read fields as <code>$net.msg.x</code></td></tr>
-<tr><td><code>\call{img.snap}{x,y,w,h}</code></td><td>Snapshot a screen rect (native px, lossless) → handle in <code>$ret</code> ($ret&lt;0 = error)</td></tr>
-<tr><td><code>\call{img.at}{$s}{x,y}</code></td><td>Pixel color in a snapshot → packed <code>0xRRGGBB</code></td></tr>
-<tr><td><code>\call{img.diff}{$a}{$b}{tol}</code></td><td>Count pixels diverging beyond tol (0 = identical)</td></tr>
-<tr><td><code>\set{r}{\rect{\row{0xFF0000,…},…}}</code></td><td>Pixel literal — compile-time reference snapshot (handle)</td></tr>
-</table>
-<p><small>Handles: overwrite releases, <code>\set</code> moves, macro exit frees all — a polling loop cannot leak. Requires the capture provider (OBS plugin) connected.</small></p>
-<p><small>Namespaces/signals are registered by the runtime; this firmware provides <code>sys</code> (free/const), <code>net</code> (send + net.msg signal), <code>img</code> (snap/at/diff). Use the Pixel Assist above to grab coordinates and colors.</small></p>
-</details>
-
-<details open>
-<summary><h5>Examples</h5></summary>
-<table>
-<tr><th>Macro</th><th>Description</th></tr>
-<tr><td><code>Hello World\enter</code></td><td>Type text and press Enter</td></tr>
-<tr><td><code>\ctrl+c\delay{0.2}\rep{3}{\ctrl+v}</code></td><td>Copy, wait, paste 3 times</td></tr>
-<tr><td><code>\win+r\delay{0.3}notepad\enter</code></td><td>Open Notepad (Windows)</td></tr>
-<tr><td><code>\cmd+space\delay{0.2}terminal\enter</code></td><td>Open Terminal (macOS)</td></tr>
-<tr><td><code>\mdown{L}\move{100,0}\mup{L}</code></td><td>Drag mouse right 100px</td></tr>
-<tr><td><code>\kdown{ctrl}ccc\kup{}</code></td><td>Hold Ctrl, type "ccc", release</td></tr>
-<tr><td><code>\def{cp}[1]{\ctrl+#1}\cp{c}\cp{v}</code></td><td>Define & use a macro (v3)</td></tr>
-<tr><td><code>\set{n}{3}\rep{$n}{ab\enter}</code></td><td>Variable repeat count (v3)</td></tr>
-<tr><td><code>\call{sys.free}\val{ret}</code></td><td>Call ext fn, type the result (v3)</td></tr>
-<tr><td><code>\call{img.snap}{350,220,1,1}\set{p}{$ret}\call{img.at}{$p}{0,0}\ifnum{$ret}{=}{0xFF0000}{yes}</code></td><td>Type "yes" if the pixel at (350,220) is red</td></tr>
-</table>
-</details>
-
-<p><small>Limits: 4096 bytes bytecode, max 4 nesting levels</small></p>
-</details>
 </body>
 </html>
+<!-- MYCRO_BUILD_HASH:0f936cca0dfa84bea714246220d1f8ba8fa631c8d82d32569c2fab3ad1b817af -->
