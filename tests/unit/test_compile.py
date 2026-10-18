@@ -6,6 +6,7 @@ from macro import (
     MAGIC, VERSION,
     OP_CHAR, OP_KEY, OP_COMBO, OP_SLEEP, OP_PACE, OP_MCLICK, OP_MMOVE,
     OP_LOOP, OP_LOOP_END, OP_KEY_DOWN, OP_KEY_UP, OP_END,
+    MAX_RUNTIME_NEST,
 )
 from mock_hid import MockHID
 
@@ -166,13 +167,15 @@ def test_rep_basic():
     ])
 
 
-def test_rep_nesting_allowed_to_four_levels():
-    compile_ok("\\rep{2}{a\\rep{2}{b\\rep{2}{c\\rep{2}{d}}}}")
+def test_rep_nesting_at_limit():
+    code = "\\rep{2}{" * MAX_RUNTIME_NEST + "a" + "}" * MAX_RUNTIME_NEST
+    compile_ok(code)
 
 
-def test_rep_nesting_beyond_four_levels_rejected():
-    err = compile_err("\\rep{2}{a\\rep{2}{b\\rep{2}{c\\rep{2}{d\\rep{2}{e}}}}}")
-    assert "nesting" in err
+def test_rep_nesting_exceeding_limit_rejected():
+    code = "\\rep{2}{" * (MAX_RUNTIME_NEST + 1) + "a" + "}" * (MAX_RUNTIME_NEST + 1)
+    err = compile_err(code)
+    assert f"rep nesting exceeds {MAX_RUNTIME_NEST} levels" in err
 
 
 def test_rep_requires_body():

@@ -49,8 +49,8 @@ letters are permanently reserved as bare key names — `\a` types "a").
 - Keys held: `\kdown{name}` / `\kup{name}`; `\kup{0}` releases all
 - Timing: `\delay{sec}` one-shot sleep (float seconds or `$var` ms);
   `\pace{sec}` sets the interval after subsequent actions
-- Loops: `\rep{N}{body}` — N is u8 (0 skips); nesting ≤ 4
-  (`MAX_NEST`, shared with `\ifnum`)
+- Loops: `\rep{N}{body}` — N is u8 (0 skips); runtime nesting ≤ 8
+  (`MAX_RUNTIME_NEST`, shared with `\ifnum`)
 
 All numeric arguments are value positions (§3).
 
@@ -106,15 +106,16 @@ All numeric arguments are value positions (§3).
   parameter landing in two positions must be valid in both
 - Top-level only, define-before-use, no redefinition, no clash with
   built-ins/key names; wrong argc and circular references are compile
-  errors; expansion depth counts toward `MAX_NEST`; no variadic or
-  optional parameters
+  errors; compile-time macro expansion depth bounded by `MAX_MACRO_EXPAND` (≤ 16);
+  no variadic or optional parameters
 
 ## 5. Conditionals
 
 `\ifnum{$a}{op}{b}{then}[{else}]` — op ∈ `= != < <= > >=`; the left
 operand must be a variable; the right is an int value position. Compiles
 to forward branches only (no backward jump ⇒ no `\while`; no else-if —
-nest instead). Handle-typed operands are a compile error, **except that
+nest instead). Runtime nesting bounded by `MAX_RUNTIME_NEST` (≤ 8, shared
+with `\rep`). Handle-typed operands are a compile error, **except that
 `$ret` is always comparable** — it carries error sentinels (negative
 values) alongside results, and checking it is the mandatory failure path
 (spec/vm.md Part II §2).
@@ -195,4 +196,4 @@ complex math sinks into ext functions); no runtime subroutines; no
 |---|---|
 | v1 (gist era) | Text typing, basic keys, escapes |
 | v2 | Mouse (click/move/hold), `\delay`/`\pace` split, `\rep`, `\kdown`/`\kup`, line continuation, comments |
-| v3 | `\def` user macros; variables/`\set`/`\add`; `$ret`/`$timeout`; slots; `\ifnum`; `\val`; `\use`/`\call`/`\wait`; value-position interpolation rules; signature type system (incl. point/rect compounds and handle ownership) |
+| v3 | `\def` user macros; variables/`\set`/`\add`; `$ret`/`$timeout`; slots; `\ifnum`; `\val`; `\use`/`\call`/`\wait`; value-position interpolation rules; signature type system (incl. point/rect compounds and handle ownership); decoupled compile-time macro expansion (`MAX_MACRO_EXPAND` = 16) and runtime control structure nesting (`MAX_RUNTIME_NEST` = 8) |

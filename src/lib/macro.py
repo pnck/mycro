@@ -66,7 +66,8 @@ REG_RET = 0xFF  # $ret
 CC_OPS = {"=": 0, "!=": 1, "<": 2, "<=": 3, ">": 4, ">=": 5}
 
 MAX_BYTECODE = 4096
-MAX_NEST = 4
+MAX_RUNTIME_NEST = 8
+MAX_MACRO_EXPAND = 16
 
 # Character set helpers (CircuitPython str lacks isalnum/isalpha)
 _ALPHA = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -175,7 +176,8 @@ class Macro:
         self._text = text
         self._pos = 0
         self._len = len(text)
-        self._depth = 0
+        self._runtime_depth = 0
+        self._macro_depth = 0
         self._defs = {}
         self._chain = ()
         self._vars = {}
@@ -202,7 +204,7 @@ class Macro:
             # innermost first — same message shape the recursive compiler made.
             msg = str(e)
             for fr in reversed(self._nest_stack):
-                msg = "In {}: {}".format(fr[6], msg)
+                msg = "In {}: {}".format(fr[-2], msg)
             return None, msg
 
     @staticmethod
@@ -615,7 +617,7 @@ class Macro:
 
     def _cmd_def(self, pos):
         r"""\def{name}[argc]{body} — define a compile-time user macro (top level only)."""
-        if self._depth > 0:
+        if self._nest_stack:
             raise MacroError("def only allowed at top level", pos)
         name = self._read_braces()
         if name is None:
@@ -662,18 +664,21 @@ class Macro:
         Callers do their own depth check first (messages differ)."""
         self._nest_stack.append(
             (self._text, self._pos, self._len, self._bc,
-             self._depth, self._chain, what, cont)
+             self._runtime_depth, self._macro_depth, self._chain, what, cont)
         )
         self._text, self._pos, self._len = body, 0, len(body)
         self._bc = bytearray()
-        self._depth += 1
+        if cont[0] == "inline":
+            self._macro_depth += 1
+        else:
+            self._runtime_depth += 1
 
     def _pop_nest(self):
         """A nested body is finished: restore the parent frame and wrap the
         sub-buffer per the continuation."""
         sub = self._bc
         (self._text, self._pos, self._len, self._bc,
-         self._depth, self._chain, what, cont) = self._nest_stack.pop()
+         self._runtime_depth, self._macro_depth, self._chain, what, cont) = self._nest_stack.pop()
         kind = cont[0]
         if kind == "inline":  # macro expansion: splice the bytes in
             self._emit(sub)
@@ -718,8 +723,8 @@ class Macro:
         """Inline-expand a user macro at the call site (compile-time)."""
         if name in self._chain:
             raise MacroError(f"recursive macro: {name}", pos)
-        if self._depth >= MAX_NEST:
-            raise MacroError(f"macro expansion exceeds {MAX_NEST} levels", pos)
+        if self._macro_depth >= MAX_MACRO_EXPAND:
+            raise MacroError(f"macro expansion exceeds {MAX_MACRO_EXPAND} levels", pos)
         argc, body = self._defs[name]
         args = []
         for _ in range(argc):
@@ -1042,8 +1047,8 @@ class Macro:
 
     def _cmd_ifnum(self, pos):
         r"""\ifnum{$a}{op}{b}{then}[{else}] — conditional branch."""
-        if self._depth >= MAX_NEST:
-            raise MacroError(f"ifnum nesting exceeds {MAX_NEST} levels", pos)
+        if self._runtime_depth >= MAX_RUNTIME_NEST:
+            raise MacroError(f"ifnum nesting exceeds {MAX_RUNTIME_NEST} levels", pos)
         left = self._read_braces()
         if left is None or not left.strip().startswith("$"):
             raise MacroError("ifnum left operand must be a variable ($name)", pos)
@@ -1247,8 +1252,8 @@ class Macro:
             raise MacroError("rep requires {body}", self._pos)
 
         # B1: enforce nesting limit
-        if self._depth >= MAX_NEST:
-            raise MacroError(f"rep nesting exceeds {MAX_NEST} levels", pos)
+        if self._runtime_depth >= MAX_RUNTIME_NEST:
+            raise MacroError(f"rep nesting exceeds {MAX_RUNTIME_NEST} levels", pos)
         self._nest_into(body, "rep body", ("rep", count))
 
     def _cmd_kdown(self, pos):

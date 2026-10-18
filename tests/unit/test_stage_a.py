@@ -5,7 +5,7 @@ same bytecode as the hand-written equivalent.
 """
 
 import keymap
-from macro import Macro, MAGIC, VERSION, OP_END
+from macro import Macro, MAGIC, VERSION, OP_END, MAX_MACRO_EXPAND, MAX_RUNTIME_NEST
 from mock_hid import MockHID
 
 H = bytes([MAGIC, VERSION])
@@ -131,19 +131,40 @@ def test_err_param_out_of_range():
     assert "#2 used but only 1 arg" in compile_err("\\def{open}[1]{#2}\\open{x}")
 
 
-def test_err_expansion_depth_limit():
-    # 4 nested reps then a macro call exceeds MAX_NEST=4
-    compile_err("\\def{m1}[1]{\\rep{2}{#1}}\\rep{2}{\\rep{2}{\\rep{2}{\\rep{2}{\\m1{a}}}}}")
+def test_macro_expansion_at_limit():
+    defs = "".join(f"\\def{{m{i:02d}}}{{\\m{i+1:02d}}}" for i in range(1, MAX_MACRO_EXPAND))
+    defs += f"\\def{{m{MAX_MACRO_EXPAND:02d}}}{{a}}"
+    compile_ok(defs + "\\m01")
 
 
-def test_deep_mixed_nesting_at_limit():
-    # rep(d0->d1) > macro(d1->d2) > ifnum(d2->d3) > rep(d3->d4): exactly at
-    # MAX_NEST=4, must compile. Nesting is iterative (heap stack), so this
-    # cannot exhaust the tiny device pystack the recursive compiler died on.
-    compile_ok(
-        "\\def{mx}[1]{\\ifnum{$x}{=}{1}{\\rep{2}{#1}}{-}}"
-        "\\set{x}{1}\\rep{1}{\\mx{a}}"
-    )
+def test_macro_expansion_exceeding_limit_rejected():
+    defs = "".join(f"\\def{{m{i:02d}}}{{\\m{i+1:02d}}}" for i in range(1, MAX_MACRO_EXPAND + 1))
+    defs += f"\\def{{m{MAX_MACRO_EXPAND + 1:02d}}}{{a}}"
+    err = compile_err(defs + "\\m01")
+    assert f"macro expansion exceeds {MAX_MACRO_EXPAND} levels" in err
+
+
+def test_ifnum_nesting_at_limit():
+    code = "\\set{x}{1}" + "\\ifnum{$x}{=}{1}{" * MAX_RUNTIME_NEST + "a" + "}" * MAX_RUNTIME_NEST
+    compile_ok(code)
+
+
+def test_ifnum_nesting_exceeding_limit_rejected():
+    code = "\\set{x}{1}" + "\\ifnum{$x}{=}{1}{" * (MAX_RUNTIME_NEST + 1) + "a" + "}" * (MAX_RUNTIME_NEST + 1)
+    err = compile_err(code)
+    assert f"ifnum nesting exceeds {MAX_RUNTIME_NEST} levels" in err
+
+
+def test_decoupled_macro_and_runtime_nesting():
+    # Macro expansion and runtime nesting ceilings are decoupled and independent.
+    # A chain of macros containing nested runtime blocks compiles cleanly as long as
+    # macro depth <= MAX_MACRO_EXPAND and runtime depth <= MAX_RUNTIME_NEST.
+    m_depth = min(MAX_MACRO_EXPAND, 10)
+    r_depth = min(MAX_RUNTIME_NEST, 5)
+    defs = "".join(f"\\def{{m{i:02d}}}{{\\m{i+1:02d}}}" for i in range(1, m_depth))
+    body = "\\set{x}{1}" + "\\rep{2}{" * r_depth + "a" + "}" * r_depth
+    defs += f"\\def{{m{m_depth:02d}}}{{{body}}}"
+    compile_ok(defs + "\\m01")
 
 
 def test_error_wrap_chain_preserved():

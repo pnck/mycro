@@ -72,7 +72,7 @@
 
 ### Stage A — User macros (pure compile-time, bytecode unchanged) ✅
 - [x] `\def{name}[argc]{body}` (argc 0–9); a `\name` call takes argc brace groups; resolution priority: built-in commands → user macros → key names
-- [x] Constraints: top-level only, define-before-use, no redefinition, no clash with built-ins/key names; circular references / wrong argc → compile error; expansion depth counts into MAX_NEST
+- [x] Constraints: top-level only, define-before-use, no redefinition, no clash with built-ins/key names; circular references / wrong argc → compile error; expansion depth bounded by MAX_MACRO_EXPAND
 
 ### Stage B — Variables / conditionals / rendering (bytecode v3) ✅
 - [x] 16 i32 registers (zeroed at execution start), `\set{x}{i32}` / `\add{x}{i32}`; `0x` hex literals supported
@@ -93,7 +93,7 @@
 - [x] `\call{ns.fn}{arg}...`: return value written to `$ret`, structured output written to `$ns.*` slots; the `sys` namespace is registered as minimal validation (`sys.free`); `net` with Phase 2, `img` with Phase 3
 - [x] Runtime registry (`src/lib/runtime.py`): unified registration and lookup of namespaces/signatures/signals/slots; platform wiring in code.py, fakes in tests
 - [x] Two-pass compiler: Pass 1 collects top-level `\def` (build the table, check circular references) and `\use` (check namespaces); Pass 2 does expansion + variable allocation + static checks; argument parsing upgraded to descriptors (imm/reg/str); shared deduplicated string table
-- [x] Nesting limit MAX_NEST = 4; compiler nesting is iterative (explicit heap stack, no Python recursion) — CircuitPython's pystack is only a few KB, so nesting depth is bounded by bytecode size, not call frames
+- [x] Decoupled nesting limits: MAX_RUNTIME_NEST = 8, MAX_MACRO_EXPAND = 16; compiler nesting is iterative (explicit heap stack, no Python recursion) — CircuitPython's pystack is only a few KB, so nesting depth is bounded by bytecode size, not call frames
 
 ### Boundaries
 - Variables are i32 only; strings are not first-class (strings pass opaquely via the string table / signal slots)
