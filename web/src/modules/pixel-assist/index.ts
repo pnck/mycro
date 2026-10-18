@@ -1,4 +1,5 @@
-import { headers } from "../../utils/api";
+import { getToken, headers } from "../../utils/api";
+import { hmacSha256Hex } from "../../utils/crypto";
 import { generatePointSnippet, generateRegionSnippet, toHex } from "./generator";
 
 export function initPixelAssist(): void {
@@ -976,9 +977,31 @@ export function initPixelAssist(): void {
 					headers: headers()
 				});
 				if (res.status === 200) {
-					const blob = await res.blob();
-					loadCaptureBlob(blob, "OBS capture");
+					const data = await res.json();
+					if (paCaptureStatus) {
+						paCaptureStatus.textContent = "Fetching direct frame from OBS...";
+					}
+					const token = getToken();
+					const sig = hmacSha256Hex(token, data.nonce);
+					const directUrl = `${data.url}?type=png&nonce=${encodeURIComponent(data.nonce)}&sig=${encodeURIComponent(sig)}`;
+					let directRes: Response;
+					try {
+						directRes = await fetch(directUrl);
+					} catch (fetchErr: any) {
+						throw new Error(
+							"LAN direct transfer blocked by browser/ad-blocker (ERR_BLOCKED_BY_CLIENT). Please whitelist this page in your ad blocker or test in Incognito mode."
+						);
+					}
+					if (!directRes.ok) {
+						throw new Error(`OBS direct transfer rejected (HTTP ${directRes.status})`);
+					}
+					const blob = await directRes.blob();
+					loadCaptureBlob(blob, "OBS Direct Capture");
 					return;
+				}
+				if (res.status !== 204) {
+					const msg = await res.text().catch(() => "");
+					throw new Error(msg ? `Device capture error: ${msg}` : `Capture failed (HTTP ${res.status})`);
 				}
 				if (Date.now() - startTime > 10000) {
 					throw new Error("Capture timed out (no capture provider responded)");

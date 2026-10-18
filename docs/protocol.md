@@ -84,11 +84,16 @@ to prevent infinite error reflection storms.
 | `event.push` | client → server | `name`: signal name, `fields`: object of i32 slot values | — (error `unknown_signal` for unregistered signals) |
 | `macro.result` | server → clients | `state`, `ms` (execution wall time) | push, `id` = 0 |
 | `net.msg` | server → clients | emitted by `\call{net.send}` | push, `id` = 0 |
-| `img.hello` | capture client → server | `caps`: list | push, `id` = 0; registers the client as the capture provider |
-| `img.frame` | server → capture client | one selector: `rect` {x,y,w,h} → lossless RGB8 crop / `points` [[x,y],…] → exact colors / `w`,`h` + `format` (`rgb8`/`gray8`) → whole-source resample / `format`:`png` → native whole-source PNG bytes, untouched | `img.frame.ok` with `width`/`height` (native dims), selector-specific fields, and for pixel streams `stream_id`/`chunks`/`bytes` (total payload length) followed by kind-1 chunks |
+| `img.hello` | capture client → server | `caps`: list (`["frame", "direct_preview"]`) | push, `id` = 0; registers the client as the capture provider |
+| `img.frame` | server → capture client | one selector: `rect` {x,y,w,h} → lossless RGB8 crop (≤ 128²) / `points` [[x,y],…] → exact colors / `w`,`h` + `format` (`rgb8`/`gray8`) → whole-source resample | `img.frame.ok` with `width`/`height` (native dims), selector-specific fields, and for pixel streams `stream_id`/`chunks`/`bytes` (total payload length) followed by kind-1 chunks |
+| `img.arm_preview` | server → capture client | `nonce`: 32-hex ephemeral random nonce | `img.arm_preview.ok` with `port`: ephemeral TCP port, `width`/`height`: native source dimensions |
 
-`img.frame` is the **only** provider verb — stateless "current frame":
-every request takes a fresh screenshot and extracts per the selector.
+`img.frame` is the provider verb for in-band macro execution streams
+(bounded strictly by `SNAP_SLOT_BYTES` = 48 KiB, spec/vm.md Appendix A).
+`img.arm_preview` is the provider verb for out-of-band full-frame UI
+previews (Pixel Assist), arming a one-shot ephemeral LAN data plane
+that bypasses the microcontroller entirely.
+
 The provider is a client like any other; after auth it sends
 `img.hello`, and from then on the device may send it reverse requests
 (`id`-correlated). A second `img.hello` replaces the registration;
@@ -209,3 +214,43 @@ next DTIM wake, which cost ~350 ms per connection setup and produced
 sawtooth ping RTTs (30–120 ms cycling; router RTT 3–7 ms; warm-
 connection RTT 26 ms). The device is USB-powered, so code.py now sets
 `PowerManagement.NONE` after connecting — flat 3–15 ms ping afterwards.
+
+**Pixel Assist: out-of-band ephemeral direct LAN preview.** Pixel Assist
+allows interactive inspection of whole-source frames (zoomed 1000×+ for
+pixel-exact coordinate and color selection). To preserve bit-exact RGB8
+fidelity while obeying the microcontroller's memory and throughput constraints:
+- *Separation of control and data planes*: Bridging a 2–3 MiB full-frame PNG
+  across the ESP32-S3's single-threaded raw TCP stack (~120 KB/s) would take
+  ~40 seconds of round-trip transmission, fragmenting into 1600+ TCP MSS
+  packets and violating the device's 48 KiB stream budget (spec/vm.md Appendix A).
+  Instead, the device manages control signaling only; bulk image data transfers
+  directly between the browser (PC3) and OBS (PC2) over the local LAN.
+- *Ephemeral server lifecycle (zero daemons)*: OBS PC2 does not run a permanent
+  background web server or open persistent listening ports. Upon receiving
+  `img.arm_preview` over the existing :7373 raw connection, the OBS provider
+  binds an ephemeral socket to OS dynamic port `0.0.0.0:0` with a 5-second
+  timeout, arming for exactly one inbound HTTP connection.
+- *Lazy capture action*: OBS takes no screenshot and allocates no frame buffer
+  at arming time. The capture action is deferred until the authenticated client
+  actually connects. If the client disconnects or times out, zero image data is
+  generated or buffered.
+- *HMAC-SHA256 asymmetric ticket distribution*:
+  1. The MCU generates an ephemeral 16-byte random `nonce` (32 hex characters)
+     and delivers it to OBS in `img.arm_preview`.
+  2. The browser polls `GET /img/capture` and receives `{ "url": "http://<obs_ip>:<port>/capture", "nonce": "<nonce>" }`.
+  3. The browser signs the request using the shared secret:
+     `sig = HMAC-SHA256(MYCRO_TOKEN, nonce)`
+     (using a pure-JS implementation compatible with non-secure HTTP LAN origins).
+  4. The browser issues `GET /capture?type=png&nonce=<nonce>&sig=<sig>` directly to OBS.
+  5. OBS verifies the signature using constant-time comparison (`hmac.compare_digest`),
+     takes the GPU screenshot, compresses to PNG, responds with `HTTP 200 OK`
+     and CORS `Access-Control-Allow-Origin: *`, closes the socket, and unbinds
+     immediately (~50 ms total connection lifetime).
+  - *Dev mode alignment (consistent with A2)*: When `MYCRO_TOKEN` is unset or empty,
+    authentication behaves consistently with the raw TCP prologue: signature verification
+    is either skipped or negotiated using the default empty key `b""`, while `nonce` matching
+    and ephemeral single-use enforcement remain strictly active. Tests skipping invalid-token
+    rejections (e.g. A2, G7b) do so cleanly when no token is configured.
+  This design ensures zero token leakage over the wire, zero device heap churn,
+  and instant multi-megabyte lossless preview transfers.
+

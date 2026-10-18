@@ -1,6 +1,7 @@
 import asyncio
 import gc
 import hashlib
+import json
 import os
 import time
 import traceback
@@ -21,27 +22,9 @@ OUTBOX_CAP = 32       # per-client queued push frames; beyond this the peer is n
 
 # img namespace (exact pixel matching; spec/vm.md + docs/protocol.md)
 IMG_TIMEOUT_S = 20    # reverse-request ceiling
-IMG_STREAM_MAX = 2 * 1024 * 1024  # armed-stream rejection cap (not a reservation)
-# Stream assembly buffer (spec/vm.md Appendix A): allocated ON DEMAND and
-# grown to the workload's high-water mark, then owned by the middleware
-# forever — never returned to the GC. Reverse requests are
-# single-in-flight, so one buffer serves every stream; steady-state
-# traffic allocates nothing.
-_stream_buf = None
-
-
-def _stream_buffer(total):
-    """A total-byte view of the stream buffer, growing it if needed.
-    Growth is a cold path (first/largest stream); never shrinks.
-    Returns None on MemoryError."""
-    global _stream_buf
-    try:
-        if _stream_buf is None or len(_stream_buf) < total:
-            _stream_buf = bytearray(total)  # one-time growth, cold
-        return memoryview(_stream_buf)[:total]
-    except MemoryError:
-        return None
 SNAP_MAX_EDGE = RECT_MAX_EDGE  # snapshot edge cap (128x128 RGB = 48KB)
+IMG_STREAM_MAX = SNAP_MAX_EDGE * SNAP_MAX_EDGE * 3  # macro streams capped at 1 snapshot slot (48KB)
+_stream_buf = None    # allocated once on demand (<= 48KB) for macro \snap crops
 
 try:
     _TimeoutError = asyncio.TimeoutError
@@ -312,11 +295,12 @@ def macro_abort(request: Request):
     return Response(request, "No macro running", content_type="text/plain")
 
 
-# --- Pixel Assist (web UI): single-lossless-capture passthrough ---
-# HTTP handlers are synchronous, so the capture runs as a task and the
-# browser polls. The device never decodes the PNG — pure passthrough.
+# --- Pixel Assist (web UI): ephemeral direct-preview coordination ---
+# The device never touches or buffers full-frame pixels: it coordinates
+# a single-use nonce challenge and returns the OBS host/port to the
+# browser for direct LAN fetch.
 
-_img_ui = {"pending": False, "data": None, "err": None, "stream_ms": None}
+_img_ui = {"pending": False, "data": None, "err": None}
 
 
 @server.route("/img/capture", methods=["POST"])
@@ -329,27 +313,33 @@ def img_capture_start(request: Request):
     if _img_ui["pending"]:
         return Response(request, "busy", status=(409, "Conflict"),
                         content_type="text/plain")
-    _img_ui.update(pending=True, data=None, err=None, stream_ms=None)
+    _img_ui.update(pending=True, data=None, err=None)
     asyncio.create_task(_img_capture_task())
     return Response(request, "started", content_type="text/plain")
 
 
 async def _img_capture_task():
-    t0 = _now_ms()
     try:
-        _payload, stream = await _img_request("img.frame", {"format": "png"})
-        if stream:
-            # isolate from the shared stream buffer: the UI holds this
-            # across later img traffic until the browser fetches it.
-            # Human-click frequency — one copy is fine here.
-            _img_ui["data"] = bytes(stream)
-            _img_ui["stream_ms"] = _now_ms() - t0  # provider->device leg
-        else:
-            _img_ui["err"] = "empty response"
+        if _img_client is None or not _img_client.alive or not _img_client.authed:
+            raise ImgError("no_provider")
+        nonce = "".join(f"{b:02x}" for b in os.urandom(16))
+        payload, _ = await _img_request("img.arm_preview", {"nonce": nonce})
+        port = payload.get("port")
+        if not port or not isinstance(port, int):
+            raise ImgError("invalid_preview_port")
+        obs_ip = _img_client.addr[0] if _img_client and _img_client.addr else None
+        if not obs_ip:
+            raise ImgError("no_provider_ip")
+        _img_ui["data"] = {
+            "url": f"http://{obs_ip}:{port}/capture",
+            "nonce": nonce,
+        }
     except ImgError as e:
         _img_ui["err"] = str(e)
+        print("img_capture ImgError:", e)
     except Exception as e:
         _img_ui["err"] = f"{type(e).__name__}: {e}"
+        print(f"img_capture {type(e).__name__}: {e}")
     finally:
         _img_ui["pending"] = False
 
@@ -362,21 +352,16 @@ def img_capture_poll(request: Request):
         return Response(request, "", status=(204, "No Content"),
                         content_type="text/plain")
     if _img_ui["err"]:
-        return Response(request, _img_ui["err"], status=(502, "Bad Gateway"),
+        err = _img_ui["err"]
+        _img_ui["err"] = None
+        return Response(request, err, status=(502, "Bad Gateway"),
                         content_type="text/plain")
     if _img_ui["data"] is None:
         return Response(request, "none", status=(404, "Not Found"),
                         content_type="text/plain")
-    # read-once: hand the bytes to the response and release the slot
-    # immediately — a full-screen PNG is >1MB of heap we must not retain
     data = _img_ui["data"]
     _img_ui["data"] = None
-    # X-Stream-Ms: provider->device leg time, so clients can split
-    # end-to-end throughput into its two WiFi legs
-    ms = _img_ui["stream_ms"]
-    headers = {"X-Stream-Ms": str(ms)} if ms is not None else None
-    return Response(request, body=data, content_type="image/png",
-                    headers=headers)
+    return Response(request, body=json.dumps(data), content_type="application/json")
 
 
 @server.route("/compile", methods=["POST"])
@@ -565,8 +550,8 @@ async def _img_request(type_, payload):
 
 def _img_resolve(c, env):
     """Complete (or arm) the pending reverse request from a response
-    envelope. A payload with stream_id arms the binary collector;
-    completion then waits for the FLAG_STREAM_END chunk."""
+    envelope. Macro crop streams are bounded by IMG_STREAM_MAX (48 KiB)."""
+    global _stream_buf
     ent = _img_pending
     if ent is None or c is not ent["client"] or env.get("id") != ent["id"]:
         print("img: stray response dropped:", env.get("type"))
@@ -574,59 +559,40 @@ def _img_resolve(c, env):
     ent["resp"] = env
     p = env.get("payload", {})
     sid = p.get("stream_id")
-    if env.get("type") != "error" and isinstance(sid, int) \
-            and p.get("chunks", 0) > 0:
-        ent["sid"] = sid
+    if env.get("type") != "error" and isinstance(sid, int) and p.get("chunks", 0) > 0:
         total = p.get("bytes")
-        if isinstance(total, int) and 0 < total <= IMG_STREAM_MAX:
-            # self-managed buffer: each chunk lands by offset, no
-            # allocation, no O(n^2) growth copies
-            buf = _stream_buffer(total)
-            if buf is None:
-                ent["err"] = "out_of_memory"
-                ent["event"].set()
-                return
-            ent["stream"] = buf
-            ent["have"] = 0
-        else:
-            try:
-                ent["stream"] = bytearray()
-            except MemoryError:
-                ent["err"] = "out_of_memory"
-                ent["event"].set()
-                return
-            ent["have"] = -1  # unknown length: append path (heap fallback)
+        if not isinstance(total, int) or not (0 < total <= IMG_STREAM_MAX):
+            print(f"img: stream {total}B invalid or exceeds cap {IMG_STREAM_MAX}B")
+            ent["err"] = "stream_overrun"
+            ent["event"].set()
+            return
+        if _stream_buf is None:
+            _stream_buf = bytearray(IMG_STREAM_MAX)
+        ent["sid"] = sid
+        ent["stream"] = memoryview(_stream_buf)[:total]
+        ent["have"] = 0
     else:
         ent["event"].set()
 
 
 def _img_chunk(c, payload):
-    """Route a kind-1 frame to the armed stream collector.
-    Returns False for unexpected binary traffic (-> unsupported_kind)."""
+    """Route a kind-1 frame to the armed stream collector."""
     ent = _img_pending
     if ent is None or c is not ent["client"] or ent["sid"] < 0:
         return False
     sid, flags, data = codec.split_chunk(payload)
     if sid != ent["sid"]:
         return False
-    if ent["have"] >= 0:
-        end = ent["have"] + len(data)
-        if end > len(ent["stream"]):
-            ent["err"] = "stream_overrun"  # provider lied about its length
-            ent["event"].set()
-            return True
-        ent["stream"][ent["have"]:end] = data
-        ent["have"] = end
-    else:
-        if len(ent["stream"]) + len(data) > IMG_STREAM_MAX:
-            ent["err"] = "stream_overrun"  # unannounced length over the cap
-            ent["event"].set()
-            return True
-        ent["stream"] += data
+    end = ent["have"] + len(data)
+    if end > len(ent["stream"]):
+        print(f"img: stream overrun! have={ent['have']} len={len(data)} end={end} buf={len(ent['stream'])}")
+        ent["err"] = "stream_overrun"
+        ent["event"].set()
+        return True
+    ent["stream"][ent["have"]:end] = data
+    ent["have"] = end
     if flags & codec.FLAG_STREAM_END:
-        if 0 <= ent["have"] < len(ent["stream"]):
-            # provider ended short of its announced length: trim so the
-            # consumer's length check rejects it instead of trusting zeros
+        if ent["have"] < len(ent["stream"]):
             ent["stream"] = ent["stream"][:ent["have"]]
         ent["event"].set()
     return True

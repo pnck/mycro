@@ -29,12 +29,14 @@ Requires Pillow installed into the same Python OBS loads
 import obspython as obs
 
 import hashlib
+import hmac
 import json
 import os
 import socket
 import struct
 import threading
 import time
+from urllib.parse import parse_qs, urlparse
 
 from PIL import Image  # Pillow, into the same Python OBS loads (selftest T3)
 
@@ -71,6 +73,8 @@ _thread = None
 _sock = None                         # closed from script_unload/disconnect to wake worker
 _shot = None                         # {"event": threading.Event} while capturing
 _cap_lock = threading.Lock()
+_preview_sock = None
+_preview_lock = threading.Lock()
 _stream_id = 0
 _status_text = "Disconnected"
 
@@ -291,7 +295,7 @@ def script_load(settings):
 
 
 def script_unload():
-    global _sock, _shot
+    global _sock, _shot, _preview_sock
     _stop.set()
     _active.clear()
     _connected_event.clear()
@@ -303,6 +307,13 @@ def script_unload():
         except OSError:
             pass
         s.close()
+    with _preview_lock:
+        if _preview_sock is not None:
+            try:
+                _preview_sock.close()
+            except OSError:
+                pass
+            _preview_sock = None
     if _shot is not None:
         _shot["event"].set()  # wake a stuck capture wait
     obs.obs_frontend_remove_event_callback(on_frontend_event)
@@ -368,6 +379,14 @@ def capture_png():
     """Fresh screenshot as (png_bytes, width, height) — the file's bytes
     pass through untouched (no decode, no re-encode)."""
     path = _grab_file()
+    # Windows: wait briefly if file is still being flushed/closed by OBS
+    for _ in range(20):
+        try:
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                break
+        except OSError:
+            pass
+        time.sleep(0.01)
     try:
         with open(path, "rb") as f:
             data = f.read()
@@ -379,6 +398,7 @@ def capture_png():
     if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
         raise ImgFail("screenshot is not a valid PNG (HDR/JXR capture?)")
     w, h = struct.unpack(">II", data[16:24])
+    obs.script_log(obs.LOG_INFO, "mycro: captured PNG %dx%d, %d bytes" % (w, h, len(data)))
     return data, w, h
 
 
@@ -403,6 +423,7 @@ def send_env(s, type_, rid, payload):
 
 
 def send_error(s, rid, code, message):
+    obs.script_log(obs.LOG_WARNING, "mycro: error reply to device: [%s] %s (id %s)" % (code, message, rid))
     send_env(s, "error", rid, {"code": code, "message": message})
 
 
@@ -414,6 +435,8 @@ def send_stream(s, ok_type, rid, meta, data):
     chunks = (len(data) + CHUNK_RAW - 1) // CHUNK_RAW
     meta = dict(meta, stream_id=sid, chunks=chunks,
                 bytes=len(data))
+    obs.script_log(obs.LOG_INFO, "mycro: streaming %d bytes in %d chunks (sid %d) -> %s"
+                   % (len(data), chunks, sid, ok_type))
     send_env(s, ok_type, rid, meta)
     for i in range(chunks):
         part = data[i * CHUNK_RAW:(i + 1) * CHUNK_RAW]
@@ -446,7 +469,11 @@ def handle(s, env):
     # Terminal responses (.ok) and error notices must also never trigger error replies.
     # The capture provider only handles reverse requests (id != 0);
     # pushes, stray responses, and error notices must be ignored.
-    if rid == 0 or t == "error" or str(t).endswith(".ok"):
+    if t == "error":
+        obs.script_log(obs.LOG_WARNING, "mycro: device error received: %s"
+                       % json.dumps(env.get("payload", {})))
+        return
+    if rid == 0 or str(t).endswith(".ok"):
         return
     p = env.get("payload", {})
     if not isinstance(p, dict):
@@ -455,12 +482,135 @@ def handle(s, env):
     try:
         if t == "img.frame":
             handle_frame(s, rid, p)
+        elif t == "img.arm_preview":
+            handle_arm_preview(s, rid, p)
         else:
+            obs.script_log(obs.LOG_WARNING, "mycro: unknown request type from device: %r (id %s)" % (t, rid))
             send_error(s, rid, "unknown_type", "unknown type: %r" % t)
     except ImgFail as e:
         send_error(s, rid, "capture_failed", str(e))
     except (KeyError, TypeError, ValueError) as e:
         send_error(s, rid, "field", "%s: %s" % (type(e).__name__, e))
+
+
+def handle_arm_preview(s, rid, p):
+    global _preview_sock
+    nonce = str(p.get("nonce", ""))
+    if not nonce:
+        raise ImgFail("missing nonce")
+
+    # Pre-calculate expected HMAC-SHA256 signature using device_token PSK
+    key = device_token.encode("utf-8") if device_token else b""
+    expected_sig = hmac.new(key, nonce.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    with _preview_lock:
+        if _preview_sock is not None:
+            try:
+                _preview_sock.close()
+            except OSError:
+                pass
+            _preview_sock = None
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", 0))  # ephemeral free port assigned by OS
+        port = sock.getsockname()[1]
+        sock.listen(1)
+        sock.settimeout(5.0)  # 5-second connection window
+        _preview_sock = sock
+
+    def _worker(srv_sock, exp_sig, exp_nonce):
+        global _preview_sock
+        deadline = time.monotonic() + 5.0
+        try:
+            while time.monotonic() < deadline:
+                remaining = max(0.1, deadline - time.monotonic())
+                srv_sock.settimeout(remaining)
+                try:
+                    conn, _ = srv_sock.accept()
+                except (socket.timeout, OSError):
+                    break
+                try:
+                    raw = conn.recv(2048).decode("latin-1")
+                    first_line = raw.split("\r\n")[0] if "\r\n" in raw else raw
+                    parts = first_line.split(" ")
+                    method = parts[0].upper() if len(parts) > 0 else ""
+                    req_path = parts[1] if len(parts) > 1 else ""
+                    parsed = urlparse(req_path)
+                    qs = parse_qs(parsed.query)
+
+                    if method == "OPTIONS":
+                        # CORS & Chrome Private Network Access (PNA) preflight
+                        resp_headers = (
+                            "HTTP/1.1 204 No Content\r\n"
+                            "Access-Control-Allow-Origin: *\r\n"
+                            "Access-Control-Allow-Private-Network: true\r\n"
+                            "Access-Control-Allow-Methods: GET, OPTIONS\r\n"
+                            "Access-Control-Allow-Headers: *\r\n"
+                            "Access-Control-Max-Age: 60\r\n"
+                            "Connection: close\r\n\r\n"
+                        )
+                        conn.sendall(resp_headers.encode("latin-1"))
+                        continue  # Keep ephemeral server alive for subsequent GET
+
+                    req_nonce = qs.get("nonce", [""])[0]
+                    req_sig = qs.get("sig", [""])[0]
+                    req_type = qs.get("type", [""])[0]
+
+                    # Dev mode (empty device_token) skips sig check
+                    auth_ok = (not device_token) or hmac.compare_digest(req_sig, exp_sig)
+                    if parsed.path == "/capture" and req_type == "png" and req_nonce == exp_nonce and auth_ok:
+                        # Verified! Perform Lazy Capture now.
+                        png_bytes, _, _ = capture_png()
+                        resp_headers = (
+                            "HTTP/1.1 200 OK\r\n"
+                            "Content-Type: image/png\r\n"
+                            f"Content-Length: {len(png_bytes)}\r\n"
+                            "Access-Control-Allow-Origin: *\r\n"
+                            "Access-Control-Allow-Private-Network: true\r\n"
+                            "Access-Control-Allow-Methods: GET, OPTIONS\r\n"
+                            "Cache-Control: no-store\r\n"
+                            "Connection: close\r\n\r\n"
+                        )
+                        conn.sendall(resp_headers.encode("latin-1") + png_bytes)
+                        break  # Complete: capture served, destroy ephemeral server
+                    else:
+                        conn.sendall(
+                            b"HTTP/1.1 403 Forbidden\r\n"
+                            b"Content-Length: 9\r\n"
+                            b"Access-Control-Allow-Origin: *\r\n"
+                            b"Access-Control-Allow-Private-Network: true\r\n"
+                            b"Connection: close\r\n\r\n"
+                            b"Forbidden"
+                        )
+                        break  # Unauthorized: reject and destroy
+                finally:
+                    conn.close()
+        except Exception as e:
+            obs.script_log(obs.LOG_WARNING, "mycro: preview server error: %s" % e)
+        finally:
+            with _preview_lock:
+                if _preview_sock is srv_sock:
+                    _preview_sock = None
+            try:
+                srv_sock.close()
+            except OSError:
+                pass
+
+    t = threading.Thread(target=_worker, args=(sock, expected_sig, nonce), daemon=True)
+    t.start()
+
+    w, h = 0, 0
+    src = obs.obs_get_source_by_name(source_name) if source_name else None
+    if src is not None:
+        try:
+            w = obs.obs_source_get_width(src) if hasattr(obs, "obs_source_get_width") else 0
+            h = obs.obs_source_get_height(src) if hasattr(obs, "obs_source_get_height") else 0
+        finally:
+            obs.obs_source_release(src)
+
+    send_env(s, "img.arm_preview.ok", rid, {"port": port, "width": w, "height": h})
+    obs.script_log(obs.LOG_INFO, "mycro: armed ephemeral preview server on port %d (%dx%d)" % (port, w, h))
 
 
 def handle_frame(s, rid, p):
@@ -469,20 +619,10 @@ def handle_frame(s, rid, p):
         return _rect(s, rid, p["rect"])
     if "points" in p:
         return _points(s, rid, p["points"])
-    if str(p.get("format", "")) == "png":
-        return _png(s, rid)
     if "w" in p and "h" in p:
         return _scaled(s, rid, int(p["w"]), int(p["h"]),
                        str(p.get("format", "")))
-    raise ImgFail("img.frame needs one of: rect / points / w+h / format:png")
-
-
-def _png(s, rid):
-    """Whole source, native resolution, as the untouched PNG file bytes
-    (the Pixel Assist preview path — nothing is re-encoded anywhere)."""
-    data, w, h = capture_png()
-    send_stream(s, "img.frame.ok", rid,
-                {"width": w, "height": h, "format": "png"}, data)
+    raise ImgFail("img.frame needs one of: rect / points / w+h")
 
 
 def _rect(s, rid, rect):
@@ -553,7 +693,7 @@ def serve(s):
     _sock = s
     digest = hashlib.sha256(device_token.encode("utf-8")).digest()
     s.sendall(AUTH_MAGIC + bytes((PROTO_VERSION,)) + digest)
-    send_env(s, "img.hello", 0, {"caps": ["frame"]})
+    send_env(s, "img.hello", 0, {})
     _status_text = "Connected to %s:%d" % (device_host, device_port)
     _connected_event.set()
     obs.script_log(obs.LOG_INFO, "mycro: connected to %s:%d"

@@ -17,12 +17,14 @@ Self-contained: stdlib + client.py from ../../tools.
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 import socket
 import struct
 import sys
 import time
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "tools"))
@@ -825,10 +827,20 @@ def g7_capture_passthrough(ctx):
             r = urllib.request.urlopen(req("GET"), timeout=5)
             if r.status == 204:
                 continue
-            data = r.read()
+            body = r.read()
+            meta = json.loads(body.decode("utf-8"))
+            url, nonce = meta["url"], meta["nonce"]
+            sig = hmac.new(
+                (ctx.token or "").encode("utf-8"),
+                nonce.encode("utf-8"),
+                hashlib.sha256
+            ).hexdigest()
+            target_url = f"{url}?type=png&nonce={urllib.parse.quote(nonce)}&sig={urllib.parse.quote(sig)}"
+            r_img = urllib.request.urlopen(target_url, timeout=5)
+            data = r_img.read()
             break
     except Exception as e:
-        check("G7 /img/capture PNG passthrough", False, str(e))
+        check("G7 /img/capture direct preview", False, str(e))
         return
     ok = False
     if data and data[:8] == b"\x89PNG\r\n\x1a\n":
@@ -844,7 +856,110 @@ def g7_capture_passthrough(ctx):
         r_, g_, b_ = raw[off], raw[off + 1], raw[off + 2]
         ok = (w, h) == (80, 60) and (r_, g_, b_) == (70, 110, 150)
         detail = f"{w}x{h} pixel(10,8)=({r_},{g_},{b_})"
-    check("G7 /img/capture PNG passthrough", ok, detail)
+    check("G7 /img/capture direct preview", ok, detail)
+
+
+def g7b_preview_rejections(ctx):
+    """Direct preview security: tampered signature or nonce rejected with 403,
+    and ephemeral socket closes immediately preventing replay."""
+    if not ctx.token:
+        check("G7b preview security rejections", True,
+              "SKIP: dev mode has no token to reject")
+        return
+    _ensure_provider(ctx)
+
+    def req(method):
+        r = urllib.request.Request(f"http://{ctx.host}/img/capture", method=method)
+        if ctx.token:
+            r.add_header("Authorization", f"Bearer {ctx.token}")
+        return r
+
+    def poll_preview():
+        urllib.request.urlopen(req("POST"), timeout=5).read()
+        for _ in range(60):
+            time.sleep(0.25)
+            r = urllib.request.urlopen(req("GET"), timeout=5)
+            if r.status == 204:
+                continue
+            body = r.read()
+            if body.startswith(b"{"):
+                return json.loads(body.decode("utf-8"))
+        return None
+
+    # 1. Tampered signature test
+    meta1 = poll_preview()
+    if not meta1:
+        check("G7b preview security rejections", False, "timeout getting meta1")
+        return
+    url1, nonce1 = meta1["url"], meta1["nonce"]
+    bad_sig = "0" * 64
+    bad_url = f"{url1}?type=png&nonce={urllib.parse.quote(nonce1)}&sig={bad_sig}"
+    sig_rejected = False
+    try:
+        urllib.request.urlopen(bad_url, timeout=5)
+    except urllib.error.HTTPError as e:
+        sig_rejected = (e.code == 403)
+    except Exception:
+        pass
+
+    # 2. Ephemeral single-use test (socket closed after attempt)
+    time.sleep(0.05)
+    replay_blocked = False
+    try:
+        urllib.request.urlopen(bad_url, timeout=2)
+    except urllib.error.HTTPError:
+        pass
+    except Exception:
+        replay_blocked = True
+
+    # 3. Tampered nonce test
+    meta2 = poll_preview()
+    if not meta2:
+        check("G7b preview security rejections", False, "timeout getting meta2")
+        return
+    url2, nonce2 = meta2["url"], meta2["nonce"]
+    valid_sig2 = hmac.new((ctx.token or "").encode("utf-8"), nonce2.encode("utf-8"), hashlib.sha256).hexdigest()
+    bad_nonce_url = f"{url2}?type=png&nonce=invalid_nonce_value&sig={valid_sig2}"
+    nonce_rejected = False
+    try:
+        urllib.request.urlopen(bad_nonce_url, timeout=5)
+    except urllib.error.HTTPError as e:
+        nonce_rejected = (e.code == 403)
+    except Exception:
+        pass
+
+    ok = sig_rejected and nonce_rejected and replay_blocked
+    detail = f"sig_403={sig_rejected} nonce_403={nonce_rejected} replay_closed={replay_blocked}"
+    check("G7b preview security rejections", ok, detail)
+
+
+def g7c_preview_busy_conflict(ctx):
+    """Concurrent POST /img/capture rejected with 409 Conflict."""
+    _ensure_provider(ctx)
+
+    def req(method):
+        r = urllib.request.Request(f"http://{ctx.host}/img/capture", method=method)
+        if ctx.token:
+            r.add_header("Authorization", f"Bearer {ctx.token}")
+        return r
+
+    try:
+        urllib.request.urlopen(req("POST"), timeout=5)
+        busy_rejected = False
+        try:
+            urllib.request.urlopen(req("POST"), timeout=2)
+        except urllib.error.HTTPError as e:
+            if e.code == 409:
+                busy_rejected = True
+        # Drain the first capture
+        for _ in range(60):
+            time.sleep(0.25)
+            r = urllib.request.urlopen(req("GET"), timeout=5)
+            if r.status != 204:
+                break
+        check("G7c preview busy conflict", busy_rejected, f"busy_409={busy_rejected}")
+    except Exception as e:
+        check("G7c preview busy conflict", False, str(e))
 
 
 def g8_rect_literal(ctx):
@@ -874,31 +989,41 @@ def g9_stream_throughput(ctx):
 
     ctx.provider.set_frame(*_frame_fullhd())
     try:
+        t_start = time.monotonic()
         urllib.request.urlopen(req("POST"), timeout=5).read()
-        t0 = time.monotonic()
-        data = None
-        stream_ms = None
-        for _ in range(240):  # generous: up to 60s for a multi-MB stream
+        meta = None
+        for _ in range(60):
             time.sleep(0.25)
             r = urllib.request.urlopen(req("GET"), timeout=5)
             if r.status == 204:
                 continue
-            stream_ms = r.headers.get("X-Stream-Ms")  # device-timed leg 1
-            data = r.read()
+            meta = json.loads(r.read().decode("utf-8"))
             break
-        dt = time.monotonic() - t0
+        if not meta:
+            check("G9 full-screen stream throughput", False, "preview arming failed or timed out")
+            return
+
+        url, nonce = meta["url"], meta["nonce"]
+        sig = hmac.new(
+            (ctx.token or "").encode("utf-8"),
+            nonce.encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
+        target_url = f"{url}?type=png&nonce={urllib.parse.quote(nonce)}&sig={urllib.parse.quote(sig)}"
+
+        t0 = time.monotonic()
+        r_img = urllib.request.urlopen(target_url, timeout=10)
+        data = r_img.read()
+        transfer_dt = time.monotonic() - t0
+        total_dt = time.monotonic() - t_start
+
         if data and data[:8] == b"\x89PNG\r\n\x1a\n":
-            kbs = len(data) / dt / 1024
-            legs = ""
-            if stream_ms is not None:
-                s1 = int(stream_ms) / 1000
-                leg1 = len(data) / s1 / 1024 if s1 > 0 else 0
-                leg2 = len(data) / (dt - s1) / 1024 if dt > s1 else 0
-                legs = (f" | legs: provider->dev {leg1:.0f} KB/s,"
-                        f" dev->http {leg2:.0f} KB/s")
+            w, h = struct.unpack(">II", data[16:24])
+            kbs = len(data) / transfer_dt / 1024 if transfer_dt > 0 else 0
             check("G9 full-screen stream throughput",
-                  dt > 0, f"{len(data) / 1024:.0f}KB in {dt:.1f}s -> "
-                  f"{kbs:.0f} KB/s{legs}")
+                  (w, h) == (1920, 1080),
+                  f"{len(data) / 1024:.0f}KB ({w}x{h}) in {transfer_dt:.2f}s "
+                  f"(total {total_dt:.2f}s) -> {kbs:.0f} KB/s")
         else:
             check("G9 full-screen stream throughput", False,
                   "bad or missing PNG")
@@ -1076,6 +1201,7 @@ def main(argv=None):
              f2_submit_storm, f3_hard_kill, g1_binary_flood, g2_latency_probe,
              g3_img_no_provider, g4_img_snap_at, g5_img_diff,
              g6_handle_overwrite_reuse, g7_capture_passthrough,
+             g7b_preview_rejections, g7c_preview_busy_conflict,
              g8_rect_literal, g9_stream_throughput, g10_snap_pool_exhaustion,
              g11_img_out_of_bounds_rect]
     if not args.skip_slow:

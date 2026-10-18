@@ -19,10 +19,13 @@ Threaded, blocking sockets. Not collected by pytest (not a test_* file).
 """
 
 import hashlib
+import hmac
 import json
 import socket
 import struct
 import threading
+import time
+import urllib.parse
 import zlib
 
 PROTO_VERSION = 1
@@ -147,7 +150,7 @@ class ReferenceProvider:
             s.settimeout(1.0)
             digest = hashlib.sha256(self.token.encode()).digest()
             s.sendall(AUTH_MAGIC + bytes((PROTO_VERSION,)) + digest)
-            self._send_env(s, "img.hello", 0, {"caps": ["frame"]})
+            self._send_env(s, "img.hello", 0, {"caps": ["frame", "direct_preview"]})
             self.ready.set()
             sid = 0
             while not self._stop.is_set():
@@ -160,6 +163,33 @@ class ReferenceProvider:
                 t, rid = env.get("type"), env.get("id", 0)
                 p = env.get("payload", {})
                 w0, h0, rgb = self._frame
+
+                if t == "img.arm_preview":
+                    nonce = str(p.get("nonce", ""))
+                    expected_sig = hmac.new(
+                        (self.token or "").encode("utf-8"),
+                        nonce.encode("utf-8"),
+                        hashlib.sha256
+                    ).hexdigest()
+                    lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    lsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    lsock.bind(("0.0.0.0", 0))
+                    port = lsock.getsockname()[1]
+                    lsock.listen(1)
+                    lsock.settimeout(5.0)
+
+                    threading.Thread(
+                        target=self._preview_worker,
+                        args=(lsock, w0, h0, rgb, expected_sig, nonce),
+                        daemon=True
+                    ).start()
+                    self._send_env(s, "img.arm_preview.ok", rid, {
+                        "port": port,
+                        "width": w0,
+                        "height": h0,
+                    })
+                    continue
+
                 if t != "img.frame":
                     continue  # pushes (macro.result et al.) are ignored
                 if "rect" in p:
@@ -194,12 +224,6 @@ class ReferenceProvider:
                     self._send_env(s, "img.frame.ok", rid,
                                    {"width": w0, "height": h0,
                                     "format": "colors", "colors": colors})
-                elif str(p.get("format", "")) == "png":
-                    sid = (sid + 1) & 0xFFFF
-                    png = make_png(w0, h0, rgb)
-                    self._send_stream(s, rid, sid,
-                                      {"width": w0, "height": h0,
-                                       "format": "png"}, png)
                 elif "w" in p and "h" in p:                    # native is already 80x60: only 1:1 is served
                     w, h = int(p["w"]), int(p["h"])
                     fmt = str(p.get("format", ""))
@@ -216,6 +240,69 @@ class ReferenceProvider:
                                        "format": fmt}, data)
         finally:
             s.close()
+
+    def _preview_worker(self, s_listen, w_frame, h_frame, rgb_frame, exp_sig, exp_nonce):
+        deadline = time.monotonic() + 5.0
+        try:
+            while time.monotonic() < deadline:
+                s_listen.settimeout(max(0.1, deadline - time.monotonic()))
+                try:
+                    conn, _ = s_listen.accept()
+                except (socket.timeout, OSError):
+                    break
+                try:
+                    conn.settimeout(5.0)
+                    req_line = conn.recv(1024).decode("utf-8", "replace").split("\r\n")[0]
+                    parts = req_line.split(" ")
+                    method = parts[0].upper() if len(parts) > 0 else ""
+                    path = parts[1] if len(parts) > 1 else ""
+                    parsed = urllib.parse.urlparse(path)
+                    qs = urllib.parse.parse_qs(parsed.query)
+
+                    if method == "OPTIONS":
+                        conn.sendall(
+                            b"HTTP/1.1 204 No Content\r\n"
+                            b"Access-Control-Allow-Origin: *\r\n"
+                            b"Access-Control-Allow-Private-Network: true\r\n"
+                            b"Access-Control-Allow-Methods: GET, OPTIONS\r\n"
+                            b"Access-Control-Allow-Headers: *\r\n"
+                            b"Connection: close\r\n\r\n"
+                        )
+                        continue
+
+                    req_nonce = qs.get("nonce", [""])[0]
+                    req_sig = qs.get("sig", [""])[0]
+                    req_type = qs.get("type", [""])[0]
+                    auth_ok = (not self.token) or hmac.compare_digest(req_sig, exp_sig)
+                    if not (parsed.path == "/capture" and req_type == "png" and req_nonce == exp_nonce and auth_ok):
+                        conn.sendall(
+                            b"HTTP/1.1 403 Forbidden\r\n"
+                            b"Content-Length: 9\r\n"
+                            b"Access-Control-Allow-Origin: *\r\n"
+                            b"Access-Control-Allow-Private-Network: true\r\n"
+                            b"Connection: close\r\n\r\n"
+                            b"Forbidden"
+                        )
+                        break
+                    png = make_png(w_frame, h_frame, rgb_frame)
+                    header = (
+                        b"HTTP/1.1 200 OK\r\n"
+                        b"Content-Type: image/png\r\n"
+                        b"Content-Length: " + str(len(png)).encode("ascii") + b"\r\n"
+                        b"Access-Control-Allow-Origin: *\r\n"
+                        b"Access-Control-Allow-Private-Network: true\r\n"
+                        b"Access-Control-Allow-Methods: GET, OPTIONS\r\n"
+                        b"Cache-Control: no-store\r\n"
+                        b"Connection: close\r\n\r\n"
+                    )
+                    conn.sendall(header + png)
+                    break
+                finally:
+                    conn.close()
+        except Exception:
+            pass
+        finally:
+            s_listen.close()
 
     def _recv(self, s, n):
         buf = bytearray()

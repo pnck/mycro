@@ -55,7 +55,7 @@ Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`
 | GET `/macro/status` | `idle` / `running` / `done` / `error <msg>` / `aborted` |
 | POST `/macro/abort` | `task.cancel()`; `execute()`'s finally guarantees all keys/buttons released |
 | POST `/compile` | Compile only, returns the disassembly |
-| POST/GET `/img/capture` | Pixel Assist: POST starts a provider capture, GET polls (204 pending / 200 PNG bytes, passthrough — the device never decodes) |
+| POST/GET `/img/capture` | Pixel Assist: POST arms ephemeral direct preview via `img.arm_preview`, GET polls (204 pending / 200 JSON `{url, nonce}` for out-of-band direct LAN fetch authenticated via HMAC-SHA256) |
 | GET `/obs/obs_mycro.py` | Direct download of the OBS capture provider script (attachment) |
 
 **Auth**: once `MYCRO_TOKEN` is set in settings.toml, all endpoints except `/` require `Authorization: Bearer <token>`; unset = dev mode (serial warning).

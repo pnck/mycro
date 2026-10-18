@@ -286,11 +286,14 @@ never import runtime-specific modules.
   1. *On demand*: buffers appear on first touch, never speculatively
      at boot; an arena the workload never touches costs nothing.
   2. *Own forever*: once allocated, owned by the managing layer, never
-     returned to the GC; may grow to the workload's high-water mark,
-     never shrinks.
+     returned to the GC; steady-state buffers never shrink. Macro execution
+     streams are strictly bounded by one snapshot slot (48 KiB, SNAP_SLOT_BYTES).
+     Full-frame UI captures bypass the device completely via an out-of-band
+     ephemeral direct LAN data plane (lazy capture + HMAC-SHA256 challenge),
+     ensuring the device heap is never burdened by multi-MiB data.
   3. *Hot path allocates nothing*: steady state does pointer
-     arithmetic and free-list moves only; cold paths (first use,
-     growth past the previous high-water mark) may allocate, once.
+     arithmetic and free-list moves only; cold paths (first use)
+     allocate once.
   4. *Deterministic failure*: exhaustion/overflow fails the operation
      itself — never a GC retry or an allocation stall. Allocators encountering
      MemoryError fail the operation gracefully (returning None / error sentinels)
@@ -298,24 +301,18 @@ never import runtime-specific modules.
   5. *Copy budget*: a byte on the receive hot path is copied at most
      twice (socket→reassembly, reassembly→destination); transports
      receive into self-managed storage and hand consumers views.
-     Isolating copies off the hot path (e.g. UI-held data that must
-     outlive later traffic) are permitted and must be justified in a
-     comment.
+     Out-of-band UI captures bypass device memory entirely.
 - **Arena taxonomy** (structure follows access pattern — axes:
   concurrent live count, entry size, lifetime): *slot pool* (several
   concurrent, fixed-size, independent lifetimes — snapshots; future
   match frames); *bump arena* (many, variable-size, batch lifetime —
-  the const store, reset wholesale per compile); *high-water buffer*
-  (one tenant, variable size, short lifetime — stream assembly, one
-  buffer because reverse requests are single-in-flight). Do not force
-  one structure on all buffers: a contiguous consumer cannot gather
-  from scattered pool slots without an extra full-size copy;
-  batch-free is O(1) under a bump arena but O(n) under a pool;
-  arbitrary-order release inside one flat buffer is a general heap —
-  the fragmentation this discipline exists to prevent.
+  the const store, reset wholesale per compile); *stream slot*
+  (single fixed 48 KiB buffer matching SNAP_SLOT_BYTES, single-in-flight
+  macro reverse requests; full-frame UI captures bypass device memory
+  entirely via direct LAN data plane).
 - **Current budgets** (profile constants, Part II §6): snapshot slot
-  48 KiB (128² RGB) × 8; const arena 256 KiB; stream rejection cap
-  2 MiB; per-connection reassembly 2×(8 KiB+8).
+  48 KiB (128² RGB) × 8; const arena 256 KiB; stream assembly slot
+  48 KiB; per-connection reassembly 2×(8 KiB+8).
 - **Memory verification**: steady-state free_mem stays flat under
   sustained bulk traffic; pool exhaustion fails deterministically and
   recovers on release. A hot path found allocating (GC audit, a
