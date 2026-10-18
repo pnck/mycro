@@ -139,7 +139,7 @@ end. The `img.frame` verb lives in the message-type table above; the
 DSL surface built on it (the snapshot-centric exact pixel family) is
 specified in spec/vm.md Part II.
 
-**Capture: an OBS plugin (obspython), host-side decode.** OBS's source
+**Capture: an OBS script (obspython), host-side decode.** OBS's source
 screenshot API is exposed to Python scripts
 (`obs_frontend_take_source_screenshot` + the `SCREENSHOT_TAKEN` event +
 `obs_frontend_get_last_screenshot`), giving GPU-captured pixels of any
@@ -147,12 +147,12 @@ OBS source — including DirectX-rendered windows on Windows — with no
 per-platform capture code in our hands; the same script runs unchanged
 on macOS (dev host) and Windows (target). Screenshots save as PNG only
 (JXR for HDR on Windows), at native source resolution, with no
-server-side downscale — so the plugin decodes with Pillow (installed
+server-side downscale — so the script decodes with Pillow (installed
 into the same Python OBS loads) and the device needs no image codec at
-all. OBS refuses concurrent screenshots; the plugin serializes capture
+all. OBS refuses concurrent screenshots; the script serializes capture
 requests internally.
 
-**Semantics: stateless "current frame".** The plugin holds no frame
+**Semantics: stateless "current frame".** The script holds no frame
 cache and runs no refresh timer: every `img.*` request triggers one
 fresh capture, one extraction, one response. Freshness is therefore
 never in doubt and there is no cache-coherence question; the cost is
@@ -168,9 +168,9 @@ exact argmax hits on planted templates. CNN/YOLO-class recognition is a
 Phase 3.1 platform-spike question (ESP-DL/microlite custom firmware) and
 is deliberately out of scope here.
 
-**Connection model: one client, reverse requests.** The OBS plugin is a
+**Connection model: one client, reverse requests.** The OBS script is a
 persistent *client* of the device's :7373 listener (same auth prologue).
-`img.*` requests flow device→plugin over that established connection
+`img.*` requests flow device→script over that established connection
 and responses flow back with the request's `id` — the envelope/frame
 rules are symmetric, so no new listener, port, or protocol exists.
 Binary responses use kind-1 frames correlated by `stream_id` to their

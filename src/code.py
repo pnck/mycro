@@ -191,6 +191,25 @@ def favicon(request: Request):
     return Response(request, status=(204, "No Content"), content_type="image/x-icon")
 
 
+@server.route("/obs/obs_mycro.py")
+def download_obs_script(request: Request):
+    try:
+        return FileResponse(
+            request,
+            filename="obs_mycro.py",
+            root_path="/obs",
+            as_attachment=True,
+            download_filename="obs_mycro.py",
+        )
+    except OSError:
+        return Response(
+            request,
+            "obs_mycro.py not found on device",
+            status=(404, "Not Found"),
+            content_type="text/plain; charset=utf-8",
+        )
+
+
 def _macro_form(request):
     """Extract and decode macro form fields. Returns (code, hold_ms_or_none)."""
     code = request.form_data.get("code", "")
@@ -468,7 +487,7 @@ def broadcast(env):
 
 
 # --- img capture provider (reverse requests over its connection) ---
-# The capture provider (OBS plugin) is a persistent CLIENT that announces
+# The capture provider (OBS script) is a persistent CLIENT that announces
 # itself with an img.hello push; img.* DSL calls send request envelopes
 # back over that connection and await the response. At most one request
 # is in flight: the macro task is serialized by the busy guard.

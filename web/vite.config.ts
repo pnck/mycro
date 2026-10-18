@@ -143,6 +143,20 @@ sys.stdout.write(m.disassemble(bc))
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split('?')[0];
 
+        if (url === '/obs/obs_mycro.py' && req.method === 'GET') {
+          const obsFile = path.resolve(__dirname, '..', 'obs', 'obs_mycro.py');
+          if (fs.existsSync(obsFile)) {
+            res.setHeader('Content-Type', 'text/x-python; charset=utf-8');
+            res.setHeader('Content-Disposition', 'attachment; filename="obs_mycro.py"');
+            res.end(fs.readFileSync(obsFile));
+          } else {
+            res.statusCode = 404;
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.end('obs_mycro.py not found');
+          }
+          return;
+        }
+
         if (url === '/macro/status' && req.method === 'GET') {
           res.setHeader('Content-Type', 'text/plain; charset=utf-8');
           res.end(macroStatus);

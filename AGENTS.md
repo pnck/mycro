@@ -25,8 +25,8 @@ tests/
 ├── unit/               CPython pytest unit tests (MockHID; conftest puts src/lib on sys.path)
 ├── device/             Real-device suites: devicetest.py (dual-end acceptance incl. img G-group) +
 │                       reference_provider.py (reference capture provider) + bench_device.py (NCC bench)
-└── obs/                obs_selftest.py: capture-plugin API chain in the real OBS-embedded Python
-obs/obs_mycro.py        OBS capture provider plugin: single img.frame verb with extraction selectors
+└── obs/                obs_selftest.py: capture-script API chain in the real OBS-embedded Python
+obs/obs_mycro.py        OBS capture provider script: single img.frame verb with extraction selectors
 tools/deploy.sh         Deploy: CIRCUITPY=/mountpoint ./tools/deploy.sh (exact-set sync via on-device manifest + circup lib install)
 tools/client.py         Protocol v1 reference client (stdlib-only; executable spec for host companions)
 docs/protocol.md        Machine protocol v1: wire format + ADRs (normative client reference)
@@ -56,6 +56,7 @@ Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`
 | POST `/macro/abort` | `task.cancel()`; `execute()`'s finally guarantees all keys/buttons released |
 | POST `/compile` | Compile only, returns the disassembly |
 | POST/GET `/img/capture` | Pixel Assist: POST starts a provider capture, GET polls (204 pending / 200 PNG bytes, passthrough — the device never decodes) |
+| GET `/obs/obs_mycro.py` | Direct download of the OBS capture provider script (attachment) |
 
 **Auth**: once `MYCRO_TOKEN` is set in settings.toml, all endpoints except `/` require `Authorization: Bearer <token>`; unset = dev mode (serial warning).
 **Input decoding**: the frontend uses `encodeURIComponent` + `x-www-form-urlencoded`; `form_data` does **NOT** URL-decode (verified against the pinned library source), so code.py runs a manual `urldecode` — library upgrades must re-verify this assumption.

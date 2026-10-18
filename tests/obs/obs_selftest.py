@@ -1,7 +1,7 @@
 """MYCRO OBS self-test suite.
 
 Validates, inside the real OBS-embedded Python, every capability the
-MYCRO capture plugin will depend on:
+MYCRO capture script will depend on:
 
     T1  environment info (OBS version, Python, platform)
     T2  frontend API exposure (screenshot, events, timers, source enum)
@@ -104,7 +104,7 @@ def info(msg):
 def script_description():
     return (
         "MYCRO self-test suite: validates the OBS-side capabilities the "
-        "capture plugin needs (screenshot chain, device link, frame "
+        "capture script needs (screenshot chain, device link, frame "
         "pipeline). Results land in the Script Log."
     )
 

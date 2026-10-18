@@ -5,7 +5,7 @@ only). The core was validated on-device by tests/device/bench_device.py
 (exact argmax on planted templates; 80x60/T=16 runs in ~570 ms).
 
 Luma: gray = (r*77 + g*150 + b*29) >> 8 — integer-only BT.601. The OBS
-plugin (obs/obs_mycro.py) and tests/device/fake_capture.py replicate
+script (obs/obs_mycro.py) and tests/device/fake_capture.py replicate
 this EXACTLY so grabbed templates and match frames share a color space.
 """
 

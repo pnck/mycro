@@ -185,14 +185,14 @@
 - [x] **Dual benchmarks in parallel**:
   - CP side: row-conv NCC verified on-device with exact argmax (80x60/T=16 = 573 ms … 160x120/T=32 = 6872 ms; ingest 6 ms) — template matching feasible on CP (`tests/device/bench_device.py`)
   - MP side: **MicroPython spike** — still open, now scoped to the 3.3 CNN question only (template matching no longer needs it)
-- [x] Image source decision: **(A) host screenshots over the network, captured by an OBS plugin** (obspython; PNG → Pillow decode in-plugin → raw pixels over kind-1 frames; see docs/protocol.md ADR-2). `espcamera` rejected: an HID dongle points at a screen with a camera only in toy setups
+- [x] Image source decision: **(A) host screenshots over the network, captured by an OBS script** (obspython; PNG → Pillow decode in-script → raw pixels over kind-1 frames; see docs/protocol.md ADR-2). `espcamera` rejected: an HID dongle points at a screen with a camera only in toy setups
 - [x] Measure PSRAM heap with large buffers: peak ~160 KB used of ~7.5 MB free at 160x120 float frames — no constraint
 - [ ] **Platform decision ADR**: template matching stays on CP (ADR-2 landed); the CNN leg of the decision rides on the MP spike above
 
 ### 3.2 Exact pixel matching (landed 2026-10-13)
 - [x] Snapshot-centric img namespace: `img.snap{rect}` / `img.at{$s}{point}` / `img.diff{$a}{$b}{tol}` — the snapshot is the only entity; handles follow the register-ownership model (overwrite releases, `\set` moves, exit frees)
 - [x] VM register-write mediation + middleware handle discipline + compiler constraint-only type environment — normative: [spec/vm.md](spec/vm.md)
-- [x] Capture provider protocol (`img.frame` with rect/points/w+h selectors) over the Phase 2 channel; OBS plugin (`obs/obs_mycro.py`) full-capability; `tests/device/reference_provider.py` + devicetest G-group e2e
+- [x] Capture provider protocol (`img.frame` with rect/points/w+h selectors) over the Phase 2 channel; OBS script (`obs/obs_mycro.py`) full-capability; `tests/device/reference_provider.py` + devicetest G-group e2e
 
 ### 3.3 Template matching + CNN (one discussion; trigger: field results show exact matching is insufficient)
 - Opening question: the matching-target problem — where does "what a monster is" come from: grabbed pixel templates vs a classifier's learned knowledge (decides grab-style UX vs model pipeline)

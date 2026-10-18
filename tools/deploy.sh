@@ -66,6 +66,14 @@ for f in "$SRC/lib/"*.py; do
     NEW_FILES="$NEW_FILES lib/$(basename "$f")"
 done
 
+# --- companion tools: standalone OBS script folder on USB MSC ---
+mkdir -p "$MNT/obs"
+if [ -f "$ROOT/obs/obs_mycro.py" ]; then
+    cp "$ROOT/obs/obs_mycro.py" "$MNT/obs/obs_mycro.py"
+    NEW_FILES="$NEW_FILES obs/obs_mycro.py"
+    echo "  + synced obs/obs_mycro.py"
+fi
+
 # Remove files previous deploys shipped but this repo no longer ships
 MANIFEST="$MNT/.mycro_files"
 if [ -f "$MANIFEST" ]; then

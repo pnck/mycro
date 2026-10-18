@@ -62,6 +62,7 @@
 	<h3>Pixel Assist</h3>
 	<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
 		<button type="button" id="paOpenBtn" class="pa-btn pa-btn-primary">Launch Pixel Assist</button>
+		<a href="/obs/obs_mycro.py" download="obs_mycro.py" class="pa-btn">Download OBS Script</a>
 		<span id="paMainStatus" style="font-size:12px;color:#57606a">Precision color picker &amp; region watcher (overlay workspace)</span>
 	</div>
 
@@ -73,6 +74,7 @@
 				<span style="font-weight:600;font-size:14px;letter-spacing:0.3px">Pixel Assist</span>
 				<span id="paResBadge" class="pa-badge" style="display:none">0×0</span>
 				<button type="button" id="paShieldWarning" class="pa-badge pa-badge-warn" style="display:none;cursor:pointer;border:1px solid #d4a72c" title="Click for details on browser canvas noise">Anti-Fingerprint Active</button>
+				<a href="/obs/obs_mycro.py" download="obs_mycro.py" class="pa-btn" style="padding:4px 8px;font-size:12px" title="Download OBS capture script">OBS Script</a>
 			</div>
 			<div style="display:flex;align-items:center;gap:10px">
 				<span id="paCaptureStatus" style="font-size:12px;color:#57606a"></span>
@@ -104,8 +106,11 @@
 		<div id="paViewport">
 			<div id="paEmptyPrompt" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#57606a;text-align:center">
 				<p style="font-size:15px;margin-bottom:12px;color:#24292f;font-weight:500">No screenshot active</p>
-				<p style="font-size:12px;color:#57606a;margin-bottom:16px">Connect your capture provider (OBS plugin) and click below.</p>
-				<button type="button" id="paCapturePromptBtn" class="pa-btn pa-btn-primary" style="font-size:14px;padding:8px 18px">Capture Screen Now</button>
+				<p style="font-size:12px;color:#57606a;margin-bottom:16px">Connect your capture provider (OBS script) and click below.</p>
+				<div style="display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap">
+					<button type="button" id="paCapturePromptBtn" class="pa-btn pa-btn-primary" style="font-size:14px;padding:8px 18px">Capture Screen Now</button>
+					<a href="/obs/obs_mycro.py" download="obs_mycro.py" class="pa-btn" style="font-size:14px;padding:8px 18px">Download OBS Script</a>
+				</div>
 			</div>
 			<div id="paStageContainer" style="display:none">
 				<canvas id="paDisplayCanvas"></canvas>
@@ -334,8 +339,20 @@
 				<tr><td><code>\call{img.diff}{$a}{$b}{tol}</code></td><td>Count pixels diverging beyond tol (0 = identical)</td></tr>
 				<tr><td><code>\set{r}{\rect{\row{0xFF0000,…},…}}</code></td><td>Pixel literal — compile-time reference snapshot (handle)</td></tr>
 			</table>
-			<p><small>Handles: overwrite releases, <code>\set</code> moves, macro exit frees all — a polling loop cannot leak. Requires the capture provider (OBS plugin) connected.</small></p>
+			<p><small>Handles: overwrite releases, <code>\set</code> moves, macro exit frees all — a polling loop cannot leak. Requires the capture provider (OBS script) connected (<a href="/obs/obs_mycro.py" download="obs_mycro.py">download obs_mycro.py</a> or copy from USB drive <code>/obs/</code>).</small></p>
 			<p><small>Namespaces/signals are registered by the runtime; this firmware provides <code>sys</code> (free/const), <code>net</code> (send + net.msg signal), <code>img</code> (snap/at/diff). Use the Pixel Assist above to grab coordinates and colors.</small></p>
+		</details>
+
+		<details>
+			<summary><h5>OBS Capture Script Setup</h5></summary>
+			<p><small>The OBS script serves native-resolution screen captures to MYCRO (:7373) for Pixel Assist and <code>img.*</code> macro operations.</small></p>
+			<table>
+				<tr><th>Step</th><th>Instructions</th></tr>
+				<tr><td>1. Obtain script</td><td><a href="/obs/obs_mycro.py" download="obs_mycro.py">Download <code>obs_mycro.py</code></a> or copy from the device's USB drive (<code>/obs/obs_mycro.py</code>).</td></tr>
+				<tr><td>2. Python environment</td><td>In OBS Studio, navigate to <strong>Tools &rarr; Scripts</strong> &rarr; <strong>Python Settings</strong>. Configure a 64-bit Python 3.10+ path with <code>Pillow</code> installed (<code>pip install pillow</code>).</td></tr>
+				<tr><td>3. Load script</td><td>Under the <strong>Scripts</strong> tab, click <strong>+</strong> and select <code>obs_mycro.py</code>.</td></tr>
+				<tr><td>4. Connect</td><td>Enter your MYCRO device IP (and token if configured), then click <strong>Connect</strong> to establish the capture session.</td></tr>
+			</table>
 		</details>
 
 		<details open>
