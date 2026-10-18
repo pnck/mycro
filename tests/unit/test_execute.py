@@ -22,25 +22,25 @@ def run(text, hid=None, **kwargs):
 def test_type_char():
     hid = run("a")
     kc = keymap.letter_keycode("a")
-    # press, release_all, + final release_all from the B2 finally
-    assert hid.events[:2] == [("kp", kc), ("kra",)]
+    # press, release, + final release_all from the B2 finally
+    assert hid.events[:2] == [("kp", kc), ("kr", kc)]
 
 
 def test_type_shifted_char():
     hid = run("A")
     kc = keymap.letter_keycode("a")
-    assert hid.events[:3] == [("kp", keymap.SHIFT), ("kp", kc), ("kra",)]
+    assert hid.events[:4] == [("kp", keymap.SHIFT), ("kp", kc), ("kr", kc), ("kr", keymap.SHIFT)]
 
 
 def test_key_tap():
     hid = run("\\enter")
-    assert hid.events[:2] == [("kp", keymap.ENTER), ("kra",)]
+    assert hid.events[:2] == [("kp", keymap.ENTER), ("kr", keymap.ENTER)]
 
 
 def test_combo():
     hid = run("\\ctrl+c")
     kc = keymap.letter_keycode("c")
-    assert hid.events[:3] == [("kp", keymap.CONTROL), ("kp", kc), ("kra",)]
+    assert hid.events[:4] == [("kp", keymap.CONTROL), ("kp", kc), ("kr", kc), ("kr", keymap.CONTROL)]
 
 
 def test_rep():
@@ -55,6 +55,70 @@ def test_kdown_kup_explicit():
     assert ("kp", keymap.CONTROL) in hid.events
     # kdown is released explicitly by kup{}, and the B2 finally still runs
     assert hid.events.count(("kra",)) >= 1
+
+
+def test_kdown_preserved_across_subsequent_keys():
+    """kdown state must persist across OP_CHAR, OP_KEY, OP_COMBO until explicit kup."""
+    hid = run(r"\kdown{a}b\enter\ctrl+c\kup{a}")
+    ka = keymap.letter_keycode("a")
+    kb = keymap.letter_keycode("b")
+    kc = keymap.letter_keycode("c")
+    k_enter = keymap.ENTER
+    k_ctrl = keymap.CONTROL
+
+    assert ("kp", ka) in hid.events
+    assert ("kp", kb) in hid.events
+    assert ("kr", kb) in hid.events
+    assert ("kp", k_enter) in hid.events
+    assert ("kr", k_enter) in hid.events
+    assert ("kp", k_ctrl) in hid.events
+    assert ("kp", kc) in hid.events
+    assert ("kr", kc) in hid.events
+    assert ("kr", k_ctrl) in hid.events
+    assert ("kr", ka) in hid.events
+
+    # Verify 'a' is released ONLY at the end by kup{a}, not after 'b', enter, or ctrl+c
+    idx_ka_up = hid.events.index(("kr", ka))
+    idx_kb_up = hid.events.index(("kr", kb))
+    idx_enter_up = hid.events.index(("kr", k_enter))
+    idx_ctrl_up = [i for i, e in enumerate(hid.events) if e == ("kr", k_ctrl)][-1]
+    assert idx_ka_up > idx_kb_up
+    assert idx_ka_up > idx_enter_up
+    assert idx_ka_up > idx_ctrl_up
+    # Ensure no release_all ('kra') occurred
+    assert ("kra",) not in hid.events
+
+
+def test_kdown_remains_held_after_script_completion():
+    """A standalone \\kdown{a} macro must leave 'a' pressed upon normal completion."""
+    hid = MockHID()
+    m = Macro(hid)
+    bc, err = m.compile(r"\kdown{a}")
+    assert err is None
+    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    ka = keymap.letter_keycode("a")
+    assert hid.events == [("kp", ka)]  # strictly only key_press, no key_release or kra!
+
+    # A subsequent macro can release it
+    bc_up, err = m.compile(r"\kup{a}")
+    assert err is None
+    asyncio.run(m.execute(bc_up, default_delay_ms=0, click_hold_ms=0))
+    assert hid.events == [("kp", ka), ("kr", ka)]
+
+
+def test_mdown_remains_held_after_script_completion():
+    """A standalone \\mdown{L} macro must leave left mouse button pressed upon normal completion."""
+    hid = MockHID()
+    m = Macro(hid)
+    bc, err = m.compile(r"\mdown{L}")
+    assert err is None
+    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    assert hid.events == [("mp", keymap.BTN_LEFT)]
+
+    bc_up, err = m.compile(r"\mup{L}")
+    assert err is None
+    asyncio.run(m.execute(bc_up, default_delay_ms=0, click_hold_ms=0))
+    assert hid.events == [("mp", keymap.BTN_LEFT), ("mr", keymap.BTN_LEFT)]
 
 
 def test_mouse_click_and_move():
@@ -169,3 +233,12 @@ def test_unknown_opcode_raises_and_cleans_up():
         raised = "opcode" in str(e)
     assert raised
     assert ("kra",) in hid.events
+
+
+def test_macro_btn_constants():
+    assert Macro.BTN_ALL == keymap.BTN_ALL
+    assert Macro.BTN_LEFT == keymap.BTN_LEFT
+    assert Macro.BTN_RIGHT == keymap.BTN_RIGHT
+    assert Macro.BTN_MIDDLE == keymap.BTN_MIDDLE
+    assert Macro.BTN_BACK == keymap.BTN_BACK
+    assert Macro.BTN_FORWARD == keymap.BTN_FORWARD

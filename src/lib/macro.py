@@ -151,6 +151,13 @@ class Macro:
 
     _BTN_NAMES = {1: "L", 2: "R", 4: "M", 8: "B", 16: "F"}
 
+    BTN_LEFT = BTN_LEFT
+    BTN_RIGHT = BTN_RIGHT
+    BTN_MIDDLE = BTN_MIDDLE
+    BTN_BACK = BTN_BACK
+    BTN_FORWARD = BTN_FORWARD
+    BTN_ALL = BTN_ALL
+
     def __init__(self, hid, runtime=None):
         self.hid = hid
         self.runtime = runtime  # Runtime registry; required for \use/\call/\wait/slots
@@ -250,6 +257,33 @@ class Macro:
                     v -= 4294967296
             return str(v)
 
+        def fmt_key_arg():
+            nonlocal i
+            tag = bytecode[i]
+            i += 1
+            if tag == TAG_REG:
+                r = f"$r{bytecode[i]}"
+                i += 1
+                return r
+            kc = bytecode[i]
+            i += 1
+            if kc == 0:
+                return "ALL"
+            return self._keycode_name(kc)
+
+        def fmt_btn_arg():
+            nonlocal i
+            tag = bytecode[i]
+            i += 1
+            if tag == TAG_REG:
+                r = f"$r{bytecode[i]}"
+                i += 1
+                return r
+            b = bytecode[i]
+            i += 1
+            names = {1: "LEFT", 2: "RIGHT", 4: "MIDDLE", 8: "BACK", 16: "FORWARD", 0x1F: "ALL"}
+            return names.get(b, str(b))
+
         while i < len(bytecode):
             op = bytecode[i]
             prefix = "  " * indent
@@ -264,7 +298,7 @@ class Macro:
                 i += 2
             elif op == OP_KEY:
                 key_name = self._keycode_name(bytecode[i + 1])
-                lines.append(f"{prefix}KEY {key_name}")
+                lines.append(f"{prefix}KEY_TAP {key_name}")
                 i += 2
             elif op == OP_COMBO:
                 mods = self._mod_names(bytecode[i + 1])
@@ -279,7 +313,7 @@ class Macro:
                 lines.append(f"{prefix}PACE {fmt_arg(2)}ms")
             elif op == OP_MCLICK:
                 i += 1
-                btn = fmt_arg(1)
+                btn = fmt_btn_arg()
                 count = fmt_arg(2)
                 lines.append(f"{prefix}MCLICK {btn} x{count}")
             elif op == OP_MMOVE:
@@ -301,16 +335,16 @@ class Macro:
                 i += 1
             elif op == OP_KEY_DOWN:
                 i += 1
-                lines.append(f"{prefix}KEY_DOWN {fmt_arg(1)}")
+                lines.append(f"{prefix}KEY_DOWN {fmt_key_arg()}")
             elif op == OP_KEY_UP:
                 i += 1
-                lines.append(f"{prefix}KEY_UP {fmt_arg(1)}")
+                lines.append(f"{prefix}KEY_UP {fmt_key_arg()}")
             elif op == OP_MDOWN:
                 i += 1
-                lines.append(f"{prefix}MDOWN {fmt_arg(1)}")
+                lines.append(f"{prefix}MDOWN {fmt_btn_arg()}")
             elif op == OP_MUP:
                 i += 1
-                lines.append(f"{prefix}MUP {fmt_arg(1)}")
+                lines.append(f"{prefix}MUP {fmt_btn_arg()}")
             elif op == OP_SET:
                 reg = bytecode[i + 1]
                 i += 2
@@ -1113,7 +1147,7 @@ class Macro:
 
     @staticmethod
     def _unescape_str(s):
-        """str literal args: the brace-matching escapes (\{ \} \\) become
+        r"""str literal args: the brace-matching escapes (\{ \} \\) become
         the literal characters (single pass)."""
         out = []
         i = 0
@@ -1380,8 +1414,9 @@ class Macro:
     async def execute(self, bytecode, default_delay_ms=50, click_hold_ms=10):
         """Execute compiled bytecode.
 
-        Any exit path (normal end, unknown opcode, runtime error, cancellation)
-        releases all keys and mouse buttons (B2).
+        On exception or cancellation/abort, emergency-releases all keys and
+        mouse buttons (B2). On normal completion, keys/buttons held via
+        KEY_DOWN/MDOWN remain held until an explicit KEY_UP/MUP or abort.
         """
         bc = bytecode
         n = len(bc)
@@ -1454,13 +1489,15 @@ class Macro:
                     for kc in codes:
                         hid.key_press(kc)
                     await sleep_ms(click_hold_ms)
-                    hid.keys_release_all()
+                    for kc in reversed(codes):
+                        hid.key_release(kc)
                     await sleep_ms(delay_ms)
 
                 elif op == OP_KEY:
-                    hid.key_press(read_u8())
+                    kc = read_u8()
+                    hid.key_press(kc)
                     await sleep_ms(click_hold_ms)
-                    hid.keys_release_all()
+                    hid.key_release(kc)
                     await sleep_ms(delay_ms)
 
                 elif op == OP_COMBO:
@@ -1472,7 +1509,11 @@ class Macro:
                     if key:
                         hid.key_press(key)
                     await sleep_ms(click_hold_ms)
-                    hid.keys_release_all()
+                    if key:
+                        hid.key_release(key)
+                    for i in reversed(range(4)):
+                        if mods & (1 << i):
+                            hid.key_release(self.MOD_KEYS[i])
                     await sleep_ms(delay_ms)
 
                 elif op == OP_SLEEP:
@@ -1534,7 +1575,8 @@ class Macro:
                     hid.mouse_press(read_arg(1) & 0xFF)
 
                 elif op == OP_MUP:
-                    hid.mouse_release(read_arg(1) & 0xFF)
+                    btn = read_arg(1) & 0xFF
+                    hid.mouse_release(btn)
 
                 elif op == OP_SET:
                     reg = read_u8()
@@ -1588,7 +1630,8 @@ class Macro:
                             for kc in codes:
                                 hid.key_press(kc)
                             await sleep_ms(click_hold_ms)
-                            hid.keys_release_all()
+                            for kc in reversed(codes):
+                                hid.key_release(kc)
                     await sleep_ms(delay_ms)
 
                 elif op == OP_READSLOT:
@@ -1642,9 +1685,11 @@ class Macro:
                     raise RuntimeError(f"Unknown opcode 0x{op:02X}")
 
             return True
-        finally:
-            # B2: never leave keys/buttons pressed, whatever the exit path
+        except BaseException:
+            # B2: on error, exception, or cancellation/abort, emergency-release all keys/buttons
             hid.keys_release_all()
             hid.mouse_release(BTN_ALL)
+            raise
+        finally:
             if runtime is not None:
                 runtime.release_all()  # execution bracket: exit

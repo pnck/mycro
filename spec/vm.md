@@ -35,9 +35,13 @@ execution:
 - string table (read-only, from the container header)
 
 Execution is cooperative: SLEEP/PACE/WAIT/CALL_EXT may suspend the
-coroutine; abort is task cancellation. On **every** exit path (normal,
-error, abort) the VM releases all held keys/buttons via the HID provider
-and releases all handle resources (Part II §4) — no exception.
+coroutine; abort is task cancellation. On **exception and abort** exit
+paths (runtime error, unknown opcode, task cancellation), the VM
+releases all held keys and mouse buttons via the HID provider as an
+emergency safety fallback (B2). On **normal completion**, keys and mouse
+buttons held via KEY_DOWN / MDOWN persist until explicitly released by
+KEY_UP / MUP or an abort. Handle resources (Part II §4) are always
+released on exit via `runtime.release_all()`.
 
 ## 2. Register file
 
@@ -89,7 +93,7 @@ types (Part II §2) never reach bytecode.
 | 0x07 PACE | typed(u16 ms) | Set inter-action interval (DSL `\pace`) |
 | 0x10 LOOP | typed(u8 count), u16 len | len = body bytes incl. LOOP_END; count 0 skips |
 | 0x11 LOOP_END | — | Decrement/jump back or pop |
-| 0x12/0x13 KEY_DOWN/KEY_UP | typed(u8 keycode) | keycode 0 = release all |
+| 0x12/0x13 KEY_DOWN/KEY_UP | typed(u8 keycode) | keycode 0 = release all; held state persists across discrete taps |
 | 0x14/0x15 MDOWN/MUP | typed(u8 btn) | Mouse button hold/release |
 | 0x20/0x21 SET/ADD | u8 reg, typed(i32) | Register write (mediated, §5); ADD wraps i32 |
 | 0x22 BRA | u8 cc, u8 reg, typed(i32 rhs), u16 off | If condition false, `ip += off`; cc: 0`=`,1`!=`,2`<`,3`<=`,4`>`,5`>=` |

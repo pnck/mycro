@@ -12,6 +12,7 @@ from adafruit_httpserver import Request, Response, Server, FileResponse
 
 from lib import codec, proto
 from lib.hid_adafruit import AdafruitHIDProvider
+from lib.keymap import BTN_ALL
 from lib.macro import Macro, RECT_MAX_EDGE
 from lib.runtime import Runtime
 
@@ -287,12 +288,15 @@ def macro_status(request: Request):
 
 @server.route("/macro/abort", methods=["POST"])
 def macro_abort(request: Request):
+    global macro_task
     if not _authorized(request):
         return _unauth(request)
+    macro.hid.keys_release_all()
+    macro.hid.mouse_release(BTN_ALL)
     if macro_task and state["state"] == "running":
         macro_task.cancel()
         return Response(request, "Abort requested", content_type="text/plain")
-    return Response(request, "No macro running", content_type="text/plain")
+    return Response(request, "No macro running (released all keys)", content_type="text/plain")
 
 
 # --- Pixel Assist (web UI): ephemeral direct-preview coordination ---
@@ -425,6 +429,9 @@ class _ProtoCtx:
         return state["state"], state["detail"] or None
 
     def abort(self):
+        global macro_task
+        macro.hid.keys_release_all()
+        macro.hid.mouse_release(BTN_ALL)
         if macro_task and state["state"] == "running":
             macro_task.cancel()
             return True

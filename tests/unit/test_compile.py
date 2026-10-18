@@ -262,4 +262,4 @@ def test_disassemble_canonical_key_names():
     # Aliases (enter/return) must render deterministically on every runtime:
     # CircuitPython dicts are hash-ordered, unlike CPython insertion order
     bc = compile_ok("\\enter")
-    assert "KEY ENTER" in Macro(MockHID()).disassemble(bc)
+    assert "KEY_TAP ENTER" in Macro(MockHID()).disassemble(bc)
