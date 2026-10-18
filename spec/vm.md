@@ -101,7 +101,7 @@ types (Part II §2) never reach bytecode.
 | 0x28 READSLOT | u8 reg, u8 sig, u8 field | Read middleware slot into register (mediated, §5) |
 | 0x29 WAIT | u8 sig, typed(u32 timeout_ms) | Suspend until signal's next fire; `$timeout` = 1 on timeout (mediated write) |
 | 0x2A CALL_EXT | u8 ns, u8 fn, u8 argc, argc × typed | Middleware call; return written to `$ret` (mediated, claim per Part II §4) |
-| 0x2B TYPEREG | u8 reg | Type register's decimal digits (one pacing action) |
+| 0x2B TYPEREG | u8 reg | Type register's decimal digits (one pacing action; DSL `\typenum`) |
 | 0xFF END | — | Halt |
 
 Branches are forward-only; there is no general backward jump except

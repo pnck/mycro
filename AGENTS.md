@@ -66,7 +66,7 @@ Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`
 **Normative reference: [spec/dsl.md](spec/dsl.md)** (document model, value/variable/slot rules, \def, \ifnum, extension calls, registered namespaces, boundaries, version history). Summary:
 
 - Text types verbatim ASCII; `\` escapes + line continuation + `\#` comments; special keys/combos/mouse; `\delay`/`\pace`; `\rep{N}{body}` (nest ≤4)
-- v3 structure: `\def` compile-time user macros (#1–#9 textual substitution); 32 i32 registers with `\set`/`\add`; `$ret`/`$timeout` read-only; signal slots `$sig.field` (split at LAST dot); `\ifnum` forward-only branches; `\val` decimal render; `\use`/`\call`/`\wait` runtime extension
+- v3 structure: `\def` compile-time user macros (#1–#9 textual substitution); 32 i32 registers with `\set`/`\add`; `$ret`/`$timeout` read-only; signal slots `$sig.field` (split at LAST dot); `\ifnum` forward-only branches; `\typenum` decimal render; `\use`/`\call`/`\wait` runtime extension
 - `$` interpolation only in value positions (literal elsewhere); greedy `[a-z0-9_.]`, `${name}` delimits
 - Direction rule: macro-initiated request/response = `\call`; world-initiated events = signals + `\wait`; slots are never a return channel
 - img exact pixel family: `img.snap{rect}` → handle, `img.at{$s}{point}` → packed color, `img.diff{$a}{$b}{tol}` → count; `\rect{\row{0xRRGGBB,…},…}` pixel literals compile into the middleware const store and materialize as snap handles via `sys.const`; handles per spec/vm.md ownership

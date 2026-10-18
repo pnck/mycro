@@ -47,7 +47,7 @@ OP_JMP = 0x23  # u16 off
 OP_READSLOT = 0x28  # reg, sig_str, field_str — read signal slot into register
 OP_WAIT = 0x29  # sig_str, typed(u32) timeout_ms (0 = forever)
 OP_CALL_EXT = 0x2A  # ns_str, fn_str, argc, typed args...
-OP_TYPEREG = 0x2B  # reg — render register as decimal keystrokes (DSL \val)
+OP_TYPEREG = 0x2B  # reg — render register as decimal keystrokes (DSL \typenum)
 OP_END = 0xFF
 
 # Typed-operand tags (physical arg encodings; semantic types never reach bytecode)
@@ -882,19 +882,21 @@ class Macro:
             raise MacroError(f"Invalid time value: {s}", pos)
         return (TAG_IMM, max(1, min(65535, ms)))
 
-    def _parse_btn_arg(self, s, pos, reserved=()):
-        """Mouse button: name or $var (register holds the bitmask)."""
+    def _parse_btn_arg(self, s, pos):
+        """Mouse button: name (L, R, M, B, F)."""
         s = s.strip().lower()
         if s.startswith("$"):
-            return (TAG_REG, self._parse_var_ref(s, pos, reserved))
-        return (TAG_IMM, self.MOUSE_BTNS.get(s, 1))
+            raise MacroError("click/mdown/mup takes a button name, not a variable", pos)
+        if s in self.MOUSE_BTNS:
+            return self.MOUSE_BTNS[s]
+        raise MacroError(f"Unknown mouse button: {s}", pos)
 
-    def _parse_key_arg(self, s, pos, reserved=()):
-        """Key: name or $var (register holds the keycode)."""
+    def _parse_key_arg(self, s, pos):
+        """Key: name (page 0x07 key name)."""
         s = s.strip().lower()
         if s.startswith("$"):
-            return (TAG_REG, self._parse_var_ref(s, pos, reserved))
-        return (TAG_IMM, self._resolve_key(s, pos))
+            raise MacroError("kdown/kup takes a key name, not a variable", pos)
+        return self._resolve_key(s, pos)
 
     # --- commands ---
 
@@ -1088,12 +1090,19 @@ class Macro:
         self._emit_u16(0)  # backpatched by _pop_nest
         self._nest_into(then_body, "ifnum then", ("ifnum_then", off_pos, else_body))
 
-    def _cmd_val(self, pos):
-        r"""\val{name} — render a variable as decimal keystrokes (text position)."""
+    def _cmd_typenum(self, pos):
+        r"""\typenum{$var} — render a numeric register as decimal keystrokes (text position)."""
         arg = self._read_braces()
         if arg is None:
-            raise MacroError("val requires {name}", self._pos)
-        self._emit(OP_TYPEREG, self._var_reg(arg.strip().lower(), pos))
+            raise MacroError("typenum requires {$var}", self._pos)
+        s = arg.strip()
+        if not s.startswith("$"):
+            raise MacroError("typenum requires a variable ($name)", pos)
+        reg = self._parse_var_ref(s, pos)
+        vt = self._reg_type(reg)
+        if reg != REG_RET and vt not in ("int", "color"):
+            raise MacroError(f"typenum: cannot render a {vt} handle", pos)
+        self._emit(OP_TYPEREG, reg)
 
     def _cmd_use(self, pos):
         r"""\use{ns} — declare a dependency on a runtime namespace (compile-time check)."""
@@ -1260,9 +1269,8 @@ class Macro:
         arg = self._read_braces()
         if arg is None:
             raise MacroError("kdown requires {key}", self._pos)
-        v = self._parse_key_arg(arg, pos)  # parse first: slot desugars emit READSLOT
-        self._emit(OP_KEY_DOWN)
-        self._emit_typed(v, 1)
+        kc = self._parse_key_arg(arg, pos)
+        self._emit(OP_KEY_DOWN, TAG_IMM, kc)
 
     def _cmd_kup(self, pos):
         arg = self._read_braces()
@@ -1272,9 +1280,8 @@ class Macro:
         if not arg:
             self._emit(OP_KEY_UP, TAG_IMM, 0)  # release all
         else:
-            v = self._parse_key_arg(arg, pos)  # parse first (READSLOT desugar)
-            self._emit(OP_KEY_UP)
-            self._emit_typed(v, 1)
+            kc = self._parse_key_arg(arg, pos)
+            self._emit(OP_KEY_UP, TAG_IMM, kc)
 
     def _cmd_click(self, pos):
         arg = self._read_braces()
@@ -1284,13 +1291,10 @@ class Macro:
         btn = self._parse_btn_arg(parts[0], pos)
         count = (TAG_IMM, 1)
         if len(parts) >= 2:
-            # reserve the btn register so a slot-derived count cannot clobber it
-            count = self._parse_value(
-                parts[1], pos, reserved=(btn[1],) if btn[0] == TAG_REG else ())
+            count = self._parse_value(parts[1], pos)
             if count[0] == TAG_IMM:
                 count = (TAG_IMM, max(1, min(65535, count[1])))
-        self._emit(OP_MCLICK)
-        self._emit_typed(btn, 1)
+        self._emit(OP_MCLICK, TAG_IMM, btn)
         self._emit_typed(count, 2)
 
     def _cmd_move(self, pos):
@@ -1326,15 +1330,15 @@ class Macro:
         arg = self._read_braces()
         if arg is None:
             raise MacroError("mdown requires {btn}", self._pos)
-        self._emit(OP_MDOWN)
-        self._emit_typed(self._parse_btn_arg(arg, pos), 1)
+        btn = self._parse_btn_arg(arg, pos)
+        self._emit(OP_MDOWN, TAG_IMM, btn)
 
     def _cmd_mup(self, pos):
         arg = self._read_braces()
         if arg is None:
             raise MacroError("mup requires {btn}", self._pos)
-        self._emit(OP_MUP)
-        self._emit_typed(self._parse_btn_arg(arg, pos), 1)
+        btn = self._parse_btn_arg(arg, pos)
+        self._emit(OP_MUP, TAG_IMM, btn)
 
     def _parse(self):
         """Main parse driver — iterative nesting via _nest_stack (heap frames),

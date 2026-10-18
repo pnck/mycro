@@ -308,7 +308,7 @@
 				<tr><td><code>\set{x}{5}</code></td><td>Set variable x (32 i32 registers; 0x hex ok)</td></tr>
 				<tr><td><code>\add{x}{-1}</code></td><td>Add to variable</td></tr>
 				<tr><td><code>$x</code> <code>${x}</code></td><td>Variable value — only in value positions (counts, seconds, keycodes, coords)</td></tr>
-				<tr><td><code>\val{x}</code></td><td>Type out the variable's decimal digits</td></tr>
+				<tr><td><code>\typenum{$x}</code></td><td>Type out the variable's decimal digits</td></tr>
 				<tr><td><code>$ret</code> <code>$timeout</code></td><td>Read-only: last \call result / \wait timed-out flag</td></tr>
 			</table>
 		</details>
@@ -367,7 +367,7 @@
 				<tr><td><code>\kdown{ctrl}ccc\kup{}</code></td><td>Hold Ctrl, type "ccc", release</td></tr>
 				<tr><td><code>\def{cp}[1]{\ctrl+#1}\cp{c}\cp{v}</code></td><td>Define & use a macro (v3)</td></tr>
 				<tr><td><code>\set{n}{3}\rep{$n}{ab\enter}</code></td><td>Variable repeat count (v3)</td></tr>
-				<tr><td><code>\call{sys.free}\val{ret}</code></td><td>Call ext fn, type the result (v3)</td></tr>
+				<tr><td><code>\call{sys.free}\typenum{$ret}</code></td><td>Call ext fn, type the result (v3)</td></tr>
 				<tr><td><code>\call{img.snap}{350,220,1,1}\set{p}{$ret}\call{img.at}{$p}{0,0}\ifnum{$ret}{=}{0xFF0000}{yes}</code></td><td>Type "yes" if the pixel at (350,220) is red</td></tr>
 			</table>
 		</details>

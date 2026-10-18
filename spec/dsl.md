@@ -13,14 +13,22 @@ Current version: **DSL v3** (history in §7).
 
 ## 1. Document model
 
-A macro source is text. Positions in the text are one of three kinds,
-and the kind decides the meaning of `$` and `#`:
+A macro source is text. Positions in the text are one of three primary kinds:
+**Text position**, **Command name position**, and **Argument brace positions**.
+Every argument brace is statically partitioned by its command specification
+into either a **Name position** or a **Value position**:
 
-| Position kind | Examples | Rules |
+| Position kind | Examples | Syntax & Sigil Rules |
 |---|---|---|
 | **Text position** | top level, bodies of `\rep`/`\def`/`\ifnum` | printable ASCII 32–126 types verbatim; `$` is a literal character |
-| **Value position** | a command's argument braces | int literals / `$var` / `$sig.field` interpolation |
-| **Command name position** | right after `\` | a command name or key name |
+| **Command name position** | right after `\` | a command name (`\delay`, `\typenum`) or key name (`\enter`, `\a`) |
+| **Name position** | `\kdown{key}`, `\click{btn}`, `\set{x}{...}`, `\use{ns}`, `\wait{sig}` | Static symbolic identifiers. **Strictly bare names — `$` is forbidden**. Compile error on `$var` or unknown symbols. |
+| **Value position** | `\set{x}{val}`, `\rep{cnt}`, `\delay{t}`, `\move{x,y}`, `\ifnum{$a}{=}{b}`, `\typenum{$x}`, `\call` args | Int literals / float seconds / `\rect{...}` / `$var` / `$sig.field` / `$ret` / `$timeout`. **Reading variables strictly requires `$`**; bare names are parsed as literals and fail if non-numeric. |
+
+Arguments inside braces are evaluated per-slot: a compound argument
+(comma-separated, such as `\click{btn,count}` or `\move{dx,dy}`) consists
+of multiple slots, where each slot is independently defined as either a
+Name position or a Value position.
 
 Text-position details:
 
@@ -44,15 +52,18 @@ letters are permanently reserved as bare key names — `\a` types "a").
   `\ins` `\caps`, `\f1`–`\f12`
 - Combos: `\ctrl+c`, `\ctrl+shift+end`, … modifiers chain with `+`;
   a trailing modifier alone (`\ctrl+`) presses/releases the pure modifier
-- Mouse: `\click{L|R|M|B|F[,count]}` (B/F = side buttons),
-  `\move{dx,dy}` (relative, i16), `\mdown{btn}` / `\mup{btn}`
-- Keys held: `\kdown{name}` / `\kup{name}`; `\kup{0}` releases all
-- Timing: `\delay{sec}` one-shot sleep (float seconds or `$var` ms);
-  `\pace{sec}` sets the interval after subsequent actions
-- Loops: `\rep{N}{body}` — N is u8 (0 skips); runtime nesting ≤ 8
+- Mouse:
+  - `\click{btn[,count]}` — `btn` is a Name position (`L|R|M|B|F`); `count` is a Value position (u16 integer or `$var`)
+  - `\move{dx,dy}` — `dx` and `dy` are Value positions (relative, i16 integer or `$var`)
+  - `\mdown{btn}` / `\mup{btn}` — `btn` is a Name position (`L|R|M|B|F`)
+- Keys held:
+  - `\kdown{key}` / `\kup{key}` — `key` is a Name position (static key symbol, e.g. `a`, `enter`, `left`; variables forbidden); `\kup{0}` or `\kup{}` releases all
+- Timing:
+  - `\delay{sec}` one-shot sleep (Value position: float seconds or `$var` ms);
+  - `\pace{sec}` sets the interval after subsequent actions (Value position: float seconds or `$var` ms)
+- Loops:
+  - `\rep{N}{body}` — `N` is a Value position: u8 count (0 skips; `$var` supported); runtime nesting ≤ 8
   (`MAX_RUNTIME_NEST`, shared with `\ifnum`)
-
-All numeric arguments are value positions (§3).
 
 ## 3. Values and variables
 
@@ -70,9 +81,10 @@ All numeric arguments are value positions (§3).
 - **Slots**: `$sig.field` reads last-published signal state (missing
   reads as 0); signal names may contain dots — the split is at the LAST
   dot (`$net.msg.x` = signal `net.msg`, field `x`)
-- **Dual semantics**: `$name` in a value position is the integer;
-  `\val{name}` in a text position types the decimal digits (one pacing
-  action)
+- **Keystroke rendering**: `\typenum{$name}` in a text position types the
+  decimal digits of a numeric register as keystrokes (one pacing action).
+  The argument must be a variable starting with `$`. Handles cannot be
+  rendered by `\typenum` (compile error)
 - **`\rect{...}` pixel literal**: `\rect{\row{0xRRGGBB,...},...}` is a
   compile-time pixel constant usable in a `\set` value position or a
   snap-typed call argument; it materializes as a **snap handle**
@@ -189,11 +201,11 @@ enter as bytes handles** (handle-table kind `bytes`; text uses a UTF-8
 convention at the function boundary), never as str values; no
 expressions/multiplication/division (`\set`/`\add` cover counting,
 complex math sinks into ext functions); no runtime subroutines; no
-`\while`; no else-if; `\val` is decimal only; constructor sugar
+`\while`; no else-if; `\typenum` is decimal only; constructor sugar
 (`\rgb{}`) is a deferred v3.1 item.
 
 | Version | Changes |
 |---|---|
 | v1 (gist era) | Text typing, basic keys, escapes |
 | v2 | Mouse (click/move/hold), `\delay`/`\pace` split, `\rep`, `\kdown`/`\kup`, line continuation, comments |
-| v3 | `\def` user macros; variables/`\set`/`\add`; `$ret`/`$timeout`; slots; `\ifnum`; `\val`; `\use`/`\call`/`\wait`; value-position interpolation rules; signature type system (incl. point/rect compounds and handle ownership); decoupled compile-time macro expansion (`MAX_MACRO_EXPAND` = 16) and runtime control structure nesting (`MAX_RUNTIME_NEST` = 8) |
+| v3 | `\def` user macros; variables/`\set`/`\add`; `$ret`/`$timeout`; slots; `\ifnum`; `\typenum{$var}` decimal render (replaces earlier experimental `\val{name}`); `\use`/`\call`/`\wait`; strict Name position vs Value position partition (hardware key/mouse arguments strictly take static symbols, no `$var`); signature type system (incl. point/rect compounds and handle ownership); decoupled compile-time macro expansion (`MAX_MACRO_EXPAND` = 16) and runtime control structure nesting (`MAX_RUNTIME_NEST` = 8) |

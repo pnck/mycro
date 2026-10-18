@@ -113,9 +113,16 @@ def test_typed_click():
     ])
 
 
-def test_typed_kdown_keycode():
-    bc = compile_ok("\\set{k}{0x28}\\kdown{$k}")
-    assert bc[3 + 7 :] == bytes([OP_KEY_DOWN, TAG_REG, 0, OP_END])
+def test_kdown_var_rejected():
+    err = compile_err("\\set{k}{0x28}\\kdown{$k}")
+    assert "kdown/kup takes a key name, not a variable" in err
+
+
+def test_mouse_btn_name_position():
+    err = compile_err("\\click{$L}")
+    assert "click/mdown/mup takes a button name, not a variable" in err
+    err = compile_err("\\click{invalid_btn}")
+    assert "Unknown mouse button: invalid_btn" in err
 
 
 def test_kup_imm_still_works():
@@ -160,14 +167,19 @@ def test_ifnum_all_ops_compile():
         compile_ok(f"\\set{{x}}{{1}}\\ifnum{{$x}}{{{op}}}{{2}}{{a}}")
 
 
-def test_val_emission():
-    bc = compile_ok("\\set{x}{1}\\val{x}")
+def test_typenum_emission():
+    bc = compile_ok("\\set{x}{1}\\typenum{$x}")
     assert bc[3 + 7 :] == bytes([OP_TYPEREG, 0, OP_END])
 
 
-def test_val_special_regs():
-    assert compile_ok("\\val{ret}")[3:] == bytes([OP_TYPEREG, REG_RET, OP_END])
-    assert compile_ok("\\val{timeout}")[3:] == bytes([OP_TYPEREG, REG_TIMEOUT, OP_END])
+def test_typenum_special_regs():
+    assert compile_ok("\\typenum{$ret}")[3:] == bytes([OP_TYPEREG, REG_RET, OP_END])
+    assert compile_ok("\\typenum{$timeout}")[3:] == bytes([OP_TYPEREG, REG_TIMEOUT, OP_END])
+
+
+def test_val_obsolete_and_typenum_requires_var():
+    assert "Unknown" in compile_err("\\set{x}{1}\\val{$x}")
+    assert "typenum requires a variable ($name)" in compile_err("\\set{x}{1}\\typenum{x}")
 
 
 # --- compile-time error matrix ---
@@ -223,25 +235,25 @@ def test_var_visible_inside_rep_body():
 # --- runtime semantics ---
 
 def test_run_set_and_val():
-    hid = run("\\set{x}{3}\\val{x}")
+    hid = run("\\set{x}{3}\\typenum{$x}")
     assert key_events(hid, keymap.digit_keycode("3"))
 
 
 def test_run_val_negative():
-    hid = run("\\set{x}{-2}\\val{x}")
+    hid = run("\\set{x}{-2}\\typenum{$x}")
     kc2 = keymap.digit_keycode("2")
     assert ("kp", keymap.MINUS) in hid.events
     assert ("kp", kc2) in hid.events
 
 
 def test_run_val_inline_text():
-    hid = run("\\set{n}{3}press \\val{n}")
+    hid = run("\\set{n}{3}press \\typenum{$n}")
     kc3 = keymap.digit_keycode("3")
     assert ("kp", kc3) in hid.events
 
 
 def test_run_counter_loop():
-    hid = run("\\set{i}{0}\\rep{3}{\\add{i}{1}}\\val{i}")
+    hid = run("\\set{i}{0}\\rep{3}{\\add{i}{1}}\\typenum{$i}")
     assert key_events(hid, keymap.digit_keycode("3"))
 
 
@@ -275,8 +287,8 @@ def test_run_move_with_reg():
     assert ("mm", 10, 10) in hid.events
 
 
-def test_run_kdown_with_reg():
-    hid = run("\\set{k}{0x28}\\kdown{$k}")
+def test_run_kdown_name():
+    hid = run("\\kdown{enter}\\kup{}")
     assert ("kp", keymap.ENTER) in hid.events
 
 
@@ -287,7 +299,7 @@ def test_run_click_with_reg_count():
 
 
 def test_run_add_i32_wraps():
-    hid = run("\\set{x}{0x7fffffff}\\add{x}{1}\\val{x}")
+    hid = run("\\set{x}{0x7fffffff}\\add{x}{1}\\typenum{$x}")
     kc2 = keymap.digit_keycode("2")
     # 0x7fffffff + 1 wraps to -2147483648: must render '-' and digits
     assert ("kp", keymap.MINUS) in hid.events
@@ -295,7 +307,7 @@ def test_run_add_i32_wraps():
 
 def test_disassemble_stage_b():
     m = Macro(MockHID())
-    bc, err = m.compile("\\set{x}{1}\\ifnum{$x}{=}{1}{a}\\val{x}")
+    bc, err = m.compile("\\set{x}{1}\\ifnum{$x}{=}{1}{a}\\typenum{$x}")
     assert err is None
     out = m.disassemble(bc)
     assert "SET $r0, 1" in out
@@ -305,7 +317,7 @@ def test_disassemble_stage_b():
 
 def test_dollar_escape():
     # spec rule 2: literal $ in text is \$ (a bare $ in text stays literal too)
-    bc = compile_ok("\$")
+    bc = compile_ok(r"\$")
     assert bc == H + bytes([OP_CHAR, ord("$"), OP_END])
     bc = compile_ok("a$b")
     assert bc == H + bytes([OP_CHAR, ord("a"), OP_CHAR, ord("$"), OP_CHAR, ord("b"), OP_END])

@@ -257,7 +257,7 @@ def test_index_html_examples_compile():
     from runtime import Runtime
     rt = Runtime()
     rt.register_ns("sys", {"free": ([], "int", lambda: 0)})
-    bc, err = Macro(MockHID(), rt).compile("\\call{sys.free}\\val{ret}")
+    bc, err = Macro(MockHID(), rt).compile("\\call{sys.free}\\typenum{$ret}")
     assert err is None, f"unexpected compile error: {err}"
 
 

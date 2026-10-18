@@ -248,8 +248,8 @@ def test_slot_unknown_ns():
     assert "Unknown signal" in compile_err("\\set{x}{0}\\add{x}{$nope.f}")
 
 
-def test_val_slot():
-    bc = compile_ok("\\val{go.code}")
+def test_typenum_slot():
+    bc = compile_ok("\\typenum{$go.code}")
     strs, code = header_strs(bc)
     tail = bc[code:]
     assert tail[0] == OP_READSLOT and tail[1] == 0  # temp reg 0 (no vars)
@@ -271,10 +271,9 @@ def test_slot_delay_emission_order():
     assert tail.index(OP_READSLOT) < tail.index(OP_SLEEP)
 
 
-def test_slot_kdown_emission_order():
-    bc = compile_ok("\\kdown{$go.k}")
-    tail = bc[header_strs(bc)[1]:]
-    assert tail.index(OP_READSLOT) < tail.index(OP_KEY_DOWN)
+def test_slot_kdown_rejected():
+    err = compile_err("\\kdown{$go.k}")
+    assert "kdown/kup takes a key name, not a variable" in err
 
 
 def test_slot_move_two_slots():
@@ -287,7 +286,7 @@ def test_slot_move_two_slots():
 def test_slot_ifnum_both_operands():
     rt = make_runtime()
     rt.fire_signal("go", {"a": 5, "b": 6})
-    hid = run("\\ifnum{$go.a}{<}{$go.b}{\\call{sys.free}\\val{ret}}", rt=rt)
+    hid = run("\\ifnum{$go.a}{<}{$go.b}{\\call{sys.free}\\typenum{$ret}}", rt=rt)
     for d in "12345":
         assert ("kp", keymap.digit_keycode(d)) in hid.events
 
@@ -299,7 +298,7 @@ def test_slot_call_two_slot_args():
                                      lambda a, b: captured.__setitem__("v", (a, b)) or a + b)})
     rt.register_signal("go")
     rt.fire_signal("go", {"x": 3, "y": 4})
-    hid = run("\\call{pair.sum2}{$go.x}{$go.y}\\val{ret}", rt=rt)
+    hid = run("\\call{pair.sum2}{$go.x}{$go.y}\\typenum{$ret}", rt=rt)
     assert captured["v"] == (3, 4)
     for d in "7":
         assert ("kp", keymap.digit_keycode(d)) in hid.events
@@ -314,7 +313,7 @@ def test_wait_ignores_stale_latch():
     # next fire only (slot values stay readable as last-published state)
     rt = make_runtime()
     rt.fire_signal("go", {"n": 1})
-    hid = run("\\wait{go}{0.05}\\val{timeout}", rt=rt)  # must time out
+    hid = run("\\wait{go}{0.05}\\typenum{$timeout}", rt=rt)  # must time out
     assert ("kp", keymap.digit_keycode("1")) in hid.events
 
 
@@ -331,7 +330,7 @@ def run(text, rt=None, hid=None):
 
 
 def test_run_call_ret_rendered():
-    hid = run("\\call{sys.free}\\val{ret}")
+    hid = run("\\call{sys.free}\\typenum{$ret}")
     # 12345 typed out digit by digit
     for d in "12345":
         assert ("kp", keymap.digit_keycode(d)) in hid.events
@@ -342,7 +341,7 @@ def test_slot_ref_dotted_signal_name():
     # LAST dot, so $net.msg.x reads field x of signal net.msg
     rt = make_runtime()
     rt.fire_signal("net.msg", {"x": 120})
-    hid = run("\\set{r}{$net.msg.x}\\val{r}", rt=rt)
+    hid = run("\\set{r}{$net.msg.x}\\typenum{$r}", rt=rt)
     for d in "120":
         assert ("kp", keymap.digit_keycode(d)) in hid.events
 
@@ -360,7 +359,7 @@ def test_run_call_str_arg_and_handle_flow():
 
     rt = make_runtime()
     rt.register_ns("img", {"load": (["str"], "tpl", load), "match": (["tpl"], "int", lambda h: 1)})
-    hid = run("\\call{img.load}{logo}\\call{img.match}{$ret}\\val{ret}", rt=rt)
+    hid = run("\\call{img.load}{logo}\\call{img.match}{$ret}\\typenum{$ret}", rt=rt)
     assert captured["name"] == "logo"
     # match(7) -> 1 rendered
     assert ("kp", keymap.digit_keycode("1")) in hid.events
@@ -375,13 +374,13 @@ def test_run_call_async_fn_awaited():
     rt.register_ns("img", {"load": (["str"], "tpl", lambda n: 0), "match": (["tpl"], "int", lambda h: 0),
                            "peek": (["int", "int"], lambda a, b: a + b)})
     rt.register_ns("test", {"slow": ([], "int", slow)})
-    hid = run("\\call{test.slow}\\val{ret}", rt=rt)
+    hid = run("\\call{test.slow}\\typenum{$ret}", rt=rt)
     assert ("kp", keymap.digit_keycode("4")) in hid.events
     assert ("kp", keymap.digit_keycode("2")) in hid.events
 
 
 def test_run_call_int_args_compute():
-    hid = run("\\call{img.peek}{20}{22}\\val{ret}")
+    hid = run("\\call{img.peek}{20}{22}\\typenum{$ret}")
     assert ("kp", keymap.digit_keycode("4")) in hid.events
     assert ("kp", keymap.digit_keycode("2")) in hid.events
 
@@ -392,7 +391,7 @@ def test_run_wait_fired():
     rt = make_runtime()
     hid = MockHID()
     m = Macro(hid, rt)
-    bc, err = m.compile("\\wait{go}\\val{timeout}")
+    bc, err = m.compile("\\wait{go}\\typenum{$timeout}")
     assert err is None
 
     async def scenario():
@@ -406,7 +405,7 @@ def test_run_wait_fired():
 
 
 def test_run_wait_timeout():
-    hid = run("\\wait{go}{0.05}\\val{timeout}")
+    hid = run("\\wait{go}{0.05}\\typenum{$timeout}")
     assert ("kp", keymap.digit_keycode("1")) in hid.events  # timed out
 
 
@@ -414,7 +413,7 @@ def test_run_wait_then_slot():
     rt = make_runtime()
     hid = MockHID()
     m = Macro(hid, rt)
-    bc, err = m.compile("\\wait{go}\\val{go.code}")
+    bc, err = m.compile("\\wait{go}\\typenum{$go.code}")
     assert err is None
 
     async def scenario():
@@ -428,7 +427,7 @@ def test_run_wait_then_slot():
 
 
 def test_run_slot_missing_field_is_zero():
-    hid = run("\\val{go.code}")
+    hid = run("\\typenum{$go.code}")
     assert ("kp", keymap.digit_keycode("0")) in hid.events
 
 
@@ -456,9 +455,9 @@ def test_run_abort_during_wait():
 
 def test_disassemble_stage_c():
     m = Macro(MockHID(), make_runtime())
-    bc, err = m.compile("\\call{img.peek}{1,2}\\wait{go}{3}\\val{go.code}")
+    bc, err = m.compile("\\call{img.peek}{1,2}\\wait{go}{3}\\typenum{$go.code}")
     # note: ext args are separate brace groups, not comma
-    bc, err = m.compile("\\call{img.peek}{1}{2}\\wait{go}{3}\\val{go.code}")
+    bc, err = m.compile("\\call{img.peek}{1}{2}\\wait{go}{3}\\typenum{$go.code}")
     assert err is None
     out = m.disassemble(bc)
     assert "CALL img.peek(1, 2)" in out
