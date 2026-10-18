@@ -638,6 +638,22 @@ export function initPixelAssist(): void {
 		setTimeout(() => btn.classList.remove("pa-key-active"), 140);
 	}
 
+	function copyText(text: string): void {
+		if (!text) return;
+		if (navigator.clipboard?.writeText) {
+			navigator.clipboard.writeText(text).catch(() => {});
+		}
+		try {
+			const el = document.createElement("textarea");
+			el.value = text;
+			el.style.cssText = "position:fixed;opacity:0";
+			document.body.appendChild(el);
+			el.select();
+			document.execCommand("copy");
+			document.body.removeChild(el);
+		} catch {}
+	}
+
 	function onKeyDown(e: KeyboardEvent) {
 		if (!isOverlayOpen || shieldBlocked) return;
 		const target = e.target as HTMLElement | null;
@@ -664,16 +680,16 @@ export function initPixelAssist(): void {
 			const targetX = mode === "point" ? point.x : region.x + (region.w >> 1);
 			const targetY = mode === "point" ? point.y : region.y + (region.h >> 1);
 			const [r, g, b] = getPixel(targetX, targetY);
-			navigator.clipboard.writeText("0x" + toHex(r, g, b)).catch(() => {});
+			copyText("0x" + toHex(r, g, b));
 			flashKeyActive(paCopyHexDslBtn);
 			e.preventDefault();
 		} else if (key === "x" && !e.metaKey && !e.ctrlKey) {
 			const coords = mode === "point" ? `${point.x},${point.y}` : `${region.x},${region.y},${region.w},${region.h}`;
-			navigator.clipboard.writeText(coords).catch(() => {});
+			copyText(coords);
 			flashKeyActive(paCopyCoordBtn);
 			e.preventDefault();
 		} else if (key === "s" && !e.metaKey && !e.ctrlKey) {
-			navigator.clipboard.writeText(paSnippetBox.value).catch(() => {});
+			copyText(paSnippetBox.value);
 			flashKeyActive(paCopySnippetBtn);
 			e.preventDefault();
 		} else if (mode === "region" && img && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
@@ -819,28 +835,33 @@ export function initPixelAssist(): void {
 	// Copy & Snippet Action Listeners
 	paCopyCoordBtn?.addEventListener("click", () => {
 		const coords = mode === "point" ? `${point.x},${point.y}` : `${region.x},${region.y},${region.w},${region.h}`;
-		navigator.clipboard.writeText(coords).catch(() => {});
+		copyText(coords);
+		flashKeyActive(paCopyCoordBtn);
 	});
 	paCopyHexDslBtn?.addEventListener("click", () => {
 		const targetX = mode === "point" ? point.x : region.x + (region.w >> 1);
 		const targetY = mode === "point" ? point.y : region.y + (region.h >> 1);
 		const [r, g, b] = getPixel(targetX, targetY);
-		navigator.clipboard.writeText("0x" + toHex(r, g, b)).catch(() => {});
+		copyText("0x" + toHex(r, g, b));
+		flashKeyActive(paCopyHexDslBtn);
 	});
 	paCopyHexCssBtn?.addEventListener("click", () => {
 		const targetX = mode === "point" ? point.x : region.x + (region.w >> 1);
 		const targetY = mode === "point" ? point.y : region.y + (region.h >> 1);
 		const [r, g, b] = getPixel(targetX, targetY);
-		navigator.clipboard.writeText("#" + toHex(r, g, b)).catch(() => {});
+		copyText("#" + toHex(r, g, b));
+		flashKeyActive(paCopyHexCssBtn);
 	});
 	paCopyRgbBtn?.addEventListener("click", () => {
 		const targetX = mode === "point" ? point.x : region.x + (region.w >> 1);
 		const targetY = mode === "point" ? point.y : region.y + (region.h >> 1);
 		const [r, g, b] = getPixel(targetX, targetY);
-		navigator.clipboard.writeText(`rgb(${r}, ${g}, ${b})`).catch(() => {});
+		copyText(`rgb(${r}, ${g}, ${b})`);
+		flashKeyActive(paCopyRgbBtn);
 	});
 	paCopySnippetBtn?.addEventListener("click", () => {
-		navigator.clipboard.writeText(paSnippetBox.value).catch(() => {});
+		copyText(paSnippetBox.value);
+		flashKeyActive(paCopySnippetBtn);
 	});
 
 	paInsertSnippetBtn?.addEventListener("click", () => {
