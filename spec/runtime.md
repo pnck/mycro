@@ -24,19 +24,21 @@ The runtime establishes two orthogonal invariants separating external projection
    - **Semantic Role**: Represents an external projection channel triggered exclusively by the outside world (host Protocol v1, OBS capture providers, network push).
    - **Statelessness**: Signals maintain no persistent storage. They cannot be read, cannot participate in arithmetic, and cannot be awaited directly.
 2. **Slots are Strictly Value-Category Stateful Receptors**:
-   - **Syntactic Form**: Whenever Slot semantics appear, **they MUST be variables mandatory-prefixed with `$slot.`** (canonical form: `$slot.<sig>.<field>`).
+   - **Syntactic Form**: Whenever Slot semantics appear, **they MUST be variables mandatory-prefixed with `$slot.`** (canonical form: `$slot.<sig>.<field>` or delimited `${slot.<sig>.<field>}`).
    - **No-Shorthand Law**: Slot field names MUST be written explicitly in source code. Because multi-level identifiers split at the last dot, an omitted form like `$slot.<sig>` resolves to signal `<prefix>` + field `<last_segment>`, conflicting with the shorthand intent. A single deterministic rule outranks convenience.
    - **Default Projection Rule**: When an external signal `<sig>` is emitted without specific sub-fields (e.g., a single scalar integer or notification), the **default projection field is uniformly mapped to `val`** (`$slot.<sig>.val`). When emitted with a key-value dictionary, payloads project to corresponding `$slot.<sig>.<k>` fields.
    - **Multi-Level Splitting**: After stripping `$slot.`, the remainder is split at the LAST dot: signal channel is everything to the left, and field identifier is the last segment (e.g., `$slot.sys.net.msg.val` $\rightarrow$ signal `sys.net.msg`, field `val`).
    - **Event Latch Storage Model**: Each `(signal, field)` slot maintains:
      - `val`: Latest scalar payload (`i32`, initialized to 0).
-     - `pending`: Unconsumed event arrival flag (`bool`, initialized to `False`). External signal projections atomically set `pending = True` and wake waiting coroutines. **The flag is per-(signal, field)**; a multi-field projection sets the flag on every field it writes.
+     - `pending`: Unconsumed event arrival flag (`i32` scalar flag: `1` = event pending, `0` = idle/consumed; initialized to `0`). External signal projections atomically set `pending = 1` and wake waiting coroutines. **The flag is per-(signal, field)**; a multi-field projection sets the flag on every field it writes.
 3. **The Sole Waitable Receptor Law**:
    - **Receptor slots starting with `$slot.` are the ONLY valid asynchronous entities eligible for waiting (`\wait`)**. Guard predicates observe external asynchronous state exclusively through `$slot.` receptors.
-   - General-purpose registers (`$var`) represent private synchronous state inside the single-threaded execution context; attempting to `\wait` on `$var` is statically rejected.
-   - **Lossless Event Latch Waiting**: Executing `\wait[timeout]{ $slot.<sig>.<field> }`:
-     - If `slot.pending == True` (prior projection unconsumed): Consumes the event immediately, resets `slot.pending = False`, and returns with zero delay, eliminating race-condition event loss.
-     - If `slot.pending == False`: Suspends the coroutine until the next projection sets `pending = True` (or until timeout); upon wake-up, consumes the flag and resumes execution.
+   - General-purpose registers (`$var`, `${var}`) represent private synchronous state inside the single-threaded execution context; attempting to `\wait` on `$var` is statically rejected.
+   - **Lossless Event Latch Waiting**: Executing `\wait[timeout]{ $slot.<sig>.<field> }` (or delimited `${slot.<sig>.<field>}`):
+     - If `slot.pending == 1` (prior projection unconsumed): Consumes the event immediately, resets `slot.pending = 0`, writes `0` to special status register `0xFE` (`$timeout`), and returns with zero delay, eliminating race-condition event loss.
+     - If `slot.pending == 0`: Suspends the coroutine until the next projection sets `pending = 1` (or until `timeout` expires). Upon projection arrival, consumes the event (setting `pending = 0`), writes `0` to `$timeout`, and resumes execution. If `timeout` expires before an event arrives, leaves `slot.pending` unchanged, writes `1` to `$timeout`, and resumes.
+   - **Timeout Decorator Range**: Optional `[timeout]` duration in brackets ($0 \le timeout \le 4294967295\text{ ms}$, `u32 LE`; 0 or omitted = indefinite wait).
+   - **Status Reporting Channel**: Status is written exclusively to special register `0xFE` (`$timeout` / `${timeout}`).
 
 ### 1.2 Unidirectional Asynchronous Flow
 
@@ -84,7 +86,7 @@ Platform implementations:
 ### 3.2 `net` Namespace (Network Communication)
 
 - **`net.send{str_tag}`**: Broadcasts a `net.msg` frame containing `str_tag` to all authenticated Protocol v1 clients. Returns recipient count in `$ret`.
-- **`net.msg` Signal**: Triggered when a host client transmits an `event.push` frame, projecting into `$slot.net.msg.*` and latching `pending = True`. Macros synchronize via `\wait{ $slot.net.msg.val }`.
+- **`net.msg` Signal**: Triggered when a host client transmits an `event.push` frame, projecting into `$slot.net.msg.*` and latching `pending = 1`. Macros synchronize via `\wait{ $slot.net.msg.val }`.
 
 ### 3.3 `img` Namespace (Vision & Telemetry)
 
@@ -107,7 +109,7 @@ Initiates continuous push telemetry from the capture provider:
 > **Protocol Delta Precondition**: This subscription mechanism requires Protocol v1 to gain companion frame types (subscription request, telemetry push frames, and lease management semantics). Until [docs/protocol.md](protocol.md) gains the corresponding specification chapter, this clause states target semantics only and does not constitute an implementable specification.
 
 #### 3. Slot Addressing & Coordination
-- **Slot Storage**: Arriving telemetry frames project into signal `img.<name>`, writing the sampled scalar into `$slot.img.<name>.val` and setting `pending = True`.
+- **Slot Storage**: Arriving telemetry frames project into signal `img.<name>`, writing the sampled scalar into `$slot.img.<name>.val` and setting `pending = 1`.
 - **Zero-Copy Reading**: Macro code reads the latest sample directly via `$slot.img.<name>.val` (initialized to 0).
 - **Frame Synchronization**: Awaited via `\wait{ $slot.img.<name>.val }`.
 
@@ -120,13 +122,17 @@ Initiates continuous push telemetry from the capture provider:
    - When a register holding a Handle is overwritten or assigned, the old Handle is automatically unregistered and freed.
    - Variable assignment (`\set{b}{$a}`) transfers resource ownership (Move semantics; source register reverts to plain integer).
    - If an extension minted a handle and `$ret` is updated, ownership is claimed; unhandled orphan resources are reclaimed immediately.
-3. **Deterministic Cleanup**: Upon macro completion, abort, or unhandled exception, `runtime.release_all()` executes unconditionally in a `finally` block, reclaiming all active Handles.
+3. **Handle Type Invariants & Prohibitions**:
+   - **Arithmetic Invariance**: Resource handles cannot participate in arithmetic; passing a handle to `\add` or `\sub` triggers an immediate static compile error.
+   - **Keystroke Rendering Invariance**: Resource handles cannot be rendered as keystroke numbers; passing a handle to `\typenum` triggers an immediate static compile error (`typenum: cannot render a <type> handle`).
+4. **Deterministic Cleanup**: Upon macro completion, abort, or unhandled exception, `runtime.release_all()` executes unconditionally in a `finally` block, reclaiming all active Handles.
 
 ---
 
 ## 5. Compile-Time Const Store
 
 Compile-time constants too large or structured for operand encoding (e.g., `\rect` pixel literals) are preprocessed by the compiler into a middleware **const store** (`add_const`/`const_entry`), reset on each compilation.
-- The bytecode references entries by integer ID via `sys.const <cid>`, materializing standard Handles.
-- Ownership rules (claim, move, overwrite-release, exit-release) apply unchanged.
-- Any compilation request received while a macro is actively running MUST be rejected as busy (`state: busy`) to prevent clobbering active constants.
+- **Bulk Const Store Materialization (`\rect`)**: The bytecode references entries by integer ID via `sys.const <cid>`, materializing standard snapshot Handles at zero heap allocation overhead during execution.
+- **Scalar Folded Constants (`\rgb`)**: In contrast to bulk constant structures, static scalar constructors such as packed RGB colors (`\rgb{r, g, b}`) fold at compile time directly into signed 24-bit integer scalar immediates (`TAG_IMM (0)`), incurring zero const store allocation and zero runtime construction bytecode.
+- **Ownership Rules**: Handle ownership rules (claim, move, overwrite-release, exit-release) apply to materialized constant handles unchanged.
+- **Concurrency Barrier**: Any compilation request received while a macro is actively running MUST be rejected as busy (`state: busy`) to prevent clobbering active constants.

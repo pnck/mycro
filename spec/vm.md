@@ -46,8 +46,8 @@ The MYCRO VM is a linear bytecode register machine. Execution state per task:
 - **Addressing Ceiling**: Register operands in bytecode are `u8` addresses (architectural ceiling of 256 registers). Addresses `0xF0`–`0xFF` are reserved for special registers.
 - **Special Registers**:
   - `0xFD`: Reserved boundary register (never stores).
-  - `0xFE`: `$timeout` (written exclusively by `0x29 WAIT`; 1 on timeout, 0 on event arrival).
-  - `0xFF`: `$ret` (written exclusively by `0x2A CALL_EXT`; 0 if callee returns None).
+  - `0xFE`: `$timeout` (also accessed as `${timeout}`; written exclusively by `0x29 WAIT`; 1 on timeout, 0 on event arrival).
+  - `0xFF`: `$ret` (also accessed as `${ret}`; written exclusively by `0x2A CALL_EXT`; 0 if callee returns None).
 - **Initialization**: All general-purpose registers are zeroed at execution start.
 
 ---
@@ -73,7 +73,7 @@ u8 tag:  0 = Immediate (i32 LE, 4 bytes)
 ```
 
 > [!NOTE]
-> **Operand Tag 3-Variant Closure**: Standard VM opcodes permanently consist of the above 3 variants. They do NOT introduce a 4th slot tag. When a command consumes `$slot.<sig>.<field>` in a Value position, the compiler emits `0x28 OP_READSLOT` immediately preceding the host instruction to load the slot value into an ephemeral register, passing `tag = 1 (REG)` to the host opcode.
+> **Operand Tag 3-Variant Closure**: Standard VM opcodes permanently consist of the above 3 variants. They do NOT introduce a 4th slot tag. When a command consumes `$slot.<sig>.<field>` (or delimited `${slot.<sig>.<field>}`) in a Value position, the compiler emits `0x28 OP_READSLOT` immediately preceding the host instruction to load the slot value into an ephemeral register, passing `tag = 1 (REG)` to the host opcode.
 > The only exception is the internal predicate descriptor of `0x25 GUARD_ENTER`, which defines its own 2-bit tag field (`0: IMM, 1: REG, 2: SLOT`) for zero-overhead delay-slice polling (see [§4.1](#41-compact-predicate-descriptor-specification-pred_descriptor)).
 
 ---
@@ -89,7 +89,7 @@ u8 tag:  0 = Immediate (i32 LE, 4 bytes)
 | `0x05` | `MCLICK` | `typed(u8 btn), typed(u16 count)` | Mouse click (`btn`: 1=L, 2=R, 4=M, 8=B, 16=F). |
 | `0x06` | `MMOVE` | `typed(i16 dx), typed(i16 dy)` | Relative mouse move. |
 | `0x07` | `PACE` | `typed(u16 ms)` | Configure inter-action pacing delay. Strictly bounded to `u16` ($0..65535\text{ ms}$). |
-| `0x08` | `CONSUMER_KEY` | `typed(u16 usage_id)` | Single Consumer Control pulse (USB HID Page 0x0C, e.g., volume, playback, brightness). |
+| `0x08` | `CONSUMER_KEY` | `typed(u16 usage_id)` | Single Consumer Control pulse (USB HID Page 0x0C, e.g., volume, playback, brightness) via `hid.consumer_pulse()`. |
 | `0x10` | `LOOP` | `typed(u8 count), u16 len` | Push loop frame; `len` = body byte length including `LOOP_END`. Count 0 skips. |
 | `0x11` | `LOOP_END` | — | Decrement top loop counter; jump back to loop body start if $> 0$, else pop frame. |
 | `0x12` | `KEY_DOWN` | `typed(u8 keycode)` | Press and hold key (keycode 0 = release all). |
@@ -104,9 +104,9 @@ u8 tag:  0 = Immediate (i32 LE, 4 bytes)
 | `0x25` | `GUARD_ENTER` | `u16 abort_off, u8 header, [u16 throttle_ms], [pred_descriptor]` | Push guard into flat slot; activate continuous invariant monitoring. |
 | `0x26` | `GUARD_EXIT` | — | Pop current guard slot; deactivate invariant monitoring. |
 | `0x28` | `READSLOT` | `u8 reg, u8 sig_str_idx, u8 field_str_idx` | Read slot value into register (mediated). |
-| `0x29` | `WAIT` | `u8 sig_str_idx, u8 field_str_idx, typed(u32 timeout_ms)` | Suspend until slot `$slot.<sig>.<field>` receives projection (or consumes pending event) or times out; writes status to `$timeout`. |
+| `0x29` | `WAIT` | `u8 sig_str_idx, u8 field_str_idx, typed(u32 timeout_ms)` | Suspend until slot `$slot.<sig>.<field>` receives projection (or consumes pending event) or times out; writes status (0=arrival, 1=timeout) to `$timeout`. |
 | `0x2A` | `CALL_EXT` | `u8 ns, u8 fn, u8 argc, argc × typed` | Invoke extension function; result written to `$ret` (mediated). |
-| `0x2B` | `TYPEREG` | `u8 reg` | Type register decimal integer value as ASCII keystrokes with active pacing. |
+| `0x2B` | `TYPEREG` | `u8 reg` | Type register decimal integer value as ASCII keystrokes with active pacing (DSL `\typenum{$var}` / `\typenum{${var}}`). |
 | `0xFF` | `END` | — | Halt execution successfully. |
 
 ### 4.1 Compact Predicate Descriptor Specification (`pred_descriptor`)
@@ -145,6 +145,21 @@ Operand payload byte layouts:
 - **Zero Redundant Length Headers**: Deserialization is deterministically governed by `triplet_cnt` and operand tags; `ip` advances directly to `<protected_body>` without an outer `pred_len`.
 - **Zero Runtime Deserialization Overhead**: Deserialized once upon `GUARD_ENTER` into a fixed in-memory tuple `(throttle_ms, last_check_ms, abort_ip, loop_depth, parsed_pred)` for zero-unpacking slice re-evaluation.
 
+### 4.2 Guarded Block Bytecode Lowering Pattern
+
+`\guarded` blocks are lowered into a pair of `GUARD_ENTER` and `GUARD_EXIT` framing instructions:
+
+```
+GUARD_ENTER abort_off, header, [throttle_ms], [pred_descriptor]
+<bytecode for protected_body>
+GUARD_EXIT
+[JMP skip_abort_off]    # Emitted only if on_abort is present
+<bytecode for on_abort>
+end_guarded:
+```
+- `abort_off`: Relative forward jump offset pointing to `<bytecode for on_abort>` (or `end_guarded` if `on_abort` is omitted).
+- `skip_abort_off`: Emitted only when `on_abort` is present to skip the abort handler upon normal completion of `protected_body`.
+
 ---
 
 ## 5. Predicate Lowering & `OP_BRA` Offset Semantics
@@ -163,6 +178,12 @@ Operand payload byte layouts:
    - `<=` (3) $\leftrightarrow$ `>` (4)
 
 Lowering requires zero temporary registers and zero runtime stack allocations; relative offsets are resolved via backpatching.
+
+### 5.3 Commutative Normalization & Ephemeral Slot Pre-Loading
+During leaf triplet emission:
+1. **Commutative Operand Swapping**: If `lhs` is an immediate literal and `rhs` is a variable/register, operands are swapped and the relational operator is inverted to ensure the register occupies the `lhs` position in `OP_BRA`.
+2. **Ephemeral Slot Pre-Loading**: If an operand references `$slot.<sig>.<field>` (or delimited `${slot.<sig>.<field>}`), the compiler emits `READSLOT` to an ephemeral register immediately prior to `OP_BRA`.
+3. **Static Constant Elimination**: If both operands are compile-time constants, the condition is evaluated statically (dead branches eliminated).
 
 ---
 
@@ -216,8 +237,8 @@ runtime.reg_write(dst: u8, src: u8 | None)
 | `ADD` | reg | `None` |
 | `SUB` | reg | `None` |
 | `READSLOT` | reg | `None` |
-| `WAIT` | `0xFE` (`$timeout`) | `None` |
-| `CALL_EXT` | `0xFF` (`$ret`) | `None` |
+| `WAIT` | `0xFE` (`$timeout` / `${timeout}`) | `None` |
+| `CALL_EXT` | `0xFF` (`$ret` / `${ret}`) | `None` |
 | Execution start (zeroing) | all general regs | `None` |
 
 Execution start and every exit path additionally invoke `runtime.release_all()`.
