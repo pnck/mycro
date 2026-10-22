@@ -38,18 +38,17 @@ All runtime execution horizons and resource allocations are bounded by static co
 
 ## 2. Lexical Schema & Primitive Tokens
 
-The MYCRO DSL character stream is partitioned into six closed, deterministic lexical primitive schemas:
+The MYCRO DSL character stream is partitioned into seven closed, deterministic lexical primitive schemas:
 
 1. **Macro Commands (`\cmd`)**: Backslash `\` followed by an alphanumeric identifier sequence (e.g., `\delay`, `\rep`, `\enter`, `\ctrl+c`, user-defined macro `\foo`). Parsed by the compiler to emit corresponding VM opcodes or trigger compile-time macro inlining.
 2. **Variable Sigil (`$`)**: Dollar sign `$` followed by an identifier reference (`$var`, `$ret`, `$timeout`, `$slot.<sig>.<field>`). Denotes dynamic value evaluation. Categorized into local general-purpose registers (`$var`), system read-only registers (`$ret`, `$timeout`), and **stateful receptor slots (mandatory-prefixed with `$slot.`**, e.g., `$slot.<sig>.<field>`).
-3. **Numeric Literals**: Decimal integers (`120`, `-15`), hexadecimal constants (`0xFF`, `0xFF00FF`), and dimensioned time literals (`500ms`, `0.5s`). Static numeric values folded in-place during lexing into unified `i32` integer scalars.
-4. **Brace Pairs (`{}`)**: Balanced enclosing pairs `{ ... }`. Syntactic scope delimiters, classified as either an Executable Code Block or an Argument Group based on host command signature.
+3. **Numeric Literals**: Decimal integers (`120`, `-15`), hexadecimal constants (`0xFF`, `0xFF00FF`), and dimensioned time literals (`500ms`, `0.5s`). Static numeric values folded in-place during lexing into unified `i32` integer scalars (see §2.1).
+4. **Brace Pairs (`{}`)**: Balanced enclosing pairs `{ ... }`. Syntactic scope delimiters, classified as either an Executable Code Block or an Argument Group based on host command signature (see §4).
 5. **Bracket Pairs (`[]`)**: Balanced enclosing pairs `[ ... ]`. Optional configuration modifiers or decorators (e.g., `\def{name}[argc]{body}`, `\guarded[throttle]{...}`, `\wait[timeout]{...}`).
 6. **Literal Keystroke Text**: Raw printable ASCII characters (codes 32–126) located in executable text positions. Emitted as physical keystrokes targeting the host operating system.
-
-- **Comments and Shebang Directives (`\#`, `\#!`)**:
-  - Standard comments begin with `\#` and span to the end of the line; silently absorbed by the lexical scanner.
-  - Compiler configuration directives follow Unix shebang conventions, declared via `\#!syntax: <preset>` in leading comment lines of the script (see §5).
+7. **Comments and Shebang Directives (`\#`, `\#!`)**:
+   - Standard comments begin with `\#` and span to the end of the line; silently absorbed by the lexical scanner.
+   - Compiler configuration directives follow Unix shebang conventions, declared via `\#!syntax: <preset>` in leading comment lines of the script (see §3).
 
 ### 2.1 Numeric Representation & Integer Folding
 
@@ -75,107 +74,18 @@ DimLiteral      ::= DecLiteral "ms" | [0-9]+ ("." [0-9]+)? "s"
 | **Second Time Dimension** | `0.5s`, `1.2s`, `5s` | $f(\text{num}) = \lfloor \text{float}(\text{num}) \times 1000 + 0.5 \rfloor$ | `500`, `1200`, `5000` | Delays, guard throttling, timeout values |
 
 #### Folding Invariants & Boundary Constraints
-1. **Unified Integer Domain & Overflow Checking**: All constant folding arithmetic is calculated in 64-bit integer space. The folded scalar must fall strictly within $[-2^{31}, 2^{31} - 1]$. Values exceeding this range trigger immediate static compilation errors.
+1. **Unified Integer Domain & Overflow Checking**: Numeric literals and folded constants evaluate to mathematical integers. The evaluated scalar must fall strictly within the signed 32-bit range $[-2^{31}, 2^{31} - 1]$. Values outside this range constitute an arithmetic overflow and trigger an immediate static compilation error.
 2. **Mandatory Suffix for Fractional Quantities**: Any literal containing a decimal point MUST explicitly carry the `s` dimensional suffix (e.g., `0.5s`). Dimensionless values must be pure integers.
 3. **Rounding Semantics**: Sub-millisecond fractions are rounded using half-up rounding (e.g., `0.0004s` folds to `0ms`, `0.0006s` folds to `1ms`).
-4. **Physical Range Assertions**: Time literals with `ms` or `s` suffixes are purely frontend syntax sugar for integer constant folding. Underlying opcodes strictly enforce physical parameter limits (e.g., `\delay{70s}` folds to $70000 > 65535$, failing `u16` assertions; `\rep{300}` fails `u8` bounds).
+4. **Physical Range Assertions (Decoupled from Lexing)**: The lexical scanner unifies all numeric and time literals into signed `i32` mathematical scalars. The validation of whether an immediate value satisfies the physical width of its target VM opcode is decoupled from lexing and enforced as **Physical Range Assertions**, normatively specified in **§5.2 (Physical Word-Length Contracts)** and each command's dedicated section (§6, §7, §9). Folded values exceeding target opcode bounds (e.g., `\delay{70s}` exceeding `u16`, `\rep{300}` exceeding `u8`) trigger immediate static compilation errors.
 
 ---
 
-## 3. Document Grammar & The Binary Brace Taxonomy
+## 3. Preamble Directives & Document Layout Modes (`\#!syntax`)
 
-Commands sequentially consume trailing brace pairs `{}` according to their static signatures. Every brace pair `{}` belongs to one of two mutually exclusive structures:
+Preamble directives configure the compiler's lexical scanner behavior prior to code execution.
 
-### 3.1 Executable Code Blocks (`{ body }`)
-An executable sub-stream of macro code whose internal parsing is isomorphic to the top-level macro stream (printable ASCII characters emit keystrokes; backslashes trigger macro commands).
-Host contexts: Bodies of control flow structures and user macro definitions (`{ body }` in `\rep{N}{ body }`, `{ then }` and `{ else }` in `\if`, `\def{name}[argc]{ body }`, and `{ body }` and `{ on_abort }` in `\guarded`).
-
-### 3.2 Argument Groups & The Structural Exclusivity Law
-Passes named, numeric, or conditional arguments into the host command.
-**The Structural Exclusivity Law (`{A}{B} \ne {A, B}`)**: The brace structure expected by a command is statically determined by its signature contract; the two forms cannot be interchanged:
-- **Separate Argument Groups `{A}{B}`**: Positional arguments reside in separate, adjacent brace pairs, each bound to an independent parameter category (e.g., `\set{var}{val}`, `\add{var}{val}`, `\sub{var}{val}`).
-- **Compound Argument Groups `{A, B}`**: A single brace pair contains multiple comma-separated arguments belonging to the same functional tuple (e.g., `\move{dx, dy}`, `\click{btn, count}`).
-- **Extension Call Form (`\call`)**: The initial group is `{ns.fn}`; subsequent brace structures are consumed according to the registered signature of the target extension function.
-- **Compound Structures (Argument Group + Code Block)**: Argument groups strictly precede code blocks (e.g., `\rep{count}{ body }`, `\if{pred}{ then }`).
-
-### 3.3 Optional Decorator Brackets (`[]`)
-Optional scalar configuration written in literal square brackets.
-**Position rule**: A decorator sits immediately adjacent to what it modifies:
-- Modifying command behavior: Leads before mandatory groups (`\guarded[50ms]{...}`, `\wait[5s]{...}`).
-- Modifying a specific argument: Follows that argument group (`\def{name}[argc]{body}`).
-
-> [!NOTE]
-> 1. `[...]` in signatures always denotes literal square brackets. Inside EBNF blocks, `[ x ]` denotes standard grammar optionality.
-> 2. Optional code blocks (`else`, `on_abort`) are bare `{}` trailing blocks, NOT bracket decorators.
-> 3. Omissible elements inside a compound argument group (e.g., `count` in `\click{btn, count}`) belong to the argument group itself.
-
-### 3.4 Text Blocks (`\text{}` … `\endtext{}`)
-
-```ebnf
-TextBlock ::= "\text" ( "{}" | Newline ) Payload "\endtext{}"
-Payload   ::= (* any character sequence not containing "\endtext{}"; zero escapes, emitted verbatim *)
-```
-
-- **Form**: A text block is formed by the pair of instructions `\text{}` and `\endtext{}` (the empty `{}` is part of each instruction's signature and emits no keystrokes). All characters between them constitute literal payload.
-- **Opening Forms**:
-  - `\text{}`: Payload begins immediately after `}` (an immediately following space emits Space; an immediately following newline emits Enter).
-  - `\text` immediately followed by newline: Heredoc form; that newline is part of the payload (emits Enter).
-- **Lexical Closure (Zero Escapes)**: Every character in the payload is emitted verbatim, independent of the active layout mode. No macro commands, comments, escapes, or `$` interpolations are recognized.
-- **Termination**: The scanner searches for the literal string `\endtext{}` without backtracking. Unclosed text blocks raise an `Unterminated text block` compile error.
-- **Lexical Protection**: `text` and `endtext` are reserved built-in command names. `\endtext{}` outside a text block is a compile error.
-- **Full Immunity in `\def`**: Parameter text inside `\def{g}[1]{\text{}#1\endtext{}}` is passed directly into the payload without brace parsing.
-
----
-
-## 4. Parameter Categories & Static Contracts
-
-```ebnf
-SlotRef    ::= "$slot." DottedName
-DottedName ::= Identifier "." Identifier
-```
-
-Signal names may contain dots; split at the LAST dot: signal channel is everything to the left of the last dot, and field identifier is the last segment (e.g., `$slot.sys.net.msg.val` $\rightarrow$ signal `sys.net.msg`, field `val`).
-
-### Parameter Categories
-
-| Parameter Category | Syntactic Form & Evaluation Rules | Compilation & Runtime Mapping |
-|---|---|---|
-| **Value Category (Value)** | Dynamic variables, numeric immediates, or compile-time constructors:<br>• Variables: Local registers (`$var`), system registers (`$ret`, `$timeout`), receptor slots (`$slot.<sig>.<field>`);<br>• Static literals: Decimal, hex, or time literals (`500ms`, `0.5s`), folded at lex time to `i32`;<br>• Constructors: Packed RGB color `\rgb{r, g, b}`, pixel rectangle `\rect{...}`. | **Physical 3-Tag Closed Operand Architecture**:<br>• Immediate literal $\rightarrow$ `TAG_IMM (0)` (`i32 LE`);<br>• Register $\rightarrow$ `TAG_REG (1)` (`u8 reg`);<br>• Static string $\rightarrow$ `TAG_STR (2)` (`u8 str_idx`, `\call` only);<br>• **Receptor slots (`$slot...`)** $\rightarrow$ Pre-instruction desugaring: compiler emits `0x28 OP_READSLOT` before the host instruction to load slot into an ephemeral register, passing `TAG_REG`. In `\guarded` descriptors, slots are encoded natively via the `SLOT` descriptor tag. |
-| **Name Category (Name)** | Static symbolic identifiers: Key names, mouse buttons, namespaces, signal channel names, or variable names. Bare identifiers, strictly prohibiting `$`. | Statically resolved at compile time to usage IDs or string indices (`u8`). |
-| **Predicate Category (Predicate)** | Conditional decision structures: Atomic triplets `{lhs, op, rhs}` or composite logic trees `\all` / `\any` (see §9). | Directly lowered by the compiler into forward short-circuit jump sequences (`OP_BRA`). |
-
-### 4.1 Operand Tags & Slot Lowering Discipline
-1. **Physical 3-Tag Closure (No 4th `TAG_SLOT`)**: Standard VM instructions permanently retain exactly three physical operand tags (`TAG_IMM=0`, `TAG_REG=1`, `TAG_STR=2`).
-2. **Preceding `OP_READSLOT` Desugaring**: When DSL code references a receptor slot variable in a standard Value position (e.g., `\delay{$slot.t.val}`, `\set{x}{$slot.v.val}`), the compiler emits:
-   `0x28 OP_READSLOT temp_reg, sig_str_idx, field_str_idx`
-   immediately prior to the host instruction, and passes `TAG_REG temp_reg`.
-3. **Native Slot in Guard Descriptors (`\guarded`)**: `0x25 GUARD_ENTER` embeds its own 2-bit operand tag (`0: IMM, 1: REG, 2: SLOT`) directly in its predicate descriptor so high-frequency delay-slice polling can inspect slots without repeated bytecode decoding.
-
-### 4.2 Physical Word-Length Contracts
-
-| Target Instruction | Underlying Opcode Width | Valid Immediate Interval | Semantic Invariants & Out-of-Range Handling |
-|---|---|---|---|
-| `\delay{t}`, `\pace{t}` | `u16` (2 bytes LE) | $[0, 65535]\text{ ms}$ | Hardware timing base. Durations $> 65535\text{ ms}$ must be expressed via `\rep` loops (rejected by static range assertions). |
-| `\rep{N}` | `u8` (1 byte) | $[0, 255]$ | Loop counter. Immediates $> 255$ trigger `rep count out of u8 range`. |
-| `\move{dx, dy}` | `i16` (2 bytes LE) | $[-32768, 32767]$ | Relative mouse movement offsets. |
-| `\wait[timeout]{ $slot.<sig>.<field> }` | `u32` (4 bytes LE) | $[0, 4294967295]\text{ ms}$ | Timeout duration (0 or omitted = indefinite; maps to `OP_WAIT u8 sig, u8 field, typed(u32)`). |
-| `\set{var}{val}`, `\add{var}{val}`, `\sub{var}{val}` | `i32` (4 bytes LE) | $[-2^{31}, 2^{31} - 1]$ | General-purpose scalar registers. |
-
-### 4.3 Static Compile Diagnostics
-
-- **Character Set & Delimiters**: Non-printable ASCII (outside 32–126) and unmatched delimiters (`{`, `}`, `[`, `]`, `${`) raise compile errors.
-- **Name vs Value Partition**: Name positions strictly forbid `$`. Undefined variables, unknown keys, unknown mouse buttons, unknown namespaces, and unknown signals raise compile errors.
-- **Eradication of Silent Truncation**: Immediate values outside valid physical opcode ranges halt compilation immediately.
-- **Preamble Directive Ordering**: `\#!syntax:` directives must appear at the head of the file before any executable action token.
-- **Predicate Triplet Structure**: Predicate arguments must be formatted as dual-brace triplets `{ {lhs, op, rhs} }` with operators in `{=, !=, <, <=, >, >=}`.
-- **Receptor Slot Wait Target**: The argument to `\wait` must be a `$slot.<sig>.<field>` receptor. Passing local variables, system registers, or literals raises a compile error.
-- **Guard Nesting Limit**: `\guarded` nesting cannot exceed `MAX_GUARD_NEST = 4`.
-
----
-
-## 5. Preamble Directives & Layout Modes (`\#!syntax`)
-
-### 5.1 Formal Grammar (EBNF)
+### 3.1 Formal Grammar (EBNF)
 
 ```ebnf
 PreambleDirective ::= PreamblePrefix "syntax:" Whitespace* SyntaxConfig
@@ -189,19 +99,20 @@ Value             ::= "ignore" | "emit"
 Whitespace        ::= " " | "\t"
 ```
 
-#### Valid Forms and Equivalences
+### 3.2 Layout Modes and Equivalences
 
 | Declaration Form | Internal Equivalent | Scanner Behavior | Target Use Case |
 |---|---|---|---|
-| `\#!syntax: free` | `newline=ignore, space=ignore` | **Free Layout Mode (explicitly activated)**: Unescaped newlines and spaces are silently absorbed; explicit blanks emitted via `\enter`, `\space`, `\tab`; whitespace-bearing text via `\text{}`…`\endtext{}`. Canonical recognition marker for v4 structured scripts. | Structured macro scripts (loops, branches, user macros, indentation). |
+| `\#!syntax: free` | `newline=ignore, space=ignore` | **Free Layout Mode (explicitly activated)**: Unescaped newlines and spaces are silently absorbed; explicit blanks emitted via `\enter`, `\space`, `\tab`; whitespace-bearing text via verbatim text blocks `\text{}`…`\endtext{}` (see §6.3). Canonical recognition marker for v4 structured scripts. | Structured macro scripts (loops, branches, user macros, indentation). |
 | `\#!syntax: typewriter` | `newline=emit, space=emit` | **Typewriter Mode (default)**: Raw newlines emit `Enter`; raw spaces emit `Space`. Scripts without preamble behave byte-identically to v3. | Raw text typing, automated form filling, legacy v3 scripts. |
 | `\#!syntax: newline=ignore, space=emit` | Fine-Grained Config | **Orthogonal Hybrid**: Newlines allow indentation; spaces emit `Space`. | Indented scripts requiring frequent inline whitespace typing. |
 
+- **Preamble Scope**: The directive must appear in the leading comment lines of the script, before any non-comment, non-whitespace executable character. Once the first code token is encountered, configuration is permanently frozen.
 - **Comment Orthogonality Law**:
   - `\# <text>`: Standard human-readable comments; silently ignored.
   - `\#!<directive>`: Compiler preamble directive; processed exclusively at the head of the file.
 
-### 5.2 Lexer Scanning State Machine
+### 3.3 Lexer Scanning State Machine
 
 | Input Stream Character | Context | `free` Mode (`\#!syntax: free`) | `typewriter` Mode (default) |
 |---|---|---|---|
@@ -209,16 +120,135 @@ Whitespace        ::= " " | "\t"
 | Space `' '` / Tab `\t` | Text Position | **Silently Absorbed** | **Emits Space / Tab Key** |
 | Explicit `\enter`, `\space`, `\tab` | Text Position | **Emits Target Keystroke** | **Emits Target Keystroke** |
 | Line Continuation `\` + Newline | Text Position | **Silently Absorbed** | **Silently Absorbed** |
-| `\text{}`…`\endtext{}` payload | Text block | **Every character emitted literally** | **Every character emitted literally** |
+| `\text{}`…`\endtext{}` payload | Text block (§6.3) | **Every character emitted literally** | **Every character emitted literally** |
 | Whitespace inside `{ a , b }` | Argument Position | **Always Automatically Trimmed** | **Always Automatically Trimmed** |
 | Printable ASCII (32–126) | Text Position | **Emits Literal Keystroke** | **Emits Literal Keystroke** |
+
+### 3.4 Canonical Syntax Examples
+
+```dsl
+\# 1. Canonical v4 structured script (free layout activated by preamble; indentation & blank lines are silent)
+\#!syntax: free
+\def{submit_form}[0]{
+  \kdown{ctrl}
+  \delay{50ms}
+  \kup{ctrl}
+  \enter          \# Explicitly emit Enter keystroke
+}
+
+\# 2. Text block: emitting whitespace-bearing text in free mode
+\#!syntax: free
+\text{}echo "Hello World"\endtext{}
+\enter
+
+\# 3. Default mode (no preamble; byte-identical to v3: newlines emit Enter, spaces emit Space)
+echo "Hello MYCRO"
+ls -la
+```
+
+---
+
+## 4. Document Grammar & The Binary Brace Taxonomy
+
+Commands sequentially consume trailing brace pairs `{}` according to their static signature contracts.
+
+### 4.1 Abstract Grammatical Templates
+
+Every brace structure in the surface language maps to one of four abstract templates:
+
+1. **Executable Code Block Template (`{ code_stream }`)**: Delimits a nested sequence of executable commands and text actions. Parsing is isomorphic to the top-level macro stream.
+2. **Separate Positional Argument Template (`{ arg_1 }{ arg_2 }...`)**: Passes independent arguments in separate adjacent brace pairs, each bound to an independent parameter category.
+3. **Compound Tuple Argument Template (`{ elem_1, elem_2, ... }`)**: Passes multiple comma-separated elements within a single brace pair, forming a functional tuple.
+4. **Optional Decorator Template (`[ modifier ]`)**: Passes optional configuration modifiers in literal square brackets.
+
+### 4.2 The Structural Exclusivity Law (`{A}{B} \ne {A, B}`)
+
+The brace structure expected by a command is statically and uniquely determined by its signature contract. The two forms are strictly mutually exclusive and cannot be interchanged:
+
+- **Separate Argument Groups `{A}{B}`**: Positional arguments reside in separate brace pairs.
+  *Illustrated by*: `\set{var}{val}` (§7), `\add{var}{val}` (§7), `\sub{var}{val}` (§7).
+- **Compound Argument Groups `{A, B}`**: Functionally coupled values reside within a single comma-separated brace pair.
+  *Illustrated by*: `\move{dx, dy}` (§6.2), `\click{btn, count}` (§6.2).
+- **Extension Calls (`\call`)**: The initial group is `{ns.fn}`; subsequent brace structures are consumed according to the registered signature of the target extension function (see §10).
+- **Compound Structures (Argument Group + Code Block)**: When a command accepts both parameters and an executable block, the argument groups strictly precede the code blocks.
+  *Illustrated by*: `\rep{count}{ body }` (§6.2), `\if{pred}{ then }` (§9.2), `\guarded[throttle]{pred}{ body }` (§9.3).
+
+### 4.3 Optional Decorator Brackets Discipline (`[]`)
+
+Optional scalar configuration is written in **literal square brackets**.
+**Position rule**: A decorator sits immediately adjacent to what it modifies:
+- Modifying command execution: Leads before mandatory groups (e.g., `\guarded[50ms]{...}` in §9.3, `\wait[5s]{...}` in §6.2).
+- Modifying a specific parameter: Follows that parameter group (e.g., `\def{name}[argc]{body}` in §8, where argc modifies name arity).
+
+> [!NOTE]
+> 1. `[...]` in command signatures always denotes literal square brackets. Inside EBNF grammar blocks, `[ x ]` denotes standard grammar optionality.
+> 2. **Optional code blocks are not decorators**: Optional code blocks such as `else` in `\if` (§9.2) or `on_abort` in `\guarded` (§9.3) are written as trailing bare `{}` blocks, omissible as a whole.
+> 3. Omissible elements inside a compound argument group (e.g., `count` in `\click{btn, count}`) belong to the argument group itself, not to decorators.
+
+---
+
+## 5. Parameter Categories & Static Contracts
+
+Every argument position belongs to one of three orthogonal grammatical categories based on the host command's signature:
+
+```ebnf
+SlotRef    ::= "$slot." DottedName
+DottedName ::= Identifier "." Identifier
+```
+
+Signal names may contain dots; split at the LAST dot: signal channel is everything to the left of the last dot, and field identifier is the last segment (e.g., `$slot.sys.net.msg.val` $\rightarrow$ signal `sys.net.msg`, field `val`).
+
+### 5.1 Parameter Categories
+
+| Parameter Category | Syntactic Form & Evaluation Rules | Compilation & Runtime Mapping |
+|---|---|---|
+| **Value Category (Value)** | Dynamic variables, numeric immediates, or compile-time constructors:<br>• Variables: Local registers (`$var`), system registers (`$ret`, `$timeout`), receptor slots (`$slot.<sig>.<field>`);<br>• Static literals: Decimal, hex, or time literals (`500ms`, `0.5s`), folded at lex time to `i32`;<br>• Constructors: Packed RGB color `\rgb{r, g, b}` (§7), pixel rectangle `\rect{...}`. | **Physical 3-Tag Closed Operand Architecture**:<br>• Immediate literal $\rightarrow$ `TAG_IMM (0)` (`i32 LE`);<br>• Register $\rightarrow$ `TAG_REG (1)` (`u8 reg`);<br>• Static string $\rightarrow$ `TAG_STR (2)` (`u8 str_idx`, `\call` only);<br>• **Receptor slots (`$slot...`)** $\rightarrow$ Pre-instruction desugaring: compiler emits `0x28 OP_READSLOT` before host instruction to load slot into an ephemeral register, passing `TAG_REG`. In `\guarded` descriptors, slots are encoded natively via the `SLOT` descriptor tag. |
+| **Name Category (Name)** | Static symbolic identifiers: Key names, mouse buttons, namespaces, signal channel names, or variable names. Bare identifiers, strictly prohibiting `$`. | Statically resolved at compile time to usage IDs or string indices (`u8`). |
+| **Predicate Category (Predicate)** | Conditional decision structures: Atomic triplets `{lhs, op, rhs}` or composite logic trees `\all` / `\any` (see §9). | Directly lowered by the compiler into forward short-circuit jump sequences (`OP_BRA`). |
+
+### 5.2 Physical Word-Length Contracts
+
+Every macro instruction consuming numeric immediates enforces strict physical word-length and range bounds corresponding to its target VM opcode. Values violating these intervals trigger immediate static compilation diagnostics:
+
+| Target Instruction | Opcode Parameter Width | Valid Immediate Interval | Normative Definition & Reference |
+|---|---|---|---|
+| `\delay{t}`, `\pace{t}` | `u16` (2 bytes LE) | $[0, 65535]\text{ ms}$ | Timing base. Durations $> 65535\text{ ms}$ must be expressed via `\rep` loops (see §6.1, §6.2). |
+| `\rep{N}` | `u8` (1 byte) | $[0, 255]$ | Loop counter ceiling (`MacroError: rep count out of u8 range`; see §6.2). |
+| `\click{btn, count}` | `u16` (2 bytes LE) | $[1, 65535]$ | Click repeat count (defaults to 1; see §6.2). |
+| `\move{dx, dy}` | `i16` (2 bytes LE) | $[-32768, 32767]$ | Relative mouse movement offsets (see §6.2). |
+| `\wait[timeout]{ $slot... }` | `u32` (4 bytes LE) | $[0, 4294967295]\text{ ms}$ | Timeout duration (0 or omitted = indefinite; see §6.2). |
+| `\guarded[throttle_ms]` | `u16` (2 bytes LE) | $[0, 65535]\text{ ms}$ | Minimum polling interval (defaults to 0 = continuous; see §9.3). |
+| `\rgb{r, g, b}` | `u8` $\times 3$ (1 byte each) | $[0, 255]$ each | Red, green, blue color channels (see §7). |
+| `\set`, `\add`, `\sub` | `i32` (4 bytes LE) | $[-2^{31}, 2^{31} - 1]$ | General-purpose scalar registers with modular arithmetic (see §7). |
+
+### 5.3 Operand Tags & Slot Lowering Discipline
+1. **Physical 3-Tag Closure (No 4th `TAG_SLOT`)**: Standard VM instructions permanently retain exactly three physical operand tags (`TAG_IMM=0`, `TAG_REG=1`, `TAG_STR=2`).
+2. **Preceding `OP_READSLOT` Desugaring**: When DSL code references a receptor slot variable in a standard Value position (e.g., `\delay{$slot.t.val}`, `\set{x}{$slot.v.val}`), the compiler emits:
+   `0x28 OP_READSLOT temp_reg, sig_str_idx, field_str_idx`
+   immediately prior to the host instruction, and passes `TAG_REG temp_reg`.
+3. **Native Slot in Guard Descriptors (`\guarded`)**: `0x25 GUARD_ENTER` embeds its own 2-bit operand tag (`0: IMM, 1: REG, 2: SLOT`) directly in its predicate descriptor so high-frequency delay-slice polling can inspect slots without repeated bytecode decoding.
+
+### 5.4 Stateful Receptor Slots (`$slot.<sig>.<field>`)
+- **Mandatory Prefix Contract**: All Slot variables MUST strictly begin with `$slot.`.
+- **No-Shorthand Law**: Slot field names MUST be written explicitly in source code (e.g., `$slot.net.msg.val`). There is no `$slot.<sig>` omission shorthand.
+- **Sole Waitable Receptor Law**: Receptor slots starting with `$slot.` are the ONLY valid asynchronous entities eligible for waiting (`\wait`). Local general-purpose registers (`$var`) represent private synchronous state; attempting to `\wait` on `$var` is statically rejected.
+
+### 5.5 Static Compile Diagnostics
+
+- **Character Set & Delimiters**: Non-printable ASCII (outside 32–126) and unmatched delimiters (`{`, `}`, `[`, `]`, `${`) raise compile errors.
+- **Name vs Value Partition**: Name positions strictly forbid `$`. Undefined variables, unknown keys, unknown mouse buttons, unknown namespaces, and unknown signals raise compile errors.
+- **Eradication of Silent Truncation**: Immediate values outside valid physical opcode ranges halt compilation immediately.
+- **Preamble Directive Ordering**: `\#!syntax:` directives must appear at the head of the file before any executable action token.
+- **Predicate Triplet Structure**: Predicate arguments must be formatted as dual-brace triplets `{ {lhs, op, rhs} }` with operators in `{=, !=, <, <=, >, >=}`.
+- **Receptor Slot Wait Target**: The argument to `\wait` must be a `$slot.<sig>.<field>` receptor. Passing local variables, system registers, or literals raises a compile error.
+- **Guard Nesting Limit**: `\guarded` nesting cannot exceed `MAX_GUARD_NEST = 4`.
 
 ---
 
 ## 6. Base Macro Instruction System
 
 ### 6.1 Time Literals & u16 Constraints
-1. **Direct Expression & In-Place Folding**: Time values are expressed via dimensioned literals (`50ms`, `0.5s`) or dimensionless integers (ms), folded at compile time into integer millisecond scalars.
+1. **Direct Expression & In-Place Folding**: Time values are expressed via dimensioned literals (`50ms`, `0.5s`) or dimensionless integers (ms), folded at compile time into integer millisecond scalars (see §2.1).
 2. **VM Physical Operands Strictly Retain `u16`**: Underlying VM opcodes `OP_SLEEP` (`0x04`) and `OP_PACE` (`0x07`) strictly retain `u16 ms` ($0 \le t \le 65535$).
 3. **Static Range Assertions**: Folded constants $> 65535\text{ ms}$ or $< 0$ trigger compile errors. Long delays must use bounded loops (e.g., `\rep{100}{ \delay{1s} }`).
 4. **Dynamic Variable Range Handling**: When a timing command consumes a register (e.g., `\delay{$d}`), the runtime VM **clamps** the value to $[0, 65535]$. Bitwise masking is forbidden.
@@ -237,19 +267,39 @@ Button    ::= "L" | "R" | "M" | "B" | "F"
 - **Timing & Synchronization**:
   - `\delay{t}`: Sleep for duration `t` ($0 \le t \le 65535\text{ ms}$).
   - `\pace{t}`: Configure inter-keystroke pacing interval ($0 \le t \le 65535\text{ ms}$).
-  - `\wait[timeout]{ $slot.<sig>.<field> }`: Suspend until the target receptor slot receives an external projection. If `slot.pending == True`, consumes the event and returns immediately with zero delay. Optional decorator `timeout` in ms (0 or omitted = indefinite). Writes 1 to `$timeout` on timeout, 0 on arrival.
+  - `\wait[timeout]{ $slot.<sig>.<field> }`: Suspend until the target receptor slot receives an external projection. If `slot.pending == True`, consumes the event and returns immediately with zero delay. Optional decorator `timeout` in ms (0 or omitted = indefinite; $0 \le timeout \le 4294967295\text{ ms}$). Writes 1 to `$timeout` on timeout, 0 on arrival.
 - **Keyboard Operations**:
   - Special Keys: `\enter`, `\esc`, `\tab`, `\space`, `\bs`, `\del`, `\f1`..`\f12`.
   - Key Combos: `\ctrl+c`, `\ctrl+alt+del` (chained with `+`).
   - Key Press / Release: `\kdown{key}`, `\kup{key}` (`key` in Name category; `\kup{0}` releases all).
-- **Text Block Output**:
-  - `\text{}`…`\endtext{}`: Verbatim text emission pair (see §3.4). Every enclosed character emits physical keys under any layout mode.
 - **Mouse Operations**:
-  - `\click{btn[, count]}`: Mouse click (`btn` in Name category `L|R|M|B|F`; `count` omissible in-group Value, defaults to 1).
-  - `\move{dx, dy}`: Relative mouse move (`dx`, `dy` in Value category, signed `i16`).
+  - `\click{btn[, count]}`: Mouse click (`btn` in Name category `L|R|M|B|F`; `count` omissible in-group Value, $1 \le count \le 65535$, defaults to 1).
+  - `\move{dx, dy}`: Relative mouse move (`dx`, `dy` in Value category, signed `i16` satisfying $-32768 \le dx, dy \le 32767$).
   - `\mdown{btn}`, `\mup{btn}`: Mouse button hold / release.
 - **Bounded Counting Loops**:
   - `\rep{count}{ body }`: Counter loop ($0 \le count \le 255$, or register `$var`; 0 skips); `body` is an Executable Code Block. Nesting ceiling: `MAX_RUNTIME_NEST = 8`.
+
+### 6.3 Verbatim Text Blocks (`\text{}` … `\endtext{}`)
+
+```ebnf
+TextBlock ::= "\text{}" Payload "\endtext{}"
+Payload   ::= (* any character sequence not containing "\endtext{}"; zero escapes, emitted verbatim *)
+```
+
+- **Strict Symmetrical Pair**: A text block is defined strictly and symmetrically by the instruction pair `\text{}` and `\endtext{}`.
+- **Syntactic Barrier (`{}`)**: The empty `{}` is the explicit syntactic delimiter of each instruction, cleanly separating the command token from surrounding text without requiring whitespace heuristics:
+  - Any character immediately following `\text` other than `{}` (e.g. `\text foo` or `\text\n`) triggers an immediate compile error (`\text requires {}`).
+  - Any character immediately following `\endtext` other than `{}` triggers an immediate compile error (`\endtext requires {}`).
+  - `\endtext{}` outside an active text block triggers an `endtext without text block` compile error.
+- **Verbatim Payload Semantics**:
+  - The payload begins on the byte immediately following the closing `}` of `\text{}`.
+  - The payload ends on the byte immediately preceding the `\` of `\endtext{}`.
+  - Every enclosed character is emitted verbatim as physical keystrokes under **all layout modes** (spaces/tabs/newlines emit Space/Tab/Enter keys).
+  - Zero escapes: No macro commands, comments, escapes (`\\`), or variable sigils (`$`) are recognized inside the payload (a backslash is a literal keystroke).
+- **Termination & Lexical Protection**:
+  - The scanner searches the payload strictly for the literal sequence `\endtext{}`. This sequence is the payload's only reserved sequence; exhausting the character stream without it raises an `Unterminated text block` compile error.
+  - User macros cannot be named `text` or `endtext`.
+- **Full Immunity in `\def`**: Parameter text inside `\def{g}[1]{\text{}#1\endtext{}}` passes directly into the payload without brace parsing, allowing parameter payloads to contain unescaped braces, brackets, or backslashes.
 
 ---
 
@@ -277,7 +327,7 @@ RgbLit  ::= "\rgb" "{" Value "," Value "," Value "}"
 - **Keystroke Number Formatting**:
   - `\typenum{$var}`: Types the decimal integer value of `$var` as ASCII keystrokes with active pacing. Handles cannot be formatted.
 - **Color Constant Packing**:
-  - `\rgb{r, g, b}`: Packs three 0–255 integer constants in Value positions into a 24-bit RGB scalar immediate: `(r << 16) | (g << 8) | b`.
+  - `\rgb{r, g, b}`: Packs three 0–255 integer constants ($u8$) in Value positions into a 24-bit RGB scalar immediate: `(r << 16) | (g << 8) | b`.
 
 ---
 
@@ -341,7 +391,7 @@ GuardedStmt ::= "\guarded" [ "[" Duration "]" ] "{" Predicate "}" CodeBlock [ Co
 \guarded[throttle_ms]{ predicate }{ protected_body }
 \guarded[throttle_ms]{ predicate }{ protected_body }{ on_abort }
 ```
-- `[throttle_ms]` (optional decorator): Value category minimum polling interval (defaults to `0ms`, continuous checks at instruction boundaries and delay slices).
+- `[throttle_ms]` (optional decorator): Value category minimum polling interval ($0 \le throttle\_ms \le 65535\text{ ms}$, `u16`; defaults to `0ms`, continuous checks at instruction boundaries and delay slices).
 - `predicate`: Invariant predicate maintained throughout execution of `protected_body`.
 - `protected_body`: Executable Code Block executed under invariant protection.
 - `on_abort` (optional): Bare `{}` trailing block executed upon guard failure. Omissible as a whole.
@@ -398,4 +448,4 @@ CallStmt ::= "\call" "{" ExtensionFn "}" ArgGroup*
 | **v1** (gist era) | Text typing, basic key symbols, escape characters. |
 | **v2** | Mouse controls (`\click`, `\move`, `\mdown`, `\mup`), `\delay`/`\pace` split, `\rep`, `\kdown`/`\kup`, line continuations, comments. |
 | **v3** | User macros `\def`; registers/`\set`/`\add`; `$ret`/`$timeout`; signal slots; `\ifnum`; `\typenum{$var}`; `\use`/`\call`/`\wait`; Name vs Value partition; signature typing and Handle ownership; decoupled compile-time expansion (`MAX_MACRO_EXPAND=16`) and runtime nesting (`MAX_RUNTIME_NEST=8`). |
-| **v4** | Preamble layout modes (`\#!syntax: free` vs default `typewriter`); text blocks `\text{}`…`\endtext{}`; unified `i32` numeric folding with `ms`/`s` time literals; `u16 ms` physical delay clamping and eradication of silent truncation; Binary Brace Taxonomy & Structural Exclusivity Law; signal/slot orthogonal reset: bare Name projectors vs `$slot.<sig>.<field>` stateful receptors with lossless event latches; `\wait[timeout]{$slot...}` leading bracket decorator; structured first-class predicates (`\if` with bare `{}` else; deprecating `\ifnum`); continuous invariant guarding (`\guarded[throttle]` with delay-slicing and fail-safe release); atomic subtraction `\sub`; compile-time color packing `\rgb`. |
+| **v4** | Preamble layout modes (`\#!syntax: free` vs default `typewriter`); verbatim text blocks `\text{}`…`\endtext{}`; unified `i32` numeric folding with `ms`/`s` time literals; `u16 ms` physical delay clamping and eradication of silent truncation; Binary Brace Taxonomy & Structural Exclusivity Law; signal/slot orthogonal reset: bare Name projectors vs `$slot.<sig>.<field>` stateful receptors with lossless event latches; `\wait[timeout]{$slot...}` leading bracket decorator; structured first-class predicates (`\if` with bare `{}` else; deprecating `\ifnum`); continuous invariant guarding (`\guarded[throttle]` with delay-slicing and fail-safe release); atomic subtraction `\sub`; compile-time color packing `\rgb`. |
