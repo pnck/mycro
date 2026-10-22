@@ -1,335 +1,242 @@
 # MYCRO VM Specification
 
-**Status: normative.** This document is the authoritative contract for the
-MYCRO macro bytecode and its execution machine. It is written to be
-independent of the implementation language (the reference implementation
-is CircuitPython; a C/Rust port must be able to conform without reading
-the reference source).
+**Status: normative.** This document is the authoritative specification for the MYCRO macro bytecode and its execution machine for **VM v4**. It is written to be independent of implementation language (the reference implementation is CircuitPython in `src/lib/macro.py`; C/Rust ports conform to this specification).
 
-- **Part I** specifies the VM core: bytecode container, register file,
-  execution semantics, and the register-write mediation points. The VM
-  core knows nothing about resources, namespaces, or peripherals.
-- **Part II** specifies the middleware contract that *this* macro system
-  layers on the VM: the runtime registry, the type discipline, and the
-  handle ownership model. A different host system could reuse the Part I
-  core with different middleware.
-
-The DSL surface syntax is *not* part of this specification; it is a
-compiler input language documented in AGENTS.md / ROADMAP.md. What this
-specification binds is the bytecode the compiler must emit and the
-semantics the VM must preserve.
+- **Part I** specifies the VM Core: execution model, register machine, bytecode container format, opcode set, predicate descriptor encoding, flat guard model, and register-write mediation.
+- For middleware contracts (runtime registry, type discipline, handle ownership, peripheral providers, and standard library namespaces), see [runtime.md](runtime.md).
+- For DSL surface syntax, see [dsl.md](dsl.md).
 
 ---
 
 # Part I — VM Core
 
-## 1. Execution model
+## 1. Execution Model & Halting Decidability
 
-A register machine executing a linear bytecode stream. State per
-execution:
+The MYCRO VM is a linear bytecode register machine. Execution state per task:
+- `regs[]`: The register file (see §2).
+- `ip`: Instruction pointer advancing monotonically through the linear opcode stream.
+- `loop_stack`: Counting loop frames (remaining count + return address), bounded by bytecode size; zero runtime heap allocation.
+- `str_table`: Read-only string pool loaded from the container header.
+- `guard_slots` / `guard_depth`: Flat array and cursor for invariant monitoring (see §6).
 
-- `regs[]`: the register file (see §2)
-- `ip`: instruction pointer into the opcode stream
-- a loop stack (LOOP/LOOP_END frames: remaining count + return address),
-  bounded by bytecode size; no runtime heap growth
-- string table (read-only, from the container header)
+### Halting Decidability & Control Flow
+- **Forward Control Flow**: The instruction pointer `ip` advances strictly forward. Branch and jump instructions (`BRA`, `JMP`) strictly utilize positive forward offsets ($\text{target} > \text{pc}$).
+- **Halting Decidability**: Iteration is handled exclusively via bounded counting loops (`LOOP` / `LOOP_END`). Unbounded backward branches (`while`, `goto`) do not exist. Macro execution is guaranteed to halt in finite cycles, terminate via task cancellation, or suspend awaiting an external event (exitable via abort or guard failure).
 
-Execution is cooperative: SLEEP/PACE/WAIT/CALL_EXT may suspend the
-coroutine; abort is task cancellation. On **exception and abort** exit
-paths (runtime error, unknown opcode, task cancellation), the VM
-releases all held keys and mouse buttons via the HID provider as an
-emergency safety fallback (B2). On **normal completion**, keys and mouse
-buttons held via KEY_DOWN / MDOWN persist until explicitly released by
-KEY_UP / MUP or an abort. Handle resources (Part II §4) are always
-released on exit via `runtime.release_all()`.
+### Peripheral Safety Invariants
+- **Emergency Safety Fallback**: On unhandled exceptions, task aborts, or guard violations (§6), the VM immediately releases all physically held keys and mouse buttons via `hid.keys_release_all()` and `hid.mouse_release(0x1F)`.
+- **Normal Completion**: Physical keys and mouse buttons held via `KEY_DOWN` / `MDOWN` persist across normal script termination until explicitly released by subsequent commands or an abort.
+- **Resource Reclamation**: All managed Handle resources are reclaimed on every exit path via `runtime.release_all()`.
 
-## 2. Register file
+---
 
-- `MAX_REGS` general registers, each holding one **i32** (two's
-  complement, wraparound arithmetic). `MAX_REGS` is a **build-profile
-  constant**, not a specification limit; the current profile is 32.
-- Register operands in bytecode are **u8 addresses**; the specification
-  ceiling is therefore 256 registers. Addresses 0xF0–0xFF are reserved
-  for special registers.
-- Current special registers: 0xFD = reserved boundary (never stores),
-  0xFE = `$timeout` (written by WAIT only), 0xFF = `$ret` (written by
-  CALL_EXT only).
-- All general registers are zeroed at execution start.
+## 2. Register File
 
-## 3. Bytecode container
+- `MAX_REGS`: Build-profile constant defining the number of general-purpose scalar registers. The normative profile is **32 registers** (`0x00`..`0x1F`), each holding one signed two's complement **i32** scalar ($[-2^{31}, 2^{31} - 1]$) with modular wraparound arithmetic.
+- **Addressing Ceiling**: Register operands in bytecode are `u8` addresses (architectural ceiling of 256 registers). Addresses `0xF0`–`0xFF` are reserved for special registers.
+- **Special Registers**:
+  - `0xFD`: Reserved boundary register (never stores).
+  - `0xFE`: `$timeout` (written exclusively by `0x29 WAIT`; 1 on timeout, 0 on event arrival).
+  - `0xFF`: `$ret` (written exclusively by `0x2A CALL_EXT`; 0 if callee returns None).
+- **Initialization**: All general-purpose registers are zeroed at execution start.
+
+---
+
+## 3. Bytecode Container Format (VERSION 4)
 
 ```
 u8 MAGIC (0xA5)
-u8 VERSION (3)
-u8 str_count, then str_count × (u8 len + UTF-8 bytes)   -- string table
-opcode stream to EOF
+u8 VERSION (4)
+u8 str_count, followed by str_count entries of [ u8 len + UTF-8 string bytes ]  -- Shared String Table
+opcode bytecode instruction stream through EOF
 ```
 
-Execute/disassemble MUST reject a mismatched MAGIC/VERSION.
+Execution and disassembly MUST reject any container with mismatched `MAGIC` or `VERSION`.
 
-### Typed operand encoding
+### Physical Typed Operand Encoding
 
-Multi-operand instructions use typed operands:
-
+Standard multi-operand instructions encode operands using a closed 3-tag system:
 ```
-tag u8:  0 = immediate (i32 LE)   1 = register (u8)   2 = string (u8 index)
+u8 tag:  0 = Immediate (i32 LE, 4 bytes)
+         1 = Register (u8 index, 1 byte)
+         2 = String (u8 string table index, 1 byte)
 ```
 
-The three tags are exactly the argument tenses of the DSL (spec/dsl.md
-§6): inline compile-time constant / string-table compile-time constant /
-runtime register. Tag 2 is valid only in CALL_EXT arguments. Semantic
-types (Part II §2) never reach bytecode.
+> [!NOTE]
+> **Operand Tag 3-Variant Closure**: Standard VM opcodes permanently consist of the above 3 variants. They do NOT introduce a 4th slot tag. When a command consumes `$slot.<sig>.<field>` in a Value position, the compiler emits `0x28 OP_READSLOT` immediately preceding the host instruction to load the slot value into an ephemeral register, passing `tag = 1 (REG)` to the host opcode.
+> The only exception is the internal predicate descriptor of `0x25 GUARD_ENTER`, which defines its own 2-bit tag field (`0: IMM, 1: REG, 2: SLOT`) for zero-overhead delay-slice polling (see §4.1).
 
-## 4. Opcode set (v3)
+---
 
-| Opcode | Operands | Semantics |
-|---|---|---|
-| 0x01 CHAR | u8 ascii | Type character (Shift auto via provider keymap) |
-| 0x02 KEY | u8 keycode | Single key tap |
-| 0x03 COMBO | u8 mod_mask, u8 keycode | mask bit0-3 = Ctrl/Shift/Alt/GUI; keycode 0 = pure modifier |
-| 0x04 SLEEP | typed(u16 ms) | One-shot sleep (DSL `\delay`) |
-| 0x05 MCLICK | typed(u8 btn), typed(u16 count) | Mouse click |
-| 0x06 MMOVE | typed(i16 dx), typed(i16 dy) | Relative mouse move |
-| 0x07 PACE | typed(u16 ms) | Set inter-action interval (DSL `\pace`) |
-| 0x10 LOOP | typed(u8 count), u16 len | len = body bytes incl. LOOP_END; count 0 skips |
-| 0x11 LOOP_END | — | Decrement/jump back or pop |
-| 0x12/0x13 KEY_DOWN/KEY_UP | typed(u8 keycode) | keycode 0 = release all; held state persists across discrete taps |
-| 0x14/0x15 MDOWN/MUP | typed(u8 btn) | Mouse button hold/release |
-| 0x20/0x21 SET/ADD | u8 reg, typed(i32) | Register write (mediated, §5); ADD wraps i32 |
-| 0x22 BRA | u8 cc, u8 reg, typed(i32 rhs), u16 off | If condition false, `ip += off`; cc: 0`=`,1`!=`,2`<`,3`<=`,4`>`,5`>=` |
-| 0x23 JMP | u16 off | Unconditional forward skip |
-| 0x28 READSLOT | u8 reg, u8 sig, u8 field | Read middleware slot into register (mediated, §5) |
-| 0x29 WAIT | u8 sig, typed(u32 timeout_ms) | Suspend until signal's next fire; `$timeout` = 1 on timeout (mediated write) |
-| 0x2A CALL_EXT | u8 ns, u8 fn, u8 argc, argc × typed | Middleware call; return written to `$ret` (mediated, claim per Part II §4) |
-| 0x2B TYPEREG | u8 reg | Type register's decimal digits (one pacing action; DSL `\typenum`) |
-| 0xFF END | — | Halt |
+## 4. Opcode Set (v4)
 
-Branches are forward-only; there is no general backward jump except
-LOOP_END. There is no arithmetic beyond SET/ADD.
+| Opcode | Mnemonic | Operands | Operational Semantics |
+|---|---|---|---|
+| `0x01` | `CHAR` | `u8 ascii` | Type ASCII character (Shift state handled automatically by keymap). |
+| `0x02` | `KEY` | `u8 keycode` | Single key tap. |
+| `0x03` | `COMBO` | `u8 mod_mask, u8 keycode` | Modifier combo (mask bits 0..3 = Ctrl/Shift/Alt/GUI; keycode 0 = modifier tap). |
+| `0x04` | `SLEEP` | `typed(u16 ms)` | One-shot suspension (DSL `\delay`). Word length strictly bounded to `u16` ($0..65535\text{ ms}$). |
+| `0x05` | `MCLICK` | `typed(u8 btn), typed(u16 count)` | Mouse click (`btn`: 1=L, 2=R, 4=M, 8=B, 16=F). |
+| `0x06` | `MMOVE` | `typed(i16 dx), typed(i16 dy)` | Relative mouse move. |
+| `0x07` | `PACE` | `typed(u16 ms)` | Configure inter-action pacing delay. Strictly bounded to `u16` ($0..65535\text{ ms}$). |
+| `0x10` | `LOOP` | `typed(u8 count), u16 len` | Push loop frame; `len` = body byte length including `LOOP_END`. Count 0 skips. |
+| `0x11` | `LOOP_END` | — | Decrement top loop counter; jump back to loop body start if $> 0$, else pop frame. |
+| `0x12` | `KEY_DOWN` | `typed(u8 keycode)` | Press and hold key (keycode 0 = release all). |
+| `0x13` | `KEY_UP` | `typed(u8 keycode)` | Release held key (keycode 0 = release all). |
+| `0x14` | `MDOWN` | `typed(u8 btn)` | Press and hold mouse button. |
+| `0x15` | `MUP` | `typed(u8 btn)` | Release mouse button. |
+| `0x20` | `SET` | `u8 reg, typed(i32 rhs)` | Register assignment (mediated by `runtime.reg_write`). |
+| `0x21` | `ADD` | `u8 reg, typed(i32 rhs)` | Atomic register addition: `reg = (reg + rhs) & 0xFFFFFFFF` (mediated). |
+| `0x22` | `BRA` | `u8 cc, u8 reg, typed(i32 rhs), u16 off` | Branch on False: If condition evaluates to **FALSE**, `ip += off`; `cc`: 0`=`, 1`!=`, 2`<`, 3`<=`, 4`>`, 5`>=`. |
+| `0x23` | `JMP` | `u16 off` | Unconditional forward jump: `ip += off`. |
+| `0x24` | `SUB` | `u8 reg, typed(i32 rhs)` | Atomic register subtraction: `reg = (reg - rhs) & 0xFFFFFFFF` (mediated). |
+| `0x25` | `GUARD_ENTER` | `u16 abort_off, u8 header, [u16 throttle_ms], [pred_descriptor]` | Push guard into flat slot; activate continuous invariant monitoring. |
+| `0x26` | `GUARD_EXIT` | — | Pop current guard slot; deactivate invariant monitoring. |
+| `0x28` | `READSLOT` | `u8 reg, u8 sig_str_idx, u8 field_str_idx` | Read slot value into register (mediated). |
+| `0x29` | `WAIT` | `u8 sig_str_idx, u8 field_str_idx, typed(u32 timeout_ms)` | Suspend until slot `$slot.<sig>.<field>` receives projection (or consumes pending event) or times out; writes status to `$timeout`. |
+| `0x2A` | `CALL_EXT` | `u8 ns, u8 fn, u8 argc, argc × typed` | Invoke extension function; result written to `$ret` (mediated). |
+| `0x2B` | `TYPEREG` | `u8 reg` | Type register decimal integer value as ASCII keystrokes with active pacing. |
+| `0xFF` | `END` | — | Halt execution successfully. |
 
-## 5. Register-write mediation (VM ↔ middleware interface)
+### 4.1 Compact Predicate Descriptor Specification (`pred_descriptor`)
 
-The VM core guarantees that **every** register write passes through the
-middleware before the value lands:
+`0x25 GUARD_ENTER` encodes invariants using a packed bitfield header and contiguous condition triplets:
 
+#### Instruction Header Encoding
 ```
+u16 abort_off: Relative forward jump offset on guard failure (base point: byte immediately following this instruction)
+u8 header: Control bitfield packing
+   bit 7:    logic_mode (0 = ALL conjunction, 1 = ANY disjunction)
+   bit 4..6: triplet_cnt - 1 (3 bits, encoding 0..7 representing 1..8 triplets)
+   bit 0:    has_throttle (0 = default 0ms unthrottled; 1 = explicit u16 throttle_ms follows)
+   bit 1..3: Reserved (must be 0)
+[u16 throttle_ms]: Present only if has_throttle == 1 (2 bytes LE)
+```
+
+#### Condition Triplet Encoding (`triplet_cnt` entries)
+Each triplet consists of a 1-byte specification header followed by variable-length operand payloads:
+```
+u8 spec: Triplet specification header packing
+   bit 0..2: cc relational operator (0: =, 1: !=, 2: <, 3: <=, 4: >, 5: >=)
+   bit 3..4: lhs_tag (2 bits: 0: IMM, 1: REG, 2: SLOT)
+   bit 5..6: rhs_tag (2 bits: 0: IMM, 1: REG, 2: SLOT)
+   bit 7:    Reserved (must be 0)
+lhs_payload: Operand entity determined by lhs_tag
+rhs_payload: Operand entity determined by rhs_tag
+```
+
+Operand payload byte layouts:
+- `0 = IMM`: 4-byte signed scalar immediate (`i32 LE`).
+- `1 = REG`: 1-byte register index (`u8 reg`).
+- `2 = SLOT`: 2-byte string table indices (`u8 sig_str_idx, u8 field_str_idx`).
+
+#### Streaming Properties
+- **Zero Redundant Length Headers**: Deserialization is deterministically governed by `triplet_cnt` and operand tags; `ip` advances directly to `<protected_body>` without an outer `pred_len`.
+- **Zero Runtime Deserialization Overhead**: Deserialized once upon `GUARD_ENTER` into a fixed in-memory tuple `(throttle_ms, last_check_ms, abort_ip, loop_depth, parsed_pred)` for zero-unpacking slice re-evaluation.
+
+---
+
+## 5. Predicate Lowering & `OP_BRA` Offset Semantics
+
+`\if` statements lower directly into standard `OP_BRA` and `OP_JMP` sequences.
+
+### 5.1 Native Branch-on-False Semantics
+`OP_BRA` execution semantics are strictly: **Branch forward if condition evaluates to FALSE**.
+
+### 5.2 Syntax-Directed Short-Circuit Lowering Rules
+1. **Conjunction Node (`\all`)**: False branches of each sub-predicate $P_i$ converge on the parent's `false_target`. The first $N-1$ successful tests fall through to $P_{i+1}$, and the final child falls through to the parent's `true_target`.
+2. **Disjunction Node (`\any`)**: The compiler maps the first $N-1$ sub-predicates to their **Logical Dual Operators (Inverse `cc`)**, emitting `OP_BRA(invert(cc), ..., then_target)`. Any sub-predicate evaluating to true immediately jumps to the then body. The final child emits its native operator `OP_BRA(cc, ..., false_target)`.
+3. **Dual Operator Inversion Mapping**:
+   - `=` (0) $\leftrightarrow$ `!=` (1)
+   - `<` (2) $\leftrightarrow$ `>=` (5)
+   - `<=` (3) $\leftrightarrow$ `>` (4)
+
+Lowering requires zero temporary registers and zero runtime stack allocations; relative offsets are resolved via backpatching.
+
+---
+
+## 6. Flat Iterative Guard Model
+
+### 6.1 Static Flat Slot Management
+The VM manages guard execution using a statically pre-allocated flat array and an active depth cursor:
+```python
+MAX_GUARD_NEST = 4  # Static compile-time nesting ceiling
+guard_slots = [None] * MAX_GUARD_NEST  # Entries: (throttle_ms, last_check_ms, abort_ip, loop_depth, pred_desc)
+guard_depth = 0  # Active guard cursor (0..4)
+```
+- `GUARD_ENTER`: Increments `guard_depth += 1` and stores descriptor parameters into `guard_slots[guard_depth - 1]`.
+- `GUARD_EXIT`: Decrements `guard_depth -= 1` in $O(1)$ constant time.
+- **Execution Boundary Reset**: `guard_depth = 0` at macro launch; normal completion (`END`), unhandled exceptions, and abort paths reset all guard slots.
+
+### 6.2 Dual-Trigger Inspection Scheduling
+When evaluating active guards, the VM iterates from outermost to innermost (`0` through `guard_depth - 1`). If any guard layer $i$ is violated, an immediate abort is triggered:
+1. **Instruction Boundary Throttling**: At the head of the main dispatch loop:
+   - If `throttle_ms == 0`: Checks all active guards after every completed macro instruction.
+   - If `throttle_ms > 0`: Checks guards when `monotonic_ms - last_check_ms >= throttle_ms`.
+2. **Delay Slicing**: When suspending during `\delay` (`OP_SLEEP`) or inter-keystroke pacing (`OP_PACE`), if `guard_depth > 0`, the VM slices total sleep duration into micro-quanta:
+   $$\Delta t = \min(t_{\text{remaining}}, \Delta t_{\text{slice}})$$
+   $$\Delta t_{\text{slice}} = \min_{0 \le j < \text{guard\_depth}} (t_{\text{throttle}, j} > 0 \ ? \ t_{\text{throttle}, j} : \text{DELAY\_SLICE\_QUANTUM})$$
+   (base quantum `DELAY_SLICE_QUANTUM = 20ms`). Guards are evaluated upon each slice wake-up; violations trigger an immediate abort.
+3. **Wait Slicing**: During `\wait` (`OP_WAIT`), if guards are active, suspension is sliced into the same per-quantum wake-ups, evaluating active guards at every quantum boundary to ensure indefinite waits remain guarded.
+4. **CALL_EXT Blind Window**: Guard evaluation cannot cut into the interior of an extension call. Active guards are evaluated once on entry and once on return; long operations should use push streaming (`img.watch`) + `\wait`.
+
+### 6.3 Force-Abort & Nested Scope Isolation
+When a guard at level $i$ evaluates to false:
+1. **Hardware Peripheral Reset**: Calls `hid.keys_release_all()` and `hid.mouse_release(0x1F)` to prevent hardware key hangs.
+2. **Loop Frame Rollback**: `loop_stack = loop_stack[:guard_slots[i].loop_depth]`, rolling back loop frames belonging to the aborted scope while preserving outer loop contexts.
+3. **Register Preservation**: Current values in general-purpose registers remain intact.
+4. **Targeted Jump & Depth Rollback**: Sets `ip = guard_slots[i].abort_ip` and `guard_depth = i`. Unwinds the failed guard and any inner guards while leaving outer guards active. Execution resumes at `on_abort` (or `end_guarded`).
+
+---
+
+## 7. Register-Write Mediation (VM ↔ Middleware Interface)
+
+The VM guarantees that **every** register write passes through the middleware before the value lands:
+```python
 runtime.reg_write(dst: u8, src: u8 | None)
 ```
 
-`dst` is the register being written; `src` is the source register when
-the value comes from another register (SET reg←reg), else None. The
-complete, closed set of write sites:
+`dst` is the register being written; `src` is the source register when the value originates from another register (`SET reg←reg`), else `None`. The complete, closed set of write sites:
 
 | Site | dst | src |
 |---|---|---|
-| SET imm | reg | None |
-| SET reg | reg | source reg |
-| ADD | reg | None |
-| READSLOT | reg | None |
-| WAIT | 0xFE | None |
-| CALL_EXT | 0xFF | None |
-| execution start (zeroing) | all general regs | None |
+| `SET imm` | reg | `None` |
+| `SET reg` | reg | source reg |
+| `ADD` | reg | `None` |
+| `SUB` | reg | `None` |
+| `READSLOT` | reg | `None` |
+| `WAIT` | `0xFE` (`$timeout`) | `None` |
+| `CALL_EXT` | `0xFF` (`$ret`) | `None` |
+| Execution start (zeroing) | all general regs | `None` |
 
-The VM core does not know what the middleware does with these calls
-(including nothing). Execution start and every exit path additionally
-call `runtime.release_all()`.
-
-## 6. Version policy and history
-
-VERSION gates the container format and opcode semantics. A bytecode
-consumer MUST reject unknown versions. Behavior changes that keep the
-format and opcode semantics intact (e.g. raising the profile's MAX_REGS)
-do not bump VERSION.
-
-| Version | Changes |
-|---|---|
-| v1 (gist era) | No container header. CHAR/KEY/COMBO/DELAY(fused sleep+pace)/MCLICK/MMOVE/LOOP/LOOP_END/KEY_DOWN/KEY_UP/MDOWN/MUP/END; immediate-only operands |
-| v2 | Container header (MAGIC+VERSION). DELAY split into SLEEP (one-shot) + PACE (inter-action interval) |
-| v3 | Typed operands (imm/reg/str); register file (16 → profile constant); SET/ADD/BRA/JMP/TYPEREG; string table + READSLOT/WAIT/CALL_EXT; register-write mediation contract (this specification) |
+Execution start and every exit path additionally invoke `runtime.release_all()`.
 
 ---
 
-# Part II — Macro-System Middleware
+## 8. Version Policy and History
 
-The middleware is everything the VM delegates to: the runtime registry,
-the type discipline, and resource (handle) ownership. Normative for
-MYCRO; not part of the VM core.
+`VERSION` gates the container format and opcode semantics. Bytecode consumers MUST reject unknown versions.
 
-## 1. Runtime registry
-
-- **Namespaces**: `ns → {fn: (arg_types, return_type, callable)}`.
-  Registration is platform wiring (code.py on device, fakes in tests).
-- **Signals**: named events with `asyncio`-style semantics; `\wait`
-  observes the **next fire after entry** — a fire with no waiter is
-  discarded.
-- **Slots**: last-published state under a signal name, readable anytime
-  via `$sig.field`; missing field reads as 0.
-
-## 2. Type discipline (constraint-only)
-
-The type system constrains **argument passing** — it performs no type
-computation, inference, or propagation beyond the copy rules below.
-
-Argument types and the forms they accept:
-
-| Type | Accepted argument form |
+| Version | Key Additions and Changes |
 |---|---|
-| `int` | immediate (incl. `0x` hex) / `$var` / slot reference |
-| `color` | as `int` (packed RGB i32; `\rgb{}` sugar is a deferred v3.1 item) |
-| `str` | literal source text (string table); **compile-time form only — never a runtime value** (cannot be produced, stored, or returned; runtime data enters as `bytes` handles) |
-| `point` / `rect` | one brace group of 2 / 4 comma-separated values; each element is an `int`-form argument; the compiler expands them into consecutive typed operands |
-| handle types (`snap`, `tpl`, …) | **only** a `$var` whose recorded type matches |
-
-Compile-time **type environment** (copy rules, exhaustive):
-
-| Event | Environment update |
-|---|---|
-| `\call{ns.fn}...` | type(`$ret`) := fn's declared return type |
-| `\set{s}{$ret}` | type(s) := type(`$ret`); handle types **move** (type(`$ret`) reverts to int) |
-| `\set{s}{$other}` | type(s) := type(other); handle types **move** (type(other) reverts to int) |
-| `\set{s}{literal}` / `\add` | type(s) := int |
-| `\wait` | type(`$timeout`) := int (constant) |
-
-A handle-typed variable used where a non-matching type is required (or
-vice versa), an untraceable handle argument, `\add` on a handle, and
-`\ifnum` on a handle are **compile errors** — with one exception:
-`$ret` is always comparable in `\ifnum`, because it carries error
-sentinels (negative values) alongside results, and checking it is the
-mandatory failure path. The `$ret` exemption covers comparison only;
-passing `$ret` as a handle argument still requires the current call to
-have returned that handle type.
-
-## 3. Write discipline (exhaustive)
-
-| Storage | Written by |
-|---|---|
-| user registers | SET / ADD only |
-| `$ret` | CALL_EXT only (None return writes 0) |
-| `$timeout` | WAIT only |
-| signal slots | the middleware's event publish only — never a function-return channel |
-
-## 4. Handle ownership model
-
-Handles are i32 identifiers of middleware-side resource table entries
-(snapshot pixels, templates, …). The VM holds no resource knowledge;
-the middleware owns tables, per-register ownership flags, and release.
-
-`runtime.reg_write(dst, src)` semantics, in order:
-
-1. If `dst` owns a handle → release the resource (release may be
-   asynchronous/deferred).
-2. If `src` is given and owns a handle → **move** ownership to `dst`
-   (the source register reverts to a plain integer; reusing it as a
-   handle fails at the middleware).
-3. If a handle-returning CALL_EXT has just completed and `dst` is 0xFF →
-   the pending handle is claimed by `$ret`. If an extension minted a handle
-   but the return value fails to claim it (e.g. error sentinel or mismatch),
-   the orphan resource is released immediately so slots are never leaked.
-
-`release_all()` runs at execution start and on every exit path.
-Consequences: live handles are bounded by the register count; overwrite
-*is* release (`\set{s}{0}` frees); looping re-snapshotting into the same
-variable cannot leak; macro end frees everything.
-
-Error convention for resource namespaces: `$ret < 0` on failure, details
-to the debug console.
-
-## 5. Compile-time const store
-
-Compile-time constants too big or too structured for operand encoding
-(e.g. `\rect` pixel literals) are preprocessed by the compiler into a
-middleware-side **const store** (`add_const`/`const_entry`), reset on
-each compilation. The bytecode references them by small integer id via
-`CALL_EXT sys.const <cid>`, which materializes a normal handle — no
-bytecode format change, and the standard ownership rules (claim/move/
-overwrite-release/exit-release) apply unchanged. Const bytes are
-batch-lifetime bulk resources (§6): a per-compile reset invalidates
-them wholesale.
-
-Consequently, any compilation request while a macro is actively running
-MUST be rejected as busy (`state: busy`) to prevent clobbering the active
-macro's constant store.
-
-## 6. Bulk resource backing
-
-Bulk byte resources (handle payloads, const-store pixels) are backed by
-middleware-managed storage, not by per-operation allocation from the
-host runtime's default memory manager. Only the observable behavior is
-normative here:
-
-- A handle's backing storage is bound to the handle entry; release
-  through ANY path (§4) returns the storage to the managing layer,
-  where it is reusable by later operations.
-- Backing budgets are profile constants with the same standing as
-  MAX_REGS (Part I §2) — platform budgets, not spec limits.
-- Budget exhaustion fails the producing operation deterministically
-  (error convention, `$ret < 0`; a compile error at compile time) —
-  never silently, never by stalling on the host allocator.
-
-How the middleware organizes that storage — arena structures, growth
-policy, copy discipline — is an implementation matter and does not
-belong to this contract; the current implementation's design is
-recorded in Appendix A.
-
-## 7. Peripheral abstraction
-
-All hardware/host interaction goes through providers (HIDProvider today;
-the img capture provider over the Phase 2 channel). The VM and compiler
-never import runtime-specific modules.
+| **v1** (gist era) | Unformatted bytecode. Immediate-only operands; fused sleep/pace. |
+| **v2** | Container header (`MAGIC + VERSION`). `SLEEP` and `PACE` split. |
+| **v3** | Typed operands (`TAG_IMM=0`, `TAG_REG=1`, `TAG_STR=2`); 32-register file; `SET`/`ADD`/`BRA`/`JMP`/`TYPEREG`; string table + `READSLOT`/`WAIT`/`CALL_EXT`; register-write mediation. |
+| **v4** | Container `VERSION = 4`; native atomic subtraction `0x24 SUB`; continuous invariant guard opcodes `0x25 GUARD_ENTER` and `0x26 GUARD_EXIT` with flat slot model and delay slicing; revised `0x29 WAIT` with explicit `(sig_str_idx, field_str_idx)`. |
 
 ---
 
-# Appendix A — Implementation notes (non-normative but binding for ports)
+# Appendix A — Implementation Notes (Non-Normative but Binding for Ports)
 
-- **Bulk-memory discipline** (the current implementation of Part II §6;
-  revise freely as long as §6's observable behavior holds). On a
-  memory-constrained embedded target the host runtime's default memory
-  management is never acceptable for bulk data; the GC heap is for
-  small control-plane objects only (envelopes, bytecode, tables,
-  handle entries). Five rules bind every bulk buffer:
-  1. *On demand*: buffers appear on first touch, never speculatively
-     at boot; an arena the workload never touches costs nothing.
-  2. *Own forever*: once allocated, owned by the managing layer, never
-     returned to the GC; steady-state buffers never shrink. Macro execution
-     streams are strictly bounded by one snapshot slot (48 KiB, SNAP_SLOT_BYTES).
-     Full-frame UI captures bypass the device completely via an out-of-band
-     ephemeral direct LAN data plane (lazy capture + HMAC-SHA256 challenge),
-     ensuring the device heap is never burdened by multi-MiB data.
-  3. *Hot path allocates nothing*: steady state does pointer
-     arithmetic and free-list moves only; cold paths (first use)
-     allocate once.
-  4. *Deterministic failure*: exhaustion/overflow fails the operation
-     itself — never a GC retry or an allocation stall. Allocators encountering
-     MemoryError fail the operation gracefully (returning None / error sentinels)
-     rather than letting an uncaught exception crash the server task.
-  5. *Copy budget*: a byte on the receive hot path is copied at most
-     twice (socket→reassembly, reassembly→destination); transports
-     receive into self-managed storage and hand consumers views.
-     Out-of-band UI captures bypass device memory entirely.
-- **Arena taxonomy** (structure follows access pattern — axes:
-  concurrent live count, entry size, lifetime): *slot pool* (several
-  concurrent, fixed-size, independent lifetimes — snapshots; future
-  match frames); *bump arena* (many, variable-size, batch lifetime —
-  the const store, reset wholesale per compile); *stream slot*
-  (single fixed 48 KiB buffer matching SNAP_SLOT_BYTES, single-in-flight
-  macro reverse requests; full-frame UI captures bypass device memory
-  entirely via direct LAN data plane).
-- **Current budgets** (profile constants, Part II §6): snapshot slot
-  48 KiB (128² RGB) × 8; const arena 256 KiB; stream assembly slot
-  48 KiB; per-connection reassembly 2×(8 KiB+8).
-- **Memory verification**: steady-state free_mem stays flat under
-  sustained bulk traffic; pool exhaustion fails deterministically and
-  recovers on release. A hot path found allocating (GC audit, a
-  traffic-correlated free_mem sawtooth) is a defect, not a tuning
-  issue.
-- **Cache discipline**: handle-ownership flags must be stored adjacent
-  to the register file (same struct, same cache line). In compiled
-  implementations, hoist the flags word into a dispatch-loop local so
-  the per-write cost is one register-resident AND+branch; naive layouts
-  that chase a pointer per write can dominate a hot loop (double memory
-  traffic). Releases are always deferred off the write path.
-- **Fast path**: a zero live-handle count short-circuits all mediation
-  checks to a single perfectly-predicted branch.
-- CircuitPython API verification discipline applies to any device-side
-  code: shared-bindings docs > same-pattern library usage > REPL probe;
-  never infer from MicroPython/CPython.
+- **Bulk-Memory Discipline**: On memory-constrained embedded targets, GC heap is restricted to small control-plane objects. Five rules bind every bulk buffer:
+  1. *On demand*: Buffers allocate on first touch, costing zero RAM if unused.
+  2. *Own forever*: Once allocated, owned by the managing layer; steady-state buffers never shrink. Macro execution streams are strictly bounded by one snapshot slot (48 KiB, `SNAP_SLOT_BYTES`). Full-frame UI captures bypass device RAM via out-of-band direct LAN fetching.
+  3. *Hot path allocates nothing*: Steady state performs pointer arithmetic and free-list operations only.
+  4. *Deterministic failure*: Exhaustion fails gracefully (returning error sentinels `$ret < 0`), never crashing the server task.
+  5. *Copy budget*: Hot-path bytes are copied at most twice.
+- **Arena Taxonomy**:
+  - *Slot pool*: Fixed-size, independent lifetimes (snapshots).
+  - *Bump arena*: Variable-size, batch lifetime (const store, reset wholesale per compilation).
+  - *Stream slot*: Single 48 KiB buffer matching `SNAP_SLOT_BYTES`.
+- **Budgets (Profile Constants)**: Snapshot slot 48 KiB ($128^2$ RGB) $\times$ 8; const arena 256 KiB; stream assembly slot 48 KiB; per-connection reassembly $2 \times (8\text{ KiB} + 8)$.
+- **Cache Discipline**: Handle ownership flags should reside adjacent to the register file; hoisting flags into dispatch-loop locals enables single-cycle fast paths.
