@@ -65,10 +65,11 @@ The VM core and compiler remain fully decoupled from physical hardware. All peri
 | `mouse_release` | `btn: int` | Releases mouse buttons. |
 | `mouse_move` | `dx: int, dy: int` | Emits relative mouse movement. |
 | `char_keycodes` | `char: str` | Resolves character to physical keycode and Shift state. |
+| `consumer_pulse` | `usage_id: int` | Sends a single USB HID Consumer Control press and release pulse (Usage Page 0x0C, e.g., volume, playback, power; VM opcode `0x08 CONSUMER_KEY`). |
 
 Platform implementations:
 - CircuitPython: `src/lib/hid_adafruit.py` (backed by `adafruit_hid`).
-- Unit Testing: `tests/mock_hid.py`.
+- Unit Testing: `tests/unit/mock_hid.py`.
 - MicroPython (target architecture): Backed by `machine.USBDevice`.
 
 ---

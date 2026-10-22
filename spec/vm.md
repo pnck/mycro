@@ -6,6 +6,16 @@
 - For middleware contracts (runtime registry, type discipline, handle ownership, peripheral providers, and standard library namespaces), see [runtime.md](runtime.md).
 - For DSL surface syntax, see [dsl.md](dsl.md).
 
+### Table of Contents
+- [§1. Execution Model & Halting Decidability](#1-execution-model--halting-decidability)
+- [§2. Register File](#2-register-file)
+- [§3. Bytecode Container Format (VERSION 4)](#3-bytecode-container-format-version-4)
+- [§4. Opcode Set (v4)](#4-opcode-set-v4)
+- [§5. Predicate Lowering & `OP_BRA` Offset Semantics](#5-predicate-lowering--op_bra-offset-semantics)
+- [§6. Flat Iterative Guard Model](#6-flat-iterative-guard-model)
+- [§7. Register-Write Mediation (VM ↔ Middleware Interface)](#7-register-write-mediation-vm--middleware-interface)
+- [§8. Version Policy and History](#8-version-policy-and-history)
+
 ---
 
 # Part I — VM Core
@@ -13,18 +23,18 @@
 ## 1. Execution Model & Halting Decidability
 
 The MYCRO VM is a linear bytecode register machine. Execution state per task:
-- `regs[]`: The register file (see §2).
+- `regs[]`: The register file (see [§2](#2-register-file)).
 - `ip`: Instruction pointer advancing monotonically through the linear opcode stream.
 - `loop_stack`: Counting loop frames (remaining count + return address), bounded by bytecode size; zero runtime heap allocation.
 - `str_table`: Read-only string pool loaded from the container header.
-- `guard_slots` / `guard_depth`: Flat array and cursor for invariant monitoring (see §6).
+- `guard_slots` / `guard_depth`: Flat array and cursor for invariant monitoring (see [§6](#6-flat-iterative-guard-model)).
 
 ### Halting Decidability & Control Flow
 - **Forward Control Flow**: The instruction pointer `ip` advances strictly forward. Branch and jump instructions (`BRA`, `JMP`) strictly utilize positive forward offsets ($\text{target} > \text{pc}$).
 - **Halting Decidability**: Iteration is handled exclusively via bounded counting loops (`LOOP` / `LOOP_END`). Unbounded backward branches (`while`, `goto`) do not exist. Macro execution is guaranteed to halt in finite cycles, terminate via task cancellation, or suspend awaiting an external event (exitable via abort or guard failure).
 
 ### Peripheral Safety Invariants
-- **Emergency Safety Fallback**: On unhandled exceptions, task aborts, or guard violations (§6), the VM immediately releases all physically held keys and mouse buttons via `hid.keys_release_all()` and `hid.mouse_release(0x1F)`.
+- **Emergency Safety Fallback**: On unhandled exceptions, task aborts, or guard violations ([§6](#6-flat-iterative-guard-model)), the VM immediately releases all physically held keys and mouse buttons via `hid.keys_release_all()` and `hid.mouse_release(0x1F)`.
 - **Normal Completion**: Physical keys and mouse buttons held via `KEY_DOWN` / `MDOWN` persist across normal script termination until explicitly released by subsequent commands or an abort.
 - **Resource Reclamation**: All managed Handle resources are reclaimed on every exit path via `runtime.release_all()`.
 
@@ -64,7 +74,7 @@ u8 tag:  0 = Immediate (i32 LE, 4 bytes)
 
 > [!NOTE]
 > **Operand Tag 3-Variant Closure**: Standard VM opcodes permanently consist of the above 3 variants. They do NOT introduce a 4th slot tag. When a command consumes `$slot.<sig>.<field>` in a Value position, the compiler emits `0x28 OP_READSLOT` immediately preceding the host instruction to load the slot value into an ephemeral register, passing `tag = 1 (REG)` to the host opcode.
-> The only exception is the internal predicate descriptor of `0x25 GUARD_ENTER`, which defines its own 2-bit tag field (`0: IMM, 1: REG, 2: SLOT`) for zero-overhead delay-slice polling (see §4.1).
+> The only exception is the internal predicate descriptor of `0x25 GUARD_ENTER`, which defines its own 2-bit tag field (`0: IMM, 1: REG, 2: SLOT`) for zero-overhead delay-slice polling (see [§4.1](#41-compact-predicate-descriptor-specification-pred_descriptor)).
 
 ---
 
@@ -79,6 +89,7 @@ u8 tag:  0 = Immediate (i32 LE, 4 bytes)
 | `0x05` | `MCLICK` | `typed(u8 btn), typed(u16 count)` | Mouse click (`btn`: 1=L, 2=R, 4=M, 8=B, 16=F). |
 | `0x06` | `MMOVE` | `typed(i16 dx), typed(i16 dy)` | Relative mouse move. |
 | `0x07` | `PACE` | `typed(u16 ms)` | Configure inter-action pacing delay. Strictly bounded to `u16` ($0..65535\text{ ms}$). |
+| `0x08` | `CONSUMER_KEY` | `typed(u16 usage_id)` | Single Consumer Control pulse (USB HID Page 0x0C, e.g., volume, playback, brightness). |
 | `0x10` | `LOOP` | `typed(u8 count), u16 len` | Push loop frame; `len` = body byte length including `LOOP_END`. Count 0 skips. |
 | `0x11` | `LOOP_END` | — | Decrement top loop counter; jump back to loop body start if $> 0$, else pop frame. |
 | `0x12` | `KEY_DOWN` | `typed(u8 keycode)` | Press and hold key (keycode 0 = release all). |
