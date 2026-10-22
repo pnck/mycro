@@ -24,10 +24,10 @@ Drawing from embedded microcontroller execution constraints and user feedback on
 
 | Architectural Dimension | v3 Baseline Limitations & Bottlenecks | v4 Normative Evolution & Design Delta | Target Section & Spec Partition |
 |---|---|---|---|
-| **Document Layout Model** | `spec/dsl.md §1` enforces an uncompromising typewriter output mode (raw newlines emit `Enter`, raw spaces emit `Space`). Long scripts, nested control flow, and user macros cannot use code indentation or blank-line paragraphing, severely compromising script readability and maintainability. | Introduces the shebang-style preamble directive `\#!syntax`, establishing `free` layout as the normative v4 default (whitespace is silently absorbed; explicit blanks are emitted via `\enter`, `\space`, `\tab`). The historical typewriter behavior is fully preserved as the `typewriter` preset for backwards compatibility. | §5 (Part I $\rightarrow$ `spec/dsl.md`) |
+| **Document Layout Model** | `spec/dsl.md §1` enforces an uncompromising typewriter output mode (raw newlines emit `Enter`, raw spaces emit `Space`). Long scripts, nested control flow, and user macros cannot use code indentation or blank-line paragraphing, severely compromising script readability and maintainability. | Introduces the shebang-style preamble directive `\#!syntax` and the text-block instruction pair `\text{}`…`\endtext{}` (complete instructions with empty braces; the payload passes through no pair). **`typewriter` remains the default**: scripts without a preamble directive behave byte-identically to v3. `free` layout (whitespace silently absorbed) is explicitly activated via `\#!syntax: free`, which serves as the recognition marker of v4 structured scripts. `\text` text blocks emit whitespace-bearing text literally under any layout mode. | §3, §5 (Part I $\rightarrow$ `spec/dsl.md`) |
 | **Temporal Dimensions** | `spec/dsl.md §2, §6` accepts floating-point seconds in `\delay` and `\pace`, while the underlying `spec/vm.md §4` consumes integer milliseconds (`u16 ms` / `u32 ms`) and `$var` stores integer milliseconds. The reference implementation (`macro.py:883`) silently truncates values exceeding 65535 ms (`max(1, min(65535, ms))`), introducing quantization jitter and masking serious timing bugs. | Eliminates frontend floating-point second parsing. Introduces single-pass in-place folded time literals (`500ms`, `0.5s`) unified into the scalar integer `i32` domain. VM physical operands (`0x04 SLEEP`, `0x07 PACE`) strictly retain `u16 ms` with mandatory static range assertion diagnostics. | §2.1, §6.1 (Part I $\rightarrow$ `spec/dsl.md`) |
 | **Delimiter Taxonomy & Braces** | `spec/dsl.md §1` loosely categorizes code into Text, Command, and Argument positions without formal structural grammar rules for compound arguments (`{dx, dy}`) versus separate arguments (`{var}{val}`), while conflating formal parameter positions with runtime Slot entities. | Formally establishes the **Binary Brace Taxonomy** (Executable Code Blocks vs Argument Groups) and the **Structural Exclusivity Law** (`{A}{B} \ne {A, B}`). Input parameters are orthogonally partitioned into Value, Name, and Predicate categories, completely decoupled from runtime Slots. | §3, §4 (Part I $\rightarrow$ `spec/dsl.md`) |
-| **Signals & Slots** | `spec/dsl.md §1, §6` exhibits semantic inversion: `\wait{sig}` consumes a bare signal name as an event trigger, whereas slots are relegated to passive, read-only dictionaries (`$sig.field`). This severed relationship caused transient race-condition event loss in `runtime.py:273`. Furthermore, slot variables lacked a dedicated scoping prefix. | Fully resets the Signal/Slot paradigm: **Signals are strictly Name-position projection channels** (pure static identifiers, never prefixed with `$`); **Slots are strictly Value-position state receptors mandatory-prefixed with `$slot.`** (e.g., `$slot.<sig>.<field>`, with default projection to `$slot.<sig>.val`, serving as the **sole observable entities for wait and guard**). `\wait` is standardized as `\wait{ $slot.<sig>.val }[timeout]` and backed by a lossless **Event Latch** model. | §4, §6.2 (Part I $\rightarrow$ `spec/dsl.md`), Part III §1 (`spec/runtime.md`) |
+| **Signals & Slots** | `spec/dsl.md §1, §6` exhibits semantic inversion: `\wait{sig}` consumes a bare signal name as an event trigger, whereas slots are relegated to passive, read-only dictionaries (`$sig.field`). This severed relationship caused transient race-condition event loss in `runtime.py:273`. Furthermore, slot variables lacked a dedicated scoping prefix. | Fully resets the Signal/Slot paradigm: **Signals are strictly Name-position projection channels** (pure static identifiers, never prefixed with `$`); **Slots are strictly Value-position state receptors mandatory-prefixed with `$slot.`** (e.g., `$slot.<sig>.<field>` with explicitly written field names, default projection to `$slot.<sig>.val`; the sole `\wait`-able receptors and the guards' sole channel for observing external state). `\wait` is standardized as `\wait[timeout]{ $slot.<sig>.val }` and backed by a lossless **Event Latch** model. | §4, §6.2 (Part I $\rightarrow$ `spec/dsl.md`), Part III §1 (`spec/runtime.md`) |
 | **Predicates & Guarding** | `spec/dsl.md §5` relies on the rigid 4/5-brace `\ifnum{$a}{op}{b}{then}`, which cannot express compound Boolean logic (AND/OR). Crucially, the system lacks runtime invariant guarding during long macro executions, exposing peripherals to uncontrolled state divergence during multi-second delays. | Deprecates `\ifnum` in favor of first-class structured predicates `\if{pred}{then}` (zero new VM jump opcodes; lowered to `0x22 BRA` via syntax-directed short-circuiting). Introduces continuous invariant monitoring via `\guarded` with delay-sliced polling (VM opcodes `0x25 GUARD_ENTER` / `0x26 GUARD_EXIT`). | §9 (Part I $\rightarrow$ `spec/dsl.md`), Part II (`spec/vm.md`) |
 | **Visual Telemetry** | `spec/dsl.md §6` only supports polling-based RPC captures via `\call{img.snap}`. Repetitive round-trip network latency across ESP32-S3 WiFi creates severe frame bottlenecks that prevent real-time feedback loops. | Introduces push-based telemetry subscriptions via `\call{img.watch}`. The capture provider continuously streams sampled data into `$slot.img.<name>.val` and trips the `img.<name>` event signal, eliminating network round-trip stalls. | Part III §3.3 (`spec/runtime.md`) |
 | **State & Atomic Arithmetic** | `spec/dsl.md §3` only provides `\set` and `\add`. Decrementing a variable requires adding a negative integer literal, making register-to-register subtraction impossible without expressions. | Upholds the Atomic Arithmetic Axiom (no expression trees) while introducing a fully symmetrical atomic decrement macro: `\sub{var}{val}` backed by native VM opcode `0x24 SUB u8 reg, typed(i32 rhs)`. | §7 (Part I $\rightarrow$ `spec/dsl.md`), Part II §3 (`spec/vm.md`) |
@@ -55,7 +55,7 @@ The surface language is composed exclusively of explicit instructions and flat d
 The Control Flow Graph (CFG) is strictly constrained to forward DAGs and bounded counting loops:
 - Conditional branches (`OP_BRA`) and unconditional jumps (`OP_JMP`) are strictly forward-progressing ($\text{target} > \text{pc}$).
 - Loops are exclusively instantiated through bounded counter iterations (`\rep{N}`). General backward branches (`while`, `goto`) do not exist.
-- Execution is statically guaranteed to halt in a finite number of cycles, time out deterministically, or terminate via external task cancellation (`POST /macro/abort`).
+- Execution is statically guaranteed to halt in a finite number of cycles, time out deterministically, terminate via external task cancellation (`POST /macro/abort`), or **suspend indefinitely awaiting an external event** (deterministically exitable via external abort and guard circuit-breaking) — what the language guarantees is the absence of unbounded computational divergence, not the absence of event waiting.
 
 ### 1.4 Axiom IV: Bounded Resources & Deterministic State
 All runtime execution horizons and resource allocations are bounded by static compile-time constants:
@@ -77,7 +77,7 @@ The MYCRO DSL character stream is partitioned into six closed, deterministic lex
    - Consumer: Parsed by the compiler to emit corresponding VM opcodes or trigger compile-time macro inlining.
 2. **Variable Sigil (`$`)**:
    - Pattern: Dollar sign `$` followed by an identifier reference (e.g., `$var`, `$ret`, `$timeout`, `$slot.<sig>.<field>`).
-   - Consumer: Denotes dynamic value evaluation. Categorized into local general-purpose registers (`$var`), system read-only registers (`$ret`, `$timeout`), and **stateful receptor slots (mandatory-prefixed with `$slot.`**, e.g., `$slot.<sig>.<field>` or `$slot.<sig>`). Slots are the sole observable entities in the system eligible for asynchronous waiting (`\wait`) and continuous invariant guarding (`\guarded`).
+   - Consumer: Denotes dynamic value evaluation. Categorized into local general-purpose registers (`$var`), system read-only registers (`$ret`, `$timeout`), and **stateful receptor slots (mandatory-prefixed with `$slot.`**, e.g., `$slot.<sig>.<field>`; the field name MUST be written explicitly — no omission shorthand, see Part III §1.2). Slots are the sole entities eligible for asynchronous waiting (`\wait`), and the sole channel through which guards (`\guarded`) observe external asynchronous state.
 3. **Numeric Literals**:
    - Pattern: Decimal integers (`120`, `-15`), hexadecimal constants (`0xFF`, `0xFF00FF`), and dimensioned time literals (`500ms`, `0.5s`).
    - Consumer: Static numeric values folded in-place during lexing into unified `i32` integer scalars (see §2.1).
@@ -143,8 +143,8 @@ DimLiteral      ::= DecLiteral "ms" | [0-9]+ ("." [0-9]+)? "s"
 
 #### 0. v3 Baseline Limitations & Revision Rationale
 - **v3 Baseline Design (`spec/dsl.md §1`)**: Coarsely partitioned source code into Text positions, Command name positions, and Argument brace positions. It lacked formal structural grammar constraints for distinguishing compound argument lists (`{dx, dy}`) from separate single-argument groups (`{var}{val}`), while loosely using the term "slot" to refer to both macro formal parameters and runtime middleware variables.
-- **Defect Analysis**: Macro authors frequently conflated separate arguments with compound arguments (writing `\set{x, v}` instead of `\set{x}{v}`, or `\move{x}{y}` instead of `\move{dx, dy}`). Conflating parameter positions with runtime Slot variables (`$slot.<sig>.<field>`) also caused conceptual confusion.
-- **v4 Specification Resolution**: Formally establishes the **Binary Brace Taxonomy** (Executable Code Blocks vs Argument Groups) and the **Structural Exclusivity Law** (`{A}{B} \ne {A, B}`). Delimiters are strictly classified as either executable bodies or argument lists, and the terminology is cleanly decoupled into static "Argument Positions" vs runtime "Slots".
+- **Defect Analysis**: Macro authors frequently conflated separate arguments with compound arguments (writing `\set{x, v}` instead of `\set{x}{v}`, or `\move{x}{y}` instead of `\move{dx, dy}`). Conflating parameter positions with runtime Slot variables (`$slot.<sig>.<field>`) also caused conceptual confusion; and under free layout, whitespace-bearing text emission lacked a normative carrier.
+- **v4 Specification Resolution**: Formally establishes the **Binary Brace Taxonomy** (Executable Code Blocks vs Argument Groups) and the **Structural Exclusivity Law** (`{A}{B} \ne {A, B}`). The terminology is cleanly decoupled into static "Argument Positions" vs runtime "Slots".
 
 A MYCRO macro script consists of a sequential ASCII character stream. Commands sequentially consume trailing brace pairs `{}` according to their **Static Signature Contracts**.
 
@@ -152,22 +152,44 @@ In the compiler's grammatical model, **every brace pair `{}` is partitioned into
 
 ### 3.1 Executable Code Blocks (`{ body }`)
 - **Semantics**: An executable sub-stream of macro code. Its internal parsing is isomorphic to the top-level macro stream (printable ASCII characters emit keystrokes; backslashes trigger macro commands).
-- **Host Contexts**: Bodies of control flow structures and user macro definitions (e.g., `{ body }` in `\rep{N}{ body }`, `{ then }` and `{ else }` in `\if{pred}{ then }[{ else }]`, `\def{name}[argc]{ body }`, and `\guarded[throttle]{pred}{ body }[{ on_abort }]`).
+- **Host Contexts**: Bodies of control flow structures and user macro definitions (e.g., `{ body }` in `\rep{N}{ body }`, `{ then }` and `{ else }` in `\if{pred}{ then }{ else }` (else block omissible), `\def{name}[argc]{ body }`, and `\guarded[throttle]{pred}{ body }{ on_abort }` (on_abort block omissible)).
 
 ### 3.2 Argument Groups & The Structural Exclusivity Law
 - **Semantics**: Delimiters passing named, numeric, or conditional arguments into the host command. An argument group contains either a single argument or a comma-separated list of multiple positional arguments.
 - **The Structural Exclusivity Law (`{A}{B} \ne {A, B}`)**:
   The brace structure expected by a command is uniquely and statically determined by its signature contract. The two forms are strictly mutually exclusive and cannot be interchanged:
   - **Separate Argument Groups `{A}{B}`**: Positional arguments reside in separate, adjacent brace pairs, each bound to an independent parameter category (e.g., `\set{var}{val}`, `\add{var}{val}`, `\sub{var}{val}`).
-  - **Compound Argument Groups `{A, B}`**: A single brace pair contains multiple comma-separated arguments belonging to the same functional tuple (e.g., `\move{dx, dy}`, `\click{btn[, count]}`).
+  - **Compound Argument Groups `{A, B}`**: A single brace pair contains multiple comma-separated arguments belonging to the same functional tuple (e.g., `\move{dx, dy}`, `\click{btn, count}` — the latter's `count` is an omissible in-group element, part of the argument group, not a decorator).
   - **Extension Call Form (`\call`)**: The initial group is fixed to `{ns.fn}`, and subsequent brace structures are consumed according to the registered signature of the target extension function (e.g., `\call{img.snap}{rect}`, `\call{img.watch}{name}{coord}{interval, duration}`).
   - **Compound Structures (Argument Group + Code Block)**: When a command accepts both parameters and an executable block, the argument groups strictly precede the code blocks (e.g., `\rep{count}{ body }`, `\if{pred}{ then }`).
 
 ### 3.3 Optional Decorator Brackets (`[]`)
-Used to encapsulate optional command configurations or metadata (its internal parsing is isomorphic to an argument group, supporting single values or comma-separated tuples):
-- `\def{name}[argc]{body}`: Decorates the formal parameter count (0–9).
-- `\guarded[throttle_ms]{pred}{body}[{on_abort}]`: Decorates the minimum polling interval (defaults to `0ms`).
-- `\wait{ $slot.<sig>.<field> }[timeout]`: The mandatory argument group is in the Value category and strictly consumes a stateful receptor slot (prefixed with `$slot.`, e.g., `$slot.net.msg.val` or abbreviated `$slot.net.msg`). The optional bracket decorators define the timeout duration (Value category, accepting `500ms`, `5s`, or `$var`, folded to integer milliseconds; defaults to indefinite blocking).
+Optional scalar configuration, written in **literal square brackets** (internal parsing is isomorphic to an argument group, supporting single values or comma-separated tuples). **Position rule: a decorator sits immediately adjacent to what it modifies** — decorators modifying the whole command's behavior lead before the mandatory groups (`\guarded[50ms]{...}`, `\wait[5s]{...}`); a decorator modifying a specific argument group follows that group directly (`\def{name}[argc]{body}`, where argc modifies the name's arity — the LaTeX `\newcommand` precedent):
+- `\def{name}[argc]{body}`: Decorates the formal parameter count (0–9, defaults to 0).
+- `\guarded[throttle_ms]{pred}{body}`: Decorates the minimum polling interval (defaults to `0ms`).
+- `\wait[timeout]{ $slot.<sig>.<field> }`: Decorates the wait timeout (Value category, accepting `500ms`, `5s`, or `$var`, folded to integer milliseconds; omitted = indefinite blocking). The mandatory argument group strictly consumes a stateful receptor slot (prefixed with `$slot.`, field name written explicitly, e.g., `$slot.net.msg.val`).
+
+> **Notation Discipline**:
+> 1. `[...]` in signatures **always denotes literal square brackets**; omissibility is expressed in words or EBNF (inside ```ebnf blocks, `[ x ]` follows the EBNF convention for optionality — the contexts never mix).
+> 2. **Optional code blocks are not decorators**: optional blocks such as else / on_abort are written as bare `{}` trailing the mandatory block and are omissible as a whole (see §9).
+> 3. Omissible elements INSIDE a compound argument group (e.g., `count` in `\click{btn, count}`) belong to the argument group, not to decorators, and are annotated in words.
+> 4. **v3 Migration**: v3's `\wait` timeout was a bare `{}` argument group (`\wait{sig}{30}`); in v4 it is always written as a leading literal bracket decorator (`\wait[30s]{ $slot.net.msg.val }`) — `\wait` already breaks compatibility via receptor slots and latch semantics, so this migration joins the same breakage budget.
+
+### 3.4 Text Blocks (`\text{}` … `\endtext{}`)
+
+```ebnf
+TextBlock ::= "\text" ( "{}" | Newline ) Payload "\endtext{}"
+Payload   ::= (* any character sequence not containing "\endtext{}"; zero escapes, emitted verbatim *)
+```
+
+- **Form**: A text block is **not a brace structure** — `\text{}` and `\endtext{}` are a pair of complete macro instructions (the empty `{}` is part of each instruction's signature and emits no keystrokes); every character between the two instructions is a literal payload.
+- **Opening forms** (exactly two; any other immediately-following character is a compile error):
+  - `\text{}`: the payload begins immediately after `}` — an immediately following space emits Space, an immediately following newline emits Enter; nothing is stripped as a separator.
+  - `\text` immediately followed by a newline (heredoc form): that newline is itself payload (emits Enter).
+- **Lexical Closure (Zero Escapes)**: every character in the payload is emitted verbatim, independent of the layout mode — spaces/tabs/newlines emit the corresponding physical keys. No macro commands, comments, escape sequences, or `$` interpolation are recognized (a backslash is a literal keystroke).
+- **Termination (zero counting, zero stack)**: the scanner searches the payload for the literal sequence `\endtext{}` (fixed substring match). That sequence is the payload's only forbidden zone — to emit it, split blocks (e.g., leave `\end` in the payload and write `text{}` bare in text position). Exhausting the character stream without the terminator is an `Unterminated text block` compile error.
+- **Lexical Protection**: `text` and `endtext` are both built-in command names; user macros with those names are rejected by the conflict diagnostic. `\textfoo` becomes an unknown command via maximal identifier scanning — a loud error. `\endtext{}` outside a text block is an `endtext without text block` compile error.
+- **Full Immunity in `\def` Composition**: `\def{g}[1]{\text{}#1\endtext{}}` — parameter text enters the payload without passing through any brace parsing, so payloads containing braces, brackets, or backslashes forward safely; the only forbidden zone remains `\endtext{}` itself.
 
 ---
 
@@ -181,17 +203,23 @@ Used to encapsulate optional command configurations or metadata (its internal pa
 >    - **Slots are Strictly Value-Position Stateful Receptors**:
 >      - **Mandatory Prefix Contract**: All Slot variables **MUST strictly begin with the prefix `$slot.`** (canonical form: `$slot.<sig>.<field>`). This grammatical invariant enables the single-pass lexer to unambiguously recognize slot variables without backtracking.
 >      - **Default Signal-to-Slot Projection Rule**: When the outside world emits a signal `<sig>` without specific sub-fields (such as a single integer scalar, a boolean notification, or an unnamed payload), the **default projection field is uniformly mapped to `val`** (`$slot.<sig>.val`), which latches the event as pending.
->      - **Shorthand Equivalence Law**: Writing `$slot.<sig>` in macro source code (omitting the trailing field dot) is automatically desugared by the streaming compiler to `$slot.<sig>.val`.
-> 3. **The Sole Observable Receptor Axiom**:
->    - **Receptor slots starting with `$slot.` are the ONLY valid asynchronous entities eligible for waiting (`\wait`) and guarding (`\guarded`)**.
->    - General-purpose registers (`$var`, not starting with `$slot.`) represent private synchronous state inside the single-threaded macro. In the absence of concurrent macro threads, registers cannot mutate asynchronously; attempting to `\wait` on a general-purpose register triggers an immediate static compilation error.
->    - Guard predicates in `\guarded` must observe at least one `$slot.` receptor. A guard composed entirely of local registers or constants is a statically degenerate "dead guard" and is rejected at compile time.
+>      - **No-Shorthand Law**: The field name MUST be written explicitly in source code; there is **no** `$slot.<sig>` omission shorthand — under the last-dot splitting rule (Part III §1.2) such a form resolves unambiguously to signal `<prefix>` + field `<last segment>`, which irreconcilably conflicts with the shorthand intent. A single deterministic parsing rule outranks typing convenience.
+> 3. **The Sole Waitable Receptor Axiom**:
+>    - **Receptor slots starting with `$slot.` are the ONLY valid asynchronous entities eligible for waiting (`\wait`)**. Guard (`\guarded`) predicates may reference `$slot.` receptors (observing external asynchronous state) and/or local registers (self-monitoring of the protected body's own state), but observation of the outside world is possible only through `$slot.` receptors.
+>    - General-purpose registers (`$var`, not starting with `$slot.`) represent private synchronous state inside the single-threaded macro; the outside world cannot mutate them asynchronously. Attempting to `\wait` on a general-purpose register triggers an immediate static compilation error.
+
+Formal grammar of the receptor slot reference:
+
+```ebnf
+SlotRef   ::= "$slot." DottedName
+DottedName ::= Identifier "." Identifier   (* signal names may contain dots; split at the LAST dot: sig = everything left, field = last segment *)
+```
 
 Every argument position belongs to one of three orthogonal grammatical categories based on the host command's signature:
 
 | Parameter Category | Syntactic Form & Evaluation Rules | Compilation & Runtime Mapping |
 |---|---|---|
-| **Value Category (Value)** | **Dynamic variable references, numeric immediates, or compile-time value constructors**:<br>• Variable references: Local registers (`$var`), system registers (`$ret`, `$timeout`), receptor slot variables (**strictly prefixed with `$slot.`**, e.g., `$slot.<sig>.<field>` or `$slot.<sig>`);<br>• Static literals: Decimal, hexadecimal, or time-dimensioned literals (`500ms`, `0.5s`), folded at lex time into `i32` immediates;<br>• Value constructors: Packed RGB color constant `\rgb{r, g, b}`, pixel rectangle literal `\rect{...}`. | **Physical 3-Tag Closed Operand Architecture**:<br>• Immediate literal $\rightarrow$ `TAG_IMM (0)` (`i32 LE`);<br>• Local/system register $\rightarrow$ `TAG_REG (1)` (`u8 reg`);<br>• Static string constant $\rightarrow$ `TAG_STR (2)` (`u8 str_idx`, `\call` only);<br>• **Receptor Slot variables (`$slot...`)** $\rightarrow$ Pre-instruction desugaring: The compiler emits `0x28 OP_READSLOT` before the host instruction to load the slot into an ephemeral register, passing `TAG_REG` to the host instruction. In `\guarded` predicate descriptors, slots are encoded natively via the `SLOT` descriptor tag (see §4.1). |
+| **Value Category (Value)** | **Dynamic variable references, numeric immediates, or compile-time value constructors**:<br>• Variable references: Local registers (`$var`), system registers (`$ret`, `$timeout`), receptor slot variables (**strictly prefixed with `$slot.`**, e.g., `$slot.<sig>.<field>` — the sole asynchronous receptor);<br>• Static literals: Decimal, hexadecimal, or time-dimensioned literals (`500ms`, `0.5s`), folded at lex time into `i32` immediates;<br>• Value constructors: Packed RGB color constant `\rgb{r, g, b}`, pixel rectangle literal `\rect{...}`. | **Physical 3-Tag Closed Operand Architecture**:<br>• Immediate literal $\rightarrow$ `TAG_IMM (0)` (`i32 LE`);<br>• Local/system register $\rightarrow$ `TAG_REG (1)` (`u8 reg`);<br>• Static string constant $\rightarrow$ `TAG_STR (2)` (`u8 str_idx`, `\call` only);<br>• **Receptor Slot variables (`$slot...`)** $\rightarrow$ Pre-instruction desugaring: The compiler emits `0x28 OP_READSLOT` before the host instruction to load the slot into an ephemeral register, passing `TAG_REG` to the host instruction. In `\guarded` predicate descriptors, slots are encoded natively via the `SLOT` descriptor tag (see §4.1). |
 | **Name Category (Name)** | **Static symbolic identifiers**:<br>Key names, mouse buttons, namespaces, **Signal channel names (e.g., `net.msg`)**, or variable names. Written as bare identifiers, strictly prohibiting the dynamic variable sigil `$`. | Statically resolved at compile time into single-byte usage IDs or indices (`u8`). |
 | **Predicate Category (Predicate)** | **Conditional decision structures**:<br>Accepts atomic comparison triplets `{lhs, op, rhs}` or composite logic trees `\all` / `\any` (see §9). Flanked by Value-category operands, centered on a relational operator. | Directly lowered by the compiler into forward-only short-circuit jump sequences (`OP_BRA`), driving hardware-level branch decisions. |
 
@@ -232,7 +260,7 @@ Value-category operands are conceptually unified as scalar `i32` integers (see �
 | `\delay{t}`, `\pace{t}` | `u16` (2 bytes LE) | $[0, 65535]\text{ ms}$ | Hardware timing base. Durations exceeding 65535 ms must be explicitly expressed via `\rep` loops (rejected by static range assertions). |
 | `\rep{N}` | `u8` (1 byte) | $[0, 255]$ | Static loop counter limit. Immediate values exceeding 255 trigger a compile diagnostic (`MacroError: rep count out of u8 range`). |
 | `\move{dx, dy}` | `i16` (2 bytes LE) | $[-32768, 32767]$ | Relative mouse movement offsets. |
-| `\wait{ $slot.<sig>.<field> }[timeout]` | `u32` (4 bytes LE) | $[0, 4294967295]\text{ ms}$ | Timeout duration (0 or omitted represents indefinite waiting; maps to `OP_WAIT u8 sig, u8 field, typed(u32)`). Shorthand `$slot.<sig>` defaults to `field="val"`. |
+| `\wait[timeout]{ $slot.<sig>.<field> }` | `u32` (4 bytes LE) | $[0, 4294967295]\text{ ms}$ | Timeout duration (0 or omitted represents indefinite waiting; maps to `OP_WAIT u8 sig, u8 field, typed(u32)`). |
 | `\set{var}{val}`, `\add{var}{val}`, `\sub{var}{val}` | `i32` (4 bytes LE) | $[-2^{31}, 2^{31} - 1]$ | General-purpose scalar registers. |
 
 - **Handle Comparison Restriction**: Opaque Handle instances only support equality comparisons (`=`, `!=`) in Value positions; the read-only register `$ret` carries error-code sentinels and supports full relational comparisons.
@@ -292,11 +320,11 @@ The streaming frontend introduces the following deterministic static diagnostics
 2. **Predicate Dual-Brace Syntax & Operator Validation (`Predicate Syntax & Operator`)**:
    - Atomic predicate units in conditional commands (`\if`, `\guarded`) MUST be formatted as self-contained dual-brace triplets: `{ {lhs, op, rhs} }`. Violating the brace pairing or providing an operator outside the valid set (`=`, `!=`, `<`, `<=`, `>`, `>=`) triggers an immediate static error.
 3. **Receptor Slot Wait Target Constraint (`Receptor Wait Target Constraint`)**:
-   - The argument to `\wait` MUST be a stateful receptor slot beginning with `$slot.` (canonical form `$slot.<sig>.<field>` or shorthand `$slot.<sig>`).
+   - The argument to `\wait` MUST be a stateful receptor slot beginning with `$slot.` (canonical form `$slot.<sig>.<field>`, field name written explicitly).
    - Passing a local register (`$var`), a system register (`$ret`), or a numeric literal triggers `MacroError: wait requires a $slot.<sig>.<field> receptor`, preventing deadlocks in single-threaded execution.
-4. **Guard Nesting & Liveness Diagnostics (`Guard Nesting & Liveness`)**:
+4. **Guard Nesting Diagnostics (`Guard Nesting`)**:
    - If `\guarded` nesting exceeds the compile-time constant `MAX_GUARD_NEST = 4`, compilation halts with `MacroError: guard nesting exceeds 4 levels`.
-   - If a `\guarded` predicate consists entirely of local synchronous variables and literals without observing any `$slot.` receptor, it is diagnosed as an un-triggerable "dead guard" and rejected with `MacroError: guarded predicate must observe at least one $slot receptor`.
+   - Guard predicates MAY consist solely of local registers (self-monitoring guards observe state mutations performed by the protected body itself, e.g., `\guarded{ {$i, <, 100} }{...}`). Predicates whose operands are both immediates are already constant-folded during lowering (see §9.4) and require no dedicated diagnostic.
 
 ---
 
@@ -307,7 +335,7 @@ Preamble directives configure the compiler's lexical scanner behavior prior to c
 
 ```ebnf
 PreambleDirective ::= PreamblePrefix "syntax:" Whitespace* SyntaxConfig
-PreamblePrefix    ::= ("#!" | "# !")
+PreamblePrefix    ::= "#!"
 SyntaxConfig      ::= Preset | ConfigList
 Preset            ::= "free" | "typewriter"
 ConfigList        ::= ConfigItem ("," Whitespace* ConfigItem)*
@@ -320,26 +348,27 @@ Whitespace        ::= " " | "\t"
 #### Valid Forms and Equivalences
 | Declaration Form | Internal Equivalent | Scanner Behavior | Target Use Case |
 |---|---|---|---|
-| `\#!syntax: free` | `newline=ignore, space=ignore` | **Free Layout Mode (v4 Normative Default)**: Unescaped newlines and spaces are silently absorbed; explicit blanks are emitted via `\enter`, `\space`, or `\tab`. | Structured macro scripts (with loops, branches, user macros, indentation, and blank lines). |
-| `\#!syntax: typewriter` | `newline=emit, space=emit` | **Typewriter Mode (v3 Compatibility)**: Raw newlines emit physical `Enter` keystrokes; raw spaces emit `Space` keystrokes. | Raw text typing, automated form filling, legacy v3 scripts. |
+| `\#!syntax: free` | `newline=ignore, space=ignore` | **Free Layout Mode (explicitly activated)**: Unescaped newlines and spaces are silently absorbed; explicit blanks are emitted via `\enter`, `\space`, `\tab`, and whitespace-bearing text via `\text{}`…`\endtext{}` text blocks. **The canonical form of a v4 structured script begins with this directive, serving as the recognition marker distinguishing it from v3 scripts.** | Structured macro scripts (with loops, branches, user macros, indentation, and blank lines). |
+| `\#!syntax: typewriter` | `newline=emit, space=emit` | **Typewriter Mode (default)**: Raw newlines emit physical `Enter` keystrokes; raw spaces emit `Space` keystrokes. **Scripts without any preamble directive behave byte-identically to v3 — zero migration cost.** | Raw text typing, automated form filling, legacy v3 scripts. |
 | `\#!syntax: newline=ignore, space=emit` | Fine-Grained Config | **Orthogonal Hybrid**: Newlines allow indentation; spaces directly emit `Space` keystrokes. | Indented scripts requiring frequent inline whitespace typing. |
 
 - **Preamble Scope**: The directive must appear in the leading comment lines of the script, before any non-comment, non-whitespace executable character. Once the first code token is encountered, configuration is permanently frozen.
 - **Comment Orthogonality Law**:
   - `\# <text>`: Standard human-readable comments; silently ignored.
-  - `\#!<directive>` / `\# !<directive>`: Compiler preamble directive; processed exclusively at the head of the file. Occurrences within the body of a script are treated as standard comments.
+  - `\#!<directive>`: Compiler preamble directive; processed exclusively at the head of the file. Occurrences within the body of a script are treated as standard comments.
 
 ### 5.2 Lexer Scanning State Machine & Behavior Control
 
 The lexical scanner operates deterministically according to the active layout configuration:
 
 #### 1. Character Handling Matrix
-| Input Stream Character | Syntactic Context | `free` Mode Behavior (v4 Default) | `typewriter` Mode Behavior (v3 Compatibility) |
+| Input Stream Character | Syntactic Context | `free` Mode Behavior (via `\#!syntax: free`) | `typewriter` Mode Behavior (default, v3-compatible) |
 |---|---|---|---|
 | Newline `\n` / `\r\n` | Text Position | **Silently Absorbed** (advances line counter; no keystroke emitted) | **Emits Enter Key** (`0x02 KEY keycode_enter`) |
 | Space `' '` / Tab `\t` | Text Position | **Silently Absorbed** (supports free indentation; no keystroke emitted) | **Emits Space / Tab Key** (`0x01 CHAR 0x20` / `0x02 KEY keycode_tab`) |
 | Explicit `\enter`, `\space`, `\tab` | Text Position | **Emits Target Keystroke** (immediate action command) | **Emits Target Keystroke** (immediate action command) |
 | Line Continuation `\` + Newline | Text Position | **Silently Absorbed** (continuation swallowed) | **Silently Absorbed** (continuation swallowed) |
+| `\text{}`…`\endtext{}` text-block payload | Text block (see §3.4) | **Every character emitted literally** (newline → Enter, space/tab → respective keys) | Same (text-block semantics are layout-independent) |
 | Whitespace inside Braces `{ a , b }` | Argument Position | **Always Automatically Trimmed** (spaces around arguments ignored) | **Always Automatically Trimmed** (spaces around arguments ignored) |
 | Printable ASCII (32–126) | Text Position | **Emits Literal Keystroke** (`0x01 CHAR c`) | **Emits Literal Keystroke** (`0x01 CHAR c`) |
 
@@ -350,7 +379,8 @@ The lexical scanner operates deterministically according to the active layout co
 ### 5.3 Canonical Syntax Examples
 
 ```dsl
-\# 1. v4 Default Free Layout (active without preamble; indentation & newlines are silent)
+\# 1. Canonical v4 structured script (free layout activated by the preamble; indentation & blank lines are silent)
+\#!syntax: free
 \def{submit_form}[0]{
   \kdown{ctrl}
   \delay{50ms}
@@ -358,15 +388,19 @@ The lexical scanner operates deterministically according to the active layout co
   \enter          \# Explicitly emit Enter keystroke
 }
 
-\# 2. Explicit Free Layout Declaration
+\# 2. Guards and receptor waits under free layout
 \#!syntax: free
 \if{ {$slot.net.ready.val, =, 1} }{
   \click{L}
   \delay{200ms}
 }
 
-\# 3. v3 Typewriter Compatibility Mode (newlines emit Enter, spaces emit Space)
-\#!syntax: typewriter
+\# 3. Text block: the normative way to emit whitespace-bearing text in free mode
+\#!syntax: free
+\text{}echo "Hello World"\endtext{}
+\enter
+
+\# 4. Default mode (no preamble; byte-identical to v3: newlines emit Enter, spaces emit Space)
 echo "Hello CircuitMacro"
 ls -la
 ```
@@ -388,19 +422,30 @@ ls -la
 > 1. **Direct Expression & In-Place Folding**: Time values are expressed via dimensioned literals (`50ms`, `0.5s`) or dimensionless integers (base unit: ms, e.g., `50`), folded at compile time into integer millisecond scalars (see §2.1). No runtime timing unit configuration is introduced.
 > 2. **VM Physical Operands Strictly Retain `u16`**: Underlying VM opcodes `OP_SLEEP` (`0x04`, `\delay`) and `OP_PACE` (`0x07`, `\pace`) **strictly retain unsigned 16-bit integers (`u16`, 2 bytes LE)**. They are intentionally NOT expanded to `u32` or `i32`.
 > 3. **Static Range Assertions & Long Delay Idiom**: Single delay parameters are physically bounded to $[0, 65535]\text{ ms}$ (~65.5 seconds). If a static literal folds to a value exceeding 65535 ms (e.g., `\delay{70s}`) or less than 0, the compiler halts with an immediate static diagnostic. Longer delays must be explicitly structured using bounded loops (e.g., a 100-second pause is written as `\rep{100}{ \delay{1s} }`).
-> 4. **Dynamic Variable Range Handling**: When a timing command consumes a general-purpose register (e.g., `\delay{$d}`), runtime VM execution clamps or wraps the value (`val & 0xFFFF`).
+> 4. **Dynamic Variable Range Handling**: When a timing command consumes a general-purpose register (e.g., `\delay{$d}`), the runtime VM **clamps** the value to $[0, 65535]$. Bitwise masking is forbidden (`val & 0xFFFF` would silently fold 70000 back to 4464), as it would reintroduce exactly the silent timing corruption this section exists to eliminate.
 
 ### 6.2 Base Instruction Table
+
+```ebnf
+DelayStmt ::= "\delay" "{" Duration "}"
+PaceStmt  ::= "\pace" "{" Duration "}"
+WaitStmt  ::= "\wait" [ "[" Duration "]" ] "{" SlotRef "}"
+ClickStmt ::= "\click" "{" Button [ "," Value ] "}"
+Duration  ::= TimeLiteral | DecInteger | "$" VarName
+```
+
 - **Timing Suspension & Synchronization**:
   - `\delay{t}`: Suspends execution for duration `t` (`t` in Value category; folded time literal or integer immediate satisfying $0 \le t \le 65535\text{ ms}$; longer delays expressed via `\rep`).
   - `\pace{t}`: Configures the subsequent inter-keystroke pacing delay ($u16$ constraint: $0 \le t \le 65535\text{ ms}$).
-  - `\wait{ $slot.<sig>.<field> }[timeout]`: Suspends the macro task coroutine until the target receptor slot (prefixed with `$slot.`, e.g., `$slot.net.msg.val` or shorthand `$slot.net.msg`) receives an external signal projection. If the slot has a latched pending event (`slot.pending == True`), it consumes the event and returns immediately with zero delay. Mandatory argument is in Value category, consuming a slot variable; optional bracket decorator `timeout` is in Value category, satisfying $u32$ constraints ($0 \le timeout \le 4294967295\text{ ms}$; 0 or omitted represents indefinite waiting). The timeout status is written to `$timeout` (1 on timeout, 0 on event arrival).
+  - `\wait[timeout]{ $slot.<sig>.<field> }`: Suspends the macro task coroutine until the target receptor slot (prefixed with `$slot.`, field name written explicitly, e.g., `$slot.net.msg.val`) receives an external signal projection. If the slot has a latched pending event (`slot.pending == True`), it consumes the event and returns immediately with zero delay. Mandatory argument is in Value category, consuming a slot variable; optional bracket decorator `timeout` is in Value category, satisfying $u32$ constraints ($0 \le timeout \le 4294967295\text{ ms}$; 0 or omitted represents indefinite waiting). The timeout status is written to `$timeout` (1 on timeout, 0 on event arrival). **v3 Migration**: v3's bare `{}` timeout group (`\wait{sig}{30}`) is always rewritten as a leading literal bracket decorator in v4 (`\wait[5s]{...}`, `[500ms]`, or `[$var]`; see §3.3 Notation Discipline).
 - **Keyboard Operations**:
   - Special Keys: `\enter`, `\esc`, `\tab`, `\space`, `\bs`, `\del`, `\f1`..`\f12`.
   - Key Combinations: `\ctrl+c`, `\ctrl+alt+del` (chained with `+`).
   - `\kdown{key}`, `\kup{key}`: Key press and release (`key` in Name category, static key symbol; `\kup{0}` releases all keys).
+- **Text Block Output**:
+  - `\text{}`…`\endtext{}`: the text-block instruction pair (see §3.4); every character between them is emitted verbatim — whitespace (space/tab/newline) emits the corresponding physical key under **any** layout mode. Zero escapes; no macro commands, comments, or `$` interpolation are recognized (a backslash is a literal keystroke). A heredoc form is also available (`\text` immediately followed by a newline opens; that newline emits Enter). Under the `free` layout mode, this is the normative way to emit whitespace-bearing text (prose, command-line arguments, etc.).
 - **Mouse Operations**:
-  - `\click{btn[, count]}`: Compound argument form; `btn` in Name category (`L|R|M|B|F`), optional `count` in Value category (defaults to 1; e.g., `\click{L}` or `\click{L, 2}`).
+  - `\click{btn}` or `\click{btn, count}`: Compound argument form; `btn` in Name category (`L|R|M|B|F`); `count` is an omissible in-group element (Value category, defaults to 1; e.g., `\click{L, 2}`), unrelated to the `[]` decorator.
   - `\move{dx, dy}`: Relative movement offsets; `dx`, `dy` in Value category (signed `i16`).
   - `\mdown{btn}`, `\mup{btn}`: Mouse button press and release (`btn` in Name category).
 - **Bounded Counting Loops**:
@@ -418,6 +463,13 @@ ls -la
   2. **No Expression Trees**: The syntax prohibits infix operators and compound arithmetic trees (e.g., `$a + $b * 2`). Complex algorithms belong in host-side middleware extension functions (`\call`), keeping the single-pass compiler minimal and deterministic.
   3. **Native Opcode Parity**: The VM allocates native opcode `0x24 SUB u8 reg, typed(i32 rhs)`, isomorphic to `0x20 SET` and `0x21 ADD` in operand encoding and `runtime.reg_write` register mediation.
 
+```ebnf
+SetStmt ::= "\set" "{" VarName "}" "{" Value "}"
+AddStmt ::= "\add" "{" VarName "}" "{" Value "}"
+SubStmt ::= "\sub" "{" VarName "}" "{" Value "}"
+RgbLit  ::= "\rgb" "{" Int "," Int "," Int "}"
+```
+
 - **Assignment & Arithmetic Commands**:
   - `\set{var}{val}`: Assignment (`var` in Name category, `val` in Value category; VM opcode `0x20 SET`).
   - `\add{var}{val}`: Addition with wrapping modulo $2^{32}$ (`var` in Name category, `val` in Value category; VM opcode `0x21 ADD`).
@@ -426,10 +478,10 @@ ls -la
   - `$ret`: Return value scalar or Handle from the most recent extension call (`\call`).
   - `$timeout`: Timeout flag from the most recent receptor slot wait (`\wait`) (1 = timed out, 0 = event latched/arrived).
 - **Stateful Receptor Slots (Slots)**:
-  - **Mandatory Prefix & Syntax**: All receptor slot variables in Value positions **MUST strictly begin with `$slot.`** (canonical form: `$slot.<sig>.<field>`, e.g., `$slot.net.msg.val`, `$slot.img.hp.val`; shorthand `$slot.<sig>`).
-  - **Default Signal-to-Slot Projection Rule**: When an external signal `<sig>` is emitted without specific sub-fields (e.g., single scalar or notification), it is uniformly projected into `$slot.<sig>.val` and marks the event as pending. Writing `$slot.<sig>` in macro code automatically desugars to `$slot.<sig>.val`.
-  - **Event Latch Model**: Each slot maintains its current scalar `val` (`i32`, initialized to 0) and an unconsumed event arrival flag `pending` (`bool`, initialized to `False`). External signal projections update `val`, set `pending = True`, and wake waiting coroutines. `\wait` consumes the event and resets `pending = False`.
-  - **Sole Observable Receptor**: Slot variables are the ONLY entities in the DSL eligible for `\wait` suspension and `\guarded` continuous invariant monitoring.
+  - **Mandatory Prefix & Syntax**: All receptor slot variables in Value positions **MUST strictly begin with `$slot.`** (canonical form: `$slot.<sig>.<field>`, e.g., `$slot.net.msg.val`, `$slot.img.hp.val`; the field name MUST be written explicitly — no omission shorthand).
+  - **Default Signal-to-Slot Projection Rule**: When an external signal `<sig>` is emitted without specific sub-fields (e.g., single scalar or notification), it is uniformly projected into `$slot.<sig>.val` and marks the event as pending.
+  - **Event Latch Model**: Each (signal, field) slot maintains its current scalar `val` (`i32`, initialized to 0) and an unconsumed event arrival flag `pending` (`bool`, initialized to `False`) — **the flag is per-(signal, field)**: a multi-field projection sets `pending` on every field it writes. External signal projections update `val`, set `pending = True`, and wake waiting coroutines. `\wait` consumes only the flag of the field it awaits, resetting that field's `pending = False`.
+  - **Sole Waitable Receptor**: Slot variables are the ONLY entities in the DSL eligible for `\wait` suspension; `\guarded` observes the outside world exclusively through slots (self-monitoring guards over local registers: see §9.3).
 - **Keystroke Number Formatting**: `\typenum{$var}` formats the integer stored in `$var` as decimal ASCII keystrokes emitted with active pace (operand must be a register reference; Handles are rejected).
 - **Compile-Time Constant Color Packing**:
   - `\rgb{r, g, b}`: Packs three 0–255 integer constants in Value positions into a single 24-bit RGB scalar immediate: `(r << 16) | (g << 8) | b`.
@@ -443,15 +495,16 @@ ls -la
 - **v4 Evolutionary Revision**: Inlined character streams explicitly inherit the global preamble layout mode (`\#!syntax`), and argument groups transparently forward compound tuples and predicate structures.
 
 - **Formal Signature**:
-  ```dsl
-  \def{name}[argc]{ body }
+  ```ebnf
+  DefStmt ::= "\def" "{" Name "}" [ "[" Argc "]" ] "{" CodeBlock "}"
+  Argc    ::= "0" | "1" | ... | "9"
   ```
   - `name`: Name category, macro identifier.
   - `[argc]`: Optional bracket decorator, parameter count (0–9, defaults to 0).
   - `body`: Executable Code Block, expansion template.
 - **Scope & Inlining Mechanics**: `\def` must be declared at the top level of the code stream. Calls follow strict define-before-use ordering. Inlining occurs via the compiler's expansion stack (`_nest_stack`) with parameter substitution.
 - **Expansion Depth Ceiling**: Macro nesting and recursion are bounded by `MAX_MACRO_EXPAND = 16`.
-- **Harmonization with `\#!syntax`**: Macro expansion bodies directly inherit the script's preamble layout configuration. Under default `free` mode, indentation and newlines within `\def` bodies are silently absorbed, and explicit keystroke whitespace is emitted via `\enter`, `\space`, and `\tab`.
+- **Harmonization with `\#!syntax`**: Macro expansion bodies directly inherit the script's preamble layout configuration. Under `\#!syntax: free`, indentation and newlines within `\def` bodies are silently absorbed; explicit keystroke whitespace is emitted via `\enter` and `\space`, and whitespace-bearing text via `\text` text blocks.
 
 ---
 
@@ -464,7 +517,7 @@ ls -la
   2. *Non-First-Class Predicates*: Comparison triplets were fragmented across separate delimiters, preventing them from being passed as cohesive arguments into `\def` text macros.
   3. *Lack of Continuous Runtime Guarding*: Branching only occurred at discrete, static points in the execution flow. The macro could not monitor external host state (e.g., window focus, unexpected dialogs, player health) during multi-second delays or loops, risking physical key desynchronization.
 - **v4 Specification Resolution**:
-  1. *Deprecation of `\ifnum`*: Formally deprecates `\ifnum` in favor of the structured `\if{predicate}{then}[{else}]` superset (lowered to `0x22 BRA` with zero new VM branch opcodes).
+  1. *Deprecation of `\ifnum`*: Formally deprecates `\ifnum` in favor of the structured `\if{predicate}{then}` superset (with an omissible trailing bare-`{}` else block) (lowered to `0x22 BRA` with zero new VM branch opcodes).
   2. *First-Class Predicates & Short-Circuit Lowering*: Introduces self-contained comparison triplets and composite `\all`/`\any` trees, lowered via syntax-directed translation into forward branch sequences.
   3. *Continuous State Guarding (`\guarded`)*: Introduces flat guard slots and delay-slice polling to provide hardware-level invariant protection and fail-safe key release (VM opcodes `0x25 GUARD_ENTER` and `0x26 GUARD_EXIT`).
 
@@ -492,21 +545,27 @@ LogicBlock     ::= "\all" "{" Predicate ("," Predicate)* "}"
 
 ### 9.2 Conditional Branch Instruction (`\if`)
 ```dsl
-\if{ predicate }{ then_body }[{ else_body }]
+\if{ predicate }{ then_body }
+\# or with the optional else block:
+\if{ predicate }{ then_body }{ else_body }
+```
+```ebnf
+IfStmt    ::= "\if" "{" Predicate "}" CodeBlock [ CodeBlock ]
+CodeBlock ::= "{" CodeStream "}"
 ```
 - **Signature**:
   - `predicate`: Argument Group in the **Predicate category** (atomic triplet `{{lhs, op, rhs}}` or composite `{\all{...}}` / `{\any{...}}`).
   - `then_body`: **Executable Code Block**, executed when the predicate evaluates to true.
-  - `else_body` (optional): **Executable Code Block**, executed when the predicate evaluates to false.
+  - `else_body` (optional): **Executable Code Block**, executed when the predicate evaluates to false. Written as a **bare `{}` block trailing the then-block, omissible as a whole** — in typewriter mode it must be immediately adjacent (any intervening character is emitted), in free mode it may span layout whitespace; to emit a literal `{` at that position, use the `\{` escape.
 
 #### Examples
 ```dsl
 \# 1. Atomic Predicate Branch (dual-brace structure: outer argument group, inner triplet unit)
 \if{ {$x, =, 0} }{
   \enter
-}[{
+}{
   \tab
-}]
+}
 
 \# 2. Composite Logic Branch (disjunction with short-circuit evaluation)
 \if{ \any{ {$status, =, 1}, {$err, !=, 0} } }{
@@ -522,13 +581,18 @@ LogicBlock     ::= "\all" "{" Predicate ("," Predicate)* "}"
 
 ### 9.3 State-Guarded Execution (`\guarded`)
 ```dsl
-\guarded[throttle_ms]{ predicate }{ protected_body }[{ on_abort }]
+\guarded[throttle_ms]{ predicate }{ protected_body }
+\# or with the optional on_abort block:
+\guarded[throttle_ms]{ predicate }{ protected_body }{ on_abort }
+```
+```ebnf
+GuardedStmt ::= "\guarded" [ "[" Duration "]" ] "{" Predicate "}" CodeBlock [ CodeBlock ]
 ```
 - **Signature**:
   - `[throttle_ms]` (optional bracket decorator): Value category (ms; supports `50ms`, `0.05s`; defaults to `0ms`, meaning continuous checks at every instruction boundary and delay slice).
   - `predicate`: Argument Group in the **Predicate category** (the invariant to maintain; restricted to a single-level triplet or single-level `\all`/`\any` for microcontroller polling efficiency; compound hierarchies are structured via nesting).
   - `protected_body`: **Executable Code Block**, executed under continuous invariant protection.
-  - `on_abort` (optional): **Executable Code Block**, executed if the guard invariant is violated.
+  - `on_abort` (optional): **Executable Code Block**, executed if the guard invariant is violated; written as a bare `{}` block trailing protected_body, omissible as a whole (same adjacency rule as `\if`'s else block, see §9.2).
 - **Nesting Ceiling**: Guard nesting is statically verified by the compiler and must not exceed `MAX_GUARD_NEST = 4` (`MacroError: guard nesting exceeds 4 levels`).
 
 #### Examples
@@ -537,10 +601,10 @@ LogicBlock     ::= "\all" "{" Predicate ("," Predicate)* "}"
 \guarded{ {$slot.img.hp.val, >, 0} }{
   \click{L}
   \delay{100ms}
-}[{
+}{
   \# Guard abort block: Peripherals are safely released by the runtime before entry
   \enter
-}]
+}
 
 \# 2. Throttled Guard with Composite Invariant
 \guarded[50ms]{ \all{ {$slot.sys.ready.val, =, 1}, {$slot.net.conn.val, !=, 0} } }{
@@ -577,7 +641,7 @@ In single-pass streaming compilation, predicate trees (including nested `\all` a
    At each atomic triplet leaf:
    - **Commutative Swap**: `OP_BRA` requires a register as its left-hand operand. If `lhs` is an immediate and `rhs` is a variable (e.g., `{ 0, <, $x }`), the compiler swaps the operands and inverts the relational operator (`<` becomes `>`), emitting `OP_BRA(cc_swapped, reg_x, imm_0, ...)`.
    - **Pure Register & Immediate Evaluation**: When operands are registers or immediates, lowering requires zero temporary registers and zero runtime stack growth.
-   - **Asynchronous Slot Desugaring**: If an operand references a receptor slot (`$slot.<sig>.<field>` or shorthand `$slot.<sig>`), the compiler identifies the `$slot.` prefix, emits `OP_READSLOT temp_reg, sig, field` to load the slot value into an ephemeral register, and performs the comparison against that register.
+   - **Asynchronous Slot Desugaring**: If an operand references a receptor slot (`$slot.<sig>.<field>`, field name written explicitly), the compiler identifies the `$slot.` prefix, emits `OP_READSLOT temp_reg, sig, field` to load the slot value into an ephemeral register, and performs the comparison against that register.
    - **Constant Folding**: If both operands are immediate constants, the compiler evaluates the boolean result statically, eliminating unreachable branch paths.
 3. **Backpatching**: Relative branch offsets are backpatched in-place in the output buffer once target block lengths are resolved.
 
@@ -713,6 +777,7 @@ guard_depth = 0  # Active guard cursor (0..4)
 
 - **`GUARD_ENTER`**: Increments `guard_depth += 1` and stores descriptor parameters into `guard_slots[guard_depth - 1]`.
 - **`GUARD_EXIT`**: Decrements `guard_depth -= 1`, unwinding the cursor in $O(1)$ constant time.
+- **Execution Boundary Reset**: `guard_depth = 0` at every macro execution start; normal completion (`END`), exceptions, and external abort paths all clear every guard slot.
 
 ### 5.2 Dual-Trigger Inspection Scheduling
 When evaluating active guards, the VM iterates **from outer to inner** (indices `0` through `guard_depth - 1`). If any guard layer $i$ is violated, the VM triggers an immediate force-abort, ensuring outer macro invariants maintain highest priority.
@@ -724,6 +789,11 @@ When evaluating active guards, the VM iterates **from outer to inner** (indices 
    where the slice quantum $\Delta t_{\text{slice}}$ is the minimum effective period among all active guards:
    $$\Delta t_{\text{slice}} = \min_{0 \le j < \text{guard\_depth}} (t_{\text{throttle}, j} > 0 \ ? \ t_{\text{throttle}, j} : \text{DELAY\_SLICE\_QUANTUM})$$
    (with base quantum `DELAY_SLICE_QUANTUM = 20ms`). The VM evaluates active guards upon each slice wake-up; any violation immediately initiates an emergency abort.
+3. **Wait Slicing**: While suspended in `\wait` (`OP_WAIT`), if guards are active the VM slices the suspension into the same per-quantum wake-ups (implementation-wise, quantum-sized timeout retries), evaluating active guards at every quantum boundary; any violation interrupts the wait and initiates the abort flow. This guarantees guards remain effective even while the macro is blocked in an indefinite `\wait`.
+4. **CALL_EXT Blind Window**: Guard evaluation cannot cut into the interior of an extension call (e.g., the network round trip of `img.snap`). The VM evaluates active guards once on entry to and once on return from a suspending extension call; the call's duration is a blind window. Scenarios requiring fine-grained circuit-breaking during long operations should split the operation into multiple calls, or use `img.watch` streaming + `\wait` (the latter is subject to slice monitoring).
+
+> [!NOTE]
+> **Cost of Per-Instruction Inspection**: With `throttle_ms == 0`, the dispatch loop performs one guard evaluation after every instruction (SLOT operands are dictionary lookups). This constant overhead is a profile-level implementation matter: the hot path must short-circuit (a single branch when `guard_depth == 0`), and timing-sensitive macro blocks should declare an explicit throttle period.
 
 ### 5.3 Force-Abort & Nested Scope Isolation
 When a guard at level $i$ evaluates to false, the VM executes atomic unwinding:
@@ -773,21 +843,21 @@ v4 completely resets the semantics and mechanisms of Signals and Slots, establis
    - **Semantic Role**: Represents an **External Projection Channel**. Triggered exclusively by the outside world (host Protocol v1, OBS capture providers, network push). The emitter projects data into a named channel regardless of the macro's internal execution state.
    - **Statelessness**: Signals maintain no persistent state storage. They cannot be read, cannot participate in arithmetic, and cannot be waited on directly.
 2. **Slots are Strictly Value-Position Stateful Receptors**:
-   - **Syntactic Form**: Whenever Slot semantics appear, **they MUST be value-position variables mandatory-prefixed with `$slot.`** (canonical form: `$slot.<sig>.<field>`, shorthand: `$slot.<sig>`).
+   - **Syntactic Form**: Whenever Slot semantics appear, **they MUST be value-position variables mandatory-prefixed with `$slot.`** (the only legal form: `$slot.<sig>.<field>` — field name written explicitly, no omission shorthand).
    - **Semantic Role**: Represents a **Stateful Receptor**. Responsible for receiving and latching external signal payloads and arrival status.
    - **Default Signal-to-Slot Projection Rule**:
      - When the outside world emits to signal `<sig>` without specific sub-fields (e.g., a single scalar integer, a boolean notification, or an unnamed payload), the **default projection field is uniformly mapped to `val`**, atomically written to `$slot.<sig>.val` with its arrival flag latched.
      - If the emission carries a named key-value dictionary (`{k: v, ...}`), the payload is projected into corresponding `$slot.<sig>.<k>` fields.
-     - Writing `$slot.<sig>` in macro code (omitting the trailing field dot) is automatically desugared by the streaming compiler to `$slot.<sig>.val`.
+     - **No-Shorthand Law**: Slot field names MUST be written explicitly in source code. An omitted form such as `$slot.<sig>` resolves unambiguously under the last-dot splitting rule to signal `<prefix>` + field `<last segment>` (e.g., `$slot.img.hp` = signal `img` + field `hp`), which irreconcilably conflicts with the shorthand intent (signal `img.hp` + default field `val`); to preserve a single deterministic parsing rule, v4 provides no field-omission shorthand.
      - Multi-level namespace splitting: Beyond the `$slot.` prefix, the remainder is split at the last dot into the signal channel and field identifier (e.g., `$slot.sys.net.msg.val` $\rightarrow$ signal `sys.net.msg`, field `val`).
    - **Event Latch Storage Model**:
-     Each slot maintains two physical attributes without revision counters:
+     Each (signal, field) slot maintains two physical attributes without revision counters:
      - `val`: Latest scalar payload (`i32`, initialized to 0).
-     - `pending`: Unconsumed event arrival flag (`bool`, initialized to `False`). External signal projections atomically set `pending = True` and wake waiting coroutines.
-3. **The Sole Observable Receptor Law**:
-   - **Receptor slots starting with `$slot.` are the ONLY valid asynchronous entities eligible for waiting (`\wait`) and guarding (`\guarded`)**.
+     - `pending`: Unconsumed event arrival flag (`bool`, initialized to `False`). External signal projections atomically set `pending = True` and wake waiting coroutines; **the flag is per-(signal, field)** — a multi-field projection sets the flag on every field it writes, and `\wait` consumes only the flag of the field it awaits.
+3. **The Sole Waitable Receptor Law**:
+   - **Receptor slots starting with `$slot.` are the ONLY valid asynchronous entities eligible for waiting (`\wait`)**. Guard predicates observe external asynchronous state exclusively through `$slot.` receptors (self-monitoring guards over local registers: see §9.3).
    - Local general-purpose registers (`$var`) represent private synchronous state inside the single-threaded execution context. Attempting to `\wait` on `$var` is statically rejected.
-   - **Lossless Event Latch Waiting**: Executing `\wait{ $slot.<sig>.<field> }[timeout]`:
+   - **Lossless Event Latch Waiting**: Executing `\wait[timeout]{ $slot.<sig>.<field> }`:
      - If `slot.pending == True` (a prior projection arrived unconsumed): Consumes the event immediately, resets `slot.pending = False`, and returns with zero delay, completely eliminating the v3 race-condition event loss.
      - If `slot.pending == False` (no pending event): Suspends the coroutine until the next projection sets `pending = True` (or until timeout); upon wake-up, consumes the flag and resumes execution.
 
@@ -826,7 +896,7 @@ Platform implementations:
 
 ### 3.2 `net` Namespace (Network Communication)
 - **`net.send{str_tag}`**: Broadcasts a `net.msg` frame to all authenticated Protocol v1 clients; returns count of recipients.
-- **`net.msg` Signal**: Triggered when a host client sends an `event.push` frame, projecting into `$slot.net.msg.*` and setting `pending = True`. Macros synchronize via `\wait{ $slot.net.msg.val }` (or shorthand `\wait{ $slot.net.msg }`).
+- **`net.msg` Signal**: Triggered when a host client sends an `event.push` frame, projecting into `$slot.net.msg.*` and setting `pending = True`. Macros synchronize via `\wait{ $slot.net.msg.val }`.
 
 ### 3.3 `img` Namespace (Vision & Telemetry)
 
@@ -847,10 +917,13 @@ Initiates continuous push telemetry from the capture provider:
 
 **Automatic Lease Self-Destruction**: Subscriptions are bound to an explicit `duration_ms` lease. The host capture provider counts down the lease and automatically terminates the stream upon expiration, preventing orphaned background capture leaks.
 
+> [!IMPORTANT]
+> **Protocol Delta Precondition**: This subscription mechanism requires Protocol v1 to gain companion frame types (subscription request, telemetry push frames, and lease management semantics). Until [docs/protocol.md](protocol.md) gains the corresponding specification chapter, this clause states target semantics only and does not constitute an implementable specification.
+
 #### 3. Slot Addressing & Signal Temporal Coordination
 In strict conformance with `spec/dsl.md §3` slot addressing:
 - **Slot Storage**: Telemetry frames arriving from the host project into signal `img.<name>`, writing the sampled scalar (color, difference count, or score) into `$slot.img.<name>.val` and setting `pending = True`.
-- **Zero-Copy Reading**: Macro code reads the latest sample via `$slot.img.<name>.val` (or shorthand `$slot.img.<name>`), initialized to 0.
+- **Zero-Copy Reading**: Macro code reads the latest sample via `$slot.img.<name>.val`, initialized to 0.
 - **Frame Synchronization**: Initial frame synchronization or change notifications are awaited via `\wait{ $slot.img.<name>.val }` (suspending execution until the next projection arrives).
 
 ---
@@ -884,15 +957,15 @@ In strict conformance with `spec/dsl.md §3` slot addressing:
 
 | Language Feature | v3 Baseline Syntax / Design | v4 Normative Evolution | Migration & Backwards Compatibility Notes |
 |---|---|---|---|
-| **Document Layout** | Newlines emit `Enter`; spaces emit `Space` (`spec/dsl.md §1`). | `free` layout is default; legacy mode activated via `\#!syntax: typewriter`. | Blank lines and indentation are silently absorbed in v4 scripts. Legacy scripts run identically by declaring `\#!syntax: typewriter`. |
+| **Document Layout** | Newlines emit `Enter`; spaces emit `Space` (`spec/dsl.md §1`). | `typewriter` remains the default (no directive = byte-identical v3 behavior); `free` is explicitly activated via `\#!syntax: free`, serving as the recognition marker of v4 structured scripts. | Legacy v3 scripts run unchanged. New `\text{}`…`\endtext{}` text-block instruction pair emits whitespace-bearing text literally under any layout mode. |
 | **Delay Timing** | `\delay{0.1}` (floating-point seconds; silent clipping in v3 implementation). | `\delay{100ms}` or `\delay{0.1s}` | Folded in-place into integer millisecond immediates, eliminating MCU floating-point overhead and jitter. |
 | **Keystroke Pacing** | `\pace{0.05}` (floating-point seconds). | `\pace{50ms}` or `\pace{0.05s}` | Aligned with `\delay`, folding into integer milliseconds. |
 | **Long Delays** | Implicit large literals `\delay{100}` (seconds; clipped to 65535 in v3 reference). | `\rep{100}{ \delay{1s} }` | Single delay parameters are strictly constrained to `u16 ms` ($0..65535$), raising compile errors on overflow. |
-| **Event Waiting** | `\wait{sig}[5]` (bare signal name, floating-point seconds; transient event loss hazard). | `\wait{ $slot.<sig>.val }[5s]` or shorthand `\wait{ $slot.<sig> }[5s]` | Signals are pure projection channels; waiting consumes stateful `$slot.` variables backed by lossless Event Latches. |
-| **Conditional Branching** | `\ifnum{$a}{=}{10}{then}[{else}]` (5 separate brace pairs). | `\if{ {$a, =, 10} }{then}[{else}]` | Deprecates `\ifnum`; introduces structured, first-class dual-brace triplets lowered to `0x22 BRA` with zero new VM branch opcodes. |
+| **Event Waiting** | `\wait{sig}[5]` (bare signal name, floating-point seconds; transient event loss hazard). | `\wait[5s]{ $slot.<sig>.val }` | Signals are pure projection channels; waiting consumes stateful `$slot.` variables with explicitly written field names (no omission shorthand), backed by lossless Event Latches; the timeout migrates from a v3 bare `{}` group to a leading literal `[timeout]` decorator. |
+| **Conditional Branching** | `\ifnum{$a}{=}{10}{then}[{else}]` (5 separate brace pairs). | `\if{ {$a, =, 10} }{then}{else}` (else block omissible) | Deprecates `\ifnum`; introduces structured, first-class dual-brace triplets lowered to `0x22 BRA` with zero new VM branch opcodes. |
 | **Compound Predicates** | Not supported (required nested `\ifnum` blocks). | `\if{ \all{ {$a, >, 0}, {$b, <, 10} } }{...}` | Lowered via syntax-directed translation into short-circuit forward branch sequences with zero AST and zero temp registers. |
 | **Predicate Macros** | Not supported (predicates were not first-class units). | `\def{assert}[1]{\if{#1}{\enter}}` | Predicate triplets `{lhs, op, rhs}` form uniform syntactic units, forwarded transparently into macro expansions. |
-| **Continuous Invariant Guarding** | Not supported (only static discrete branches). | `\guarded[20ms]{pred}{body}[{on_abort}]` | New VM opcodes `0x25 GUARD_ENTER` / `0x26 GUARD_EXIT` with 20ms delay-slicing and fail-safe key release. |
-| **Visual Telemetry** | Pull-only `\call{img.snap}{rect}`. | `\call{img.watch}{name}{coord}{intv, dur}` | Push-model telemetry streaming directly to `$slot.img.<name>.val`, synchronized via `\wait{ $slot.img.<name> }`. |
+| **Continuous Invariant Guarding** | Not supported (only static discrete branches). | `\guarded[20ms]{pred}{body}{on_abort}` (on_abort block omissible) | New VM opcodes `0x25 GUARD_ENTER` / `0x26 GUARD_EXIT` with 20ms delay-slicing and fail-safe key release. |
+| **Visual Telemetry** | Pull-only `\call{img.snap}{rect}`. | `\call{img.watch}{name}{coord}{intv, dur}` | Push-model telemetry streaming directly to `$slot.img.<name>.val`, synchronized via `\wait{ $slot.img.<name>.val }` (protocol delta is a precondition, see Part III §3.3). |
 | **Subtraction & Decrement** | Not supported natively (required adding negative immediates; register subtraction impossible). | `\sub{cnt}{val}` | Introduces symmetrical atomic decrement `\sub{var}{val}` backed by native VM opcode `0x24 SUB`, preserving the zero-expression-tree axiom. |
 | **Brace Taxonomy** | Mixed usage of `{x, y}` and `{x}{y}`. | Strict exclusivity: Separate `{A}{B}` vs Compound `{A, B}`. | Statically enforced by command signatures; structural mismatches trigger compile-time argument diagnostics. |
