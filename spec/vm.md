@@ -84,7 +84,7 @@ u8 tag:  0 = Immediate (i32 LE, 4 bytes)
 |---|---|---|---|
 | `0x01` | `CHAR` | `u8 ascii` | Type ASCII character (Shift state handled automatically by keymap). |
 | `0x02` | `KEY` | `u8 keycode` | Single key tap. |
-| `0x03` | `COMBO` | `u8 mod_mask, u8 keycode` | Modifier combo (mask bits 0..3 = Ctrl/Shift/Alt/GUI; keycode 0 = modifier tap). |
+| `0x03` | `COMBO` | `u8 mod_mask, u8 keycode` | **Deprecated**: recognized but performs NO action (NOP) in VM v4 — the 4-bit generic modifier mask + single keycode cannot express arbitrary chording (left/right modifiers, multi-key); combos lower to `KEY_DOWN`/`SLEEP`/`KEY_UP` sequences ([dsl.md §5.1](dsl.md#51-keyboard-operations--chording)). |
 | `0x04` | `SLEEP` | `typed(u16 ms)` | One-shot suspension (DSL `\delay`). Word length strictly bounded to `u16` ($0..65535\text{ ms}$). |
 | `0x05` | `MCLICK` | `typed(u8 btn), typed(u16 count)` | Mouse click (`btn`: 1=L, 2=R, 4=M, 8=B, 16=F). |
 | `0x06` | `MMOVE` | `typed(i16 dx), typed(i16 dy)` | Relative mouse move. |
@@ -254,7 +254,7 @@ Execution start and every exit path additionally invoke `runtime.release_all()`.
 | **v1** (gist era) | Unformatted bytecode. Immediate-only operands; fused sleep/pace. |
 | **v2** | Container header (`MAGIC + VERSION`). `SLEEP` and `PACE` split. |
 | **v3** | Typed operands (`TAG_IMM=0`, `TAG_REG=1`, `TAG_STR=2`); 32-register file; `SET`/`ADD`/`BRA`/`JMP`/`TYPEREG`; string table + `READSLOT`/`WAIT`/`CALL_EXT`; register-write mediation. |
-| **v4** | Container `VERSION = 4`; native atomic subtraction `0x24 SUB`; continuous invariant guard opcodes `0x25 GUARD_ENTER` and `0x26 GUARD_EXIT` with flat slot model and delay slicing; revised `0x29 WAIT` with explicit `(sig_str_idx, field_str_idx)`. |
+| **v4** | `COMBO` deprecated (recognized, NOP); Container `VERSION = 4`; native atomic subtraction `0x24 SUB`; continuous invariant guard opcodes `0x25 GUARD_ENTER` and `0x26 GUARD_EXIT` with flat slot model and delay slicing; revised `0x29 WAIT` with explicit `(sig_str_idx, field_str_idx)`. |
 
 ---
 

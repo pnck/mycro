@@ -263,6 +263,7 @@ All keys in this inventory belong to standard USB HID Usage Page 0x07 (Keyboard/
 - **Delimiter Exclusivity**: The plus symbol `+` serves exclusively as the combination delimiter in chording expressions. Physical plus keys are represented by explicit key identifiers:
   - Main keyboard: `plus` (physical `Keypad = / +` usage ID `0x2E`), `equal` (`0x2E`), `minus` (`0x2D`).
   - Dedicated numeric keypad: `kp_plus` (`0x57`), `kp_minus` (`0x56`), `kp_multiply` (`0x55`), `kp_divide` (`0x54`), `kp_enter` (`0x58`).
+- **Sole Lowering Path**: All combinations lower to key sequences; the legacy `COMBO` opcode (`0x03`) is deprecated and NOP'd by VM v4 ([vm.md §4](vm.md#4-opcode-set-v4)).
 - **Sequential Lowering & Symmetric LIFO Envelope**:
   A combination $T_1 + T_2 + \dots + T_n$ maps each constituent token $T_i$ to its physical keycode sequence $K(T_i)$ (e.g., `a` $\rightarrow [a]$, `A` $\rightarrow [\text{shift}, a]$, `plus` $\rightarrow [\text{shift}, \text{equal}]$). The compiler concatenates these sequences linearly into $\mathbf{K} = K(T_1) \mathbin{\Vert} \dots \mathbin{\Vert} K(T_n)$ and emits opcodes strictly according to user-specified order:
   1. **Sequential Depression**: Emits `KEY_DOWN` forward for each key in $\mathbf{K}$.
@@ -436,7 +437,7 @@ In addition to user variables (`$var`, `${var}`), MYCRO provides two specialized
 Static value constructors are compile-time literal expressions occurring in Value parameter positions. They produce either folded numeric scalar immediates or pre-allocated static resource handles without generating runtime constructor bytecode.
 
 - **Compile-Time Color Packing (`\rgb`)**: `\rgb{r, g, b}` packs three 0–255 integer constants ($u8$) into a single 24-bit RGB scalar integer: `(r << 16) | (g << 8) | b`.
-- **Pixel Rectangle Constants (`\rect`)**: `\rect{\row{0xRRGGBB, ...}, ...}` declares a static 2D pixel matrix literal (dimensions bounded by `RECT_MAX_EDGE = 64`).
+- **Pixel Rectangle Constants (`\rect`)**: `\rect{\row{0xRRGGBB, ...}, ...}` declares a static 2D pixel matrix literal (dimensions bounded by `RECT_MAX_EDGE = 128`).
 
 > [!NOTE]
 > **Static Constructor Mechanism: Zero-Bytecode & Pre-Populated Storage**
