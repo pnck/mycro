@@ -462,8 +462,8 @@ Every command argument position belongs to one of three orthogonal categories ba
 
 | Parameter Category | Syntactic Form & Evaluation Rules | Compilation & Runtime Mapping |
 |---|---|---|
-| **Value Category (Value)** | Dynamic variables, numeric immediates, or compile-time constructors:<br>• Variables: User variables (`$var`, `${var}`), system read-only variables (`$ret`, `${ret}`, `$timeout`, `${timeout}`), receptor slots (`$slot.<sig>.<field>`, `${slot.<sig>.<field>}`);<br>• Static literals: Decimal, hex, or time literals (`500ms`, `0.5s`), folded at lex time to `i32`;<br>• Constructors: Static value constructors (packed RGB `\rgb{r, g, b}`, pixel rectangle `\rect{...}`; see [§6.4](#64-static-value-constructors-rgb-rect)). | **Physical 3-Tag Closed Operand Architecture**:<br>• Immediate literal $\rightarrow$ `TAG_IMM (0)` (`i32 LE`);<br>• Register $\rightarrow$ `TAG_REG (1)` (`u8 reg`);<br>• Static string $\rightarrow$ `TAG_STR (2)` (`u8 str_idx`, `\call` only);<br>• **Receptor slots (`$slot...`)** $\rightarrow$ Pre-instruction desugaring: compiler loads slot into an ephemeral register before host instruction execution, passing `TAG_REG`. In `\guarded` descriptors, slots are encoded natively via the `SLOT` descriptor tag. |
-| **Name Category (Name)** | Static symbolic identifiers: Key names, mouse buttons, namespaces, signal channel names, or variable names. Bare identifiers, strictly prohibiting `$`. | Statically resolved at compile time to usage IDs or string indices (`u8`). |
+| **Value Category (Value)** | Dynamic variables, numeric immediates, or compile-time constructors:<br>• Variables: User variables (`$var`, `${var}`), system read-only variables (`$ret`, `${ret}`, `$timeout`, `${timeout}`), receptor slots (`$slot.<sig>.<field>`, `${slot.<sig>.<field>}`);<br>• Static literals: Decimal, hex, or time literals (`500ms`, `0.5s`), folded at lex time to `i32`;<br>• Constructors: Static value constructors (packed RGB `\rgb{r, g, b}`, pixel rectangle `\rect{...}`; see [§6.4](#64-static-value-constructors-rgb-rect)). | **Physical 3-Tag Closed Operand Architecture**:<br>• Immediate literal $\rightarrow$ `TAG_IMM (0)` (`i32 LE`);<br>• Register $\rightarrow$ `TAG_REG (1)` (`u8 reg`);<br>• **Receptor slots (`$slot...`)** $\rightarrow$ Pre-instruction desugaring: compiler loads slot into an ephemeral register before host instruction execution, passing `TAG_REG`. In `\guarded` descriptors, slots are encoded natively via the `SLOT` descriptor tag. |
+| **Name Category (Name)** | Static symbolic identifiers: Key names, mouse buttons, namespaces, signal channel names, variable names, and `\call` label arguments. Bare identifiers, strictly prohibiting `$`. | Statically resolved at compile time to usage IDs or string-table indices (`u8`; `\call` name-category arguments are emitted as `TAG_STR (2)` operands). |
 | **Predicate Category (Predicate)** | Conditional decision structures: Atomic triplets `{lhs, op, rhs}` or composite logic trees `\all` / `\any` (see [§8](#8-conditional-control--guarded-execution-if-guarded)). | Directly lowered by the compiler into forward short-circuit jump sequences (`OP_BRA`). |
 
 ### 6.6 Dynamic Keystroke Rendering (`\typenum`)
@@ -492,7 +492,7 @@ Every macro instruction consuming numeric immediates enforces strict physical wo
 ### 6.8 Static Compile Diagnostics
 
 - **Character Set & Delimiters**: Non-printable ASCII (outside 32–126) and unmatched delimiters (`{`, `}`, `[`, `]`, `${`) raise compile errors.
-- **Name vs Value Partition & Identifiers**: Name positions strictly forbid `$`. Variable and identifier names are case-sensitive and must match `[a-zA-Z][a-zA-Z0-9_]*`; reserved names (`ret`, `timeout`) cannot be used as variable names. Undefined variables, unknown keys, unknown mouse buttons, unknown namespaces, and unknown signals raise compile errors.
+- **Name vs Value Partition & Identifiers**: Name positions strictly forbid `$`. Variable and identifier names are case-sensitive and must match `[a-zA-Z][a-zA-Z0-9_]*`; reserved names (`ret`, `timeout`) cannot be used as variable names. Undefined variables, unknown keys, unknown mouse buttons, unknown namespaces, and unknown signals raise compile errors. `net.send` labels must be non-empty (optionally dotted) identifiers; empty or non-identifier labels raise compile errors.
 - **Eradication of Silent Truncation**: Immediate values outside valid physical opcode ranges halt compilation immediately.
 - **Preamble Directive Ordering**: `\#!syntax:` directives must appear at the head of the file before any executable action token.
 - **Predicate Triplet Structure**: Predicate arguments must be formatted as dual-brace triplets `{ {lhs, op, rhs} }` with operators in `{=, !=, <, <=, >, >=}`.
@@ -537,6 +537,9 @@ LogicBlock     ::= "\all" "{" Predicate ("," Predicate)* "}"
 - **Structural Isomorphism Law**: The first brace group of `\if` or `\guarded` is `{ predicate }`. When containing an atomic triplet, it forms the standard dual-brace structure: `\if{ {lhs, op, rhs} }{ ... }`.
 
 ### 8.2 Conditional Branch Instruction (`\if`)
+
+> [!NOTE]
+> **v4 removes `\ifnum` outright — there is no compatibility mapping.** Legacy v3 scripts containing `\ifnum` fail loudly at compile time (unknown command), deliberately surfacing every unmigrated site.
 
 ```ebnf
 IfStmt    ::= "\if" "{" Predicate "}" CodeBlock [ CodeBlock ]
@@ -628,11 +631,11 @@ UseStmt     ::= "\use" "{" Namespace "}"
 CallStmt    ::= "\call" "{" ExtensionFn "}" ArgGroup*
 ExtensionFn ::= Namespace "." Identifier
 Namespace   ::= Identifier
-ArgGroup    ::= "{" Value "}" | "{" Value ("," Value)* "}"
+ArgGroup    ::= "{" Value "}" | "{" Value ("," Value)* "}" | "{" Name "}"
 ```
 
 - **`\use{ns}`**: Compile-time dependency declaration against the runtime namespace table. Unknown namespace raises a compile error. Emits no bytecode.
-- **`\call{ns.fn}{arg}...`**: Invokes a registered runtime extension function. Arguments are validated against the registered signature. Return value or resource Handle is written to `$ret` (evaluates to `0` if the callee returns None).
+- **`\call{ns.fn}{arg}...`**: Invokes a registered runtime extension function. Arguments are validated against the registered signature; whether a group consumes Value(s) or a Name is dictated by that signature (e.g., `net.send`'s label is Name category). Return value or resource Handle is written to `$ret` (evaluates to `0` if the callee returns None).
 - Registered namespaces (`sys`, `net`, `img`), signatures, and Handle ownership semantics are normative in [runtime.md](runtime.md) (see [runtime.md §4](runtime.md#4-handle-lifecycle--ownership-management)).
 
 ---
@@ -641,7 +644,7 @@ ArgGroup    ::= "{" Value "}" | "{" Value ("," Value)* "}"
 
 ### Deliberate Boundaries
 - Numbers are `i32` only.
-- Strings are not first-class values; string arguments exist only as compile-time string constants for extension calls. Runtime data enters as Handle resources.
+- Strings are not values anywhere in the language. Literal text has exactly two fates: keystrokes in text positions, and Name-category identifiers resolved to string-table indices. Runtime data enters as Handle resources.
 - No arithmetic expression trees or operator precedence; arithmetic is statement-based via `\set`, `\add`, `\sub`.
 - No backward branches or `\while` loops; iteration is strictly bounded via `\rep{N}`.
 - Single delay durations bounded by `u16` ($0..65535\text{ ms}$).
@@ -653,4 +656,4 @@ ArgGroup    ::= "{" Value "}" | "{" Value ("," Value)* "}"
 | **v1** (gist era) | Text typing, basic key symbols, escape characters. |
 | **v2** | Mouse controls (`\click`, `\move`, `\mdown`, `\mup`), `\delay`/`\pace` split, `\rep`, `\kdown`/`\kup`, line continuations, comments. |
 | **v3** | User macros `\def`; variables/`\set`/`\add`; `$ret`/`$timeout`; signal slots; `\ifnum`; `\typenum{$var}`; `\use`/`\call`/`\wait`; Name vs Value partition; signature typing and Handle ownership; decoupled compile-time expansion (`MAX_MACRO_EXPAND=16`) and runtime nesting (`MAX_RUNTIME_NEST=8`). |
-| **v4** | Preamble layout modes (`\#!syntax: free` vs default `typewriter`); verbatim text blocks `\text{}`…`\endtext{}`; unified `i32` numeric folding with `ms`/`s` time literals; `u16 ms` physical delay clamping and eradication of silent truncation; Binary Brace Taxonomy & Structural Exclusivity Law; signal/slot orthogonal reset: bare Name projectors vs `$slot.<sig>.<field>` stateful receptors with lossless event latches; `\wait[timeout]{$slot...}` leading bracket decorator; structured first-class predicates (`\if` with bare `{}` else; deprecating `\ifnum`); continuous invariant guarding (`\guarded[throttle]` with delay-slicing and fail-safe release); subtraction `\sub`; compile-time color packing `\rgb`. |
+| **v4** | Preamble layout modes (`\#!syntax: free` vs default `typewriter`); verbatim text blocks `\text{}`…`\endtext{}`; unified `i32` numeric folding with `ms`/`s` time literals; `u16 ms` physical delay clamping and eradication of silent truncation; Binary Brace Taxonomy & Structural Exclusivity Law; signal/slot orthogonal reset: bare Name projectors vs `$slot.<sig>.<field>` stateful receptors with lossless event latches; `\wait[timeout]{$slot...}` leading bracket decorator; structured first-class predicates (`\if` with bare `{}` else; `\ifnum` **removed outright** — unknown command, compile error); continuous invariant guarding (`\guarded[throttle]` with delay-slicing and fail-safe release); subtraction `\sub`; compile-time color packing `\rgb`; `str` extension-argument type eliminated — `net.send` takes a Name-category label. |

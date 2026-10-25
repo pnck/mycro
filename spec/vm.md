@@ -69,7 +69,7 @@ Standard multi-operand instructions encode operands using a closed 3-tag system:
 ```
 u8 tag:  0 = Immediate (i32 LE, 4 bytes)
          1 = Register (u8 index, 1 byte)
-         2 = String (u8 string table index, 1 byte)
+         2 = Name (u8 string-table index, 1 byte)
 ```
 
 > [!NOTE]

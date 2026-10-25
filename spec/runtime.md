@@ -85,7 +85,7 @@ Platform implementations:
 
 ### 3.2 `net` Namespace (Network Communication)
 
-- **`net.send{str_tag}`**: Broadcasts a `net.msg` frame containing `str_tag` to all authenticated Protocol v1 clients. Returns recipient count in `$ret`.
+- **`net.send{tag}`**: Broadcasts a `net.msg` frame carrying the label `tag` to all authenticated Protocol v1 clients. `tag` is a **Name-category label**: identifier grammar (`Identifier ("." Identifier)*`), case-sensitive and case-preserving (the compiler MUST NOT fold case); empty or non-identifier labels are compile errors. Returns in `$ret` the count of clients the frame was actually queued to. The string table indexes names only; the wire frame carries the label text itself.
 - **`net.msg` Signal**: Triggered when a host client transmits an `event.push` frame, projecting into `$slot.net.msg.*` and latching `pending = 1`. Macros synchronize via `\wait{ $slot.net.msg.val }`.
 
 ### 3.3 `img` Namespace (Vision & Telemetry)
