@@ -87,12 +87,30 @@ to prevent infinite error reflection storms.
 | `img.hello` | capture client → server | `caps`: list (`["frame", "direct_preview"]`) | push, `id` = 0; registers the client as the capture provider |
 | `img.frame` | server → capture client | one selector: `rect` {x,y,w,h} → lossless RGB8 crop (≤ 128²) / `points` [[x,y],…] → exact colors / `w`,`h` + `format` (`rgb8`/`gray8`) → whole-source resample | `img.frame.ok` with `width`/`height` (native dims), selector-specific fields, and for pixel streams `stream_id`/`chunks`/`bytes` (total payload length) followed by kind-1 chunks |
 | `img.arm_preview` | server → capture client | `nonce`: 32-hex ephemeral random nonce | `img.arm_preview.ok` with `port`: ephemeral TCP port, `width`/`height`: native source dimensions |
+| `img.watch` | server → capture client | `name`: stream identifier; `x`, `y`: sampling point, optional `w`, `h`: rect; `interval_ms`, `duration_ms` (lease) | `img.watch.ok` with `interval_ms`: effective period after provider capability clamping |
+| `img.unwatch` | server → capture client | `name` | `img.unwatch.ok` |
 
 `img.frame` is the provider verb for in-band macro execution streams
 (bounded strictly by `SNAP_SLOT_BYTES` = 48 KiB, spec/vm.md Appendix A).
 `img.arm_preview` is the provider verb for out-of-band full-frame UI
 previews (Pixel Assist), arming a one-shot ephemeral LAN data plane
 that bypasses the microcontroller entirely.
+
+`img.watch` is the provider verb for push-model telemetry subscriptions
+(DSL `\call{img.watch}`). The provider samples the named point
+(`x`,`y` → packed `0xRRGGBB`) or rect (`x,y,w,h` → per-channel mean,
+packed `0xRRGGBB`) every `interval_ms` and pushes each sample as an
+`event.push` with `name: "img.<name>"` and `fields: {"val": <sample>}` —
+no separate push machinery exists; telemetry rides the same signal path
+macros already synchronize on (`\wait{ $slot.img.<name>.val }`). The
+subscription expires `duration_ms` after acceptance (lease — the
+fail-safe bound if the device vanishes); `img.watch` with an existing
+`name` replaces it. The device sends `img.unwatch` for its active
+watches on macro completion or abort, and watches die with the provider
+connection regardless. A successful `img.watch` registers the
+`img.<name>` signal name on the device, which is what makes the
+provider's `event.push` frames for that name pass the `unknown_signal`
+check.
 
 The provider is a client like any other; after auth it sends
 `img.hello`, and from then on the device may send it reverse requests

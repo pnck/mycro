@@ -139,13 +139,13 @@ Initiates continuous push telemetry from the capture provider:
 ```dsl
 \call{img.watch}{name}{x, y}{interval_ms, duration_ms}
 ```
-- `name`: Stream identifier; registers external signal `img.<name>` (e.g., `img.hp`). Re-subscribing an existing `name` replaces the prior subscription.
-- `x, y`: Sampling point coordinates (or bounding rect `x, y, w, h`).
-- `interval_ms`: Sampling period on the host (ms); must be `> 0`.
+- `name`: Stream identifier; registers external signal `img.<name>` (e.g., `img.hp`) with the device, which is what admits the provider's `event.push` frames for that name. Re-subscribing an existing `name` replaces the prior subscription.
+- `x, y`: Sampling point coordinates — pushes packed `0xRRGGBB`. Extended form `x, y, w, h`: bounding rect — pushes the per-channel mean, packed `0xRRGGBB`.
+- `interval_ms`: Requested sampling period on the host (ms); must be `> 0`. The provider clamps to its capture-chain floor and reports the effective period in `img.watch.ok`.
 - `duration_ms`: Mandatory life lease duration (ms); must be `> 0`. Capture provider terminates stream upon lease expiration.
-
-> [!IMPORTANT]
-> **Protocol Delta Precondition**: This subscription mechanism requires Protocol v1 to gain companion frame types (subscription request, telemetry push frames, and lease management semantics). Until [docs/protocol.md](protocol.md) gains the corresponding specification chapter, this clause states target semantics only and does not constitute an implementable specification.
+- **Wire Path**: Subscription and cancellation ride the reverse-request channel (`img.watch` / `img.unwatch`); telemetry rides `event.push` — normative in [docs/protocol.md](../docs/protocol.md).
+- **Errors**: No registered capture provider → `$ret = 0`, `$err = ERR_NO_PROVIDER`; subscription timeout → `ERR_TIMEOUT`; invalid parameters → `ERR_INVALID_ARG`.
+- **Cancellation**: The device un-watches all active subscriptions on macro completion or abort; provider disconnect terminates all watches (slots simply stop updating).
 
 #### 3. Slot Addressing & Coordination
 - **Slot Storage**: Arriving telemetry frames project into signal `img.<name>`, writing the sampled scalar into `$slot.img.<name>.val` and setting `pending = 1`.
