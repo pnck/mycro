@@ -75,8 +75,8 @@ The VM core and compiler remain fully decoupled from physical hardware. All peri
 | `keys_release_all` | — | Emergency release of all asserted keys. |
 | `mouse_press` | `btn: int` | Presses mouse buttons (bitmask: 1=L, 2=R, 4=M, 8=B, 16=F). |
 | `mouse_release` | `btn: int` | Releases mouse buttons. |
-| `mouse_move` | `dx: int, dy: int` | Emits relative mouse movement. Physical USB HID mouse report coordinates are signed 8-bit integers ($-127$ to $+127$). `HIDProvider.mouse_move` implementations MUST internally decompose movements where $|dx| > 127$ or $|dy| > 127$ into chunks $\le 127$ and emit consecutive reports until the total displacement is satisfied. |
-| `char_keycodes` | `char: str` | Resolves character to physical keycode and Shift state. |
+| `mouse_move` | `dx: int, dy: int` | Emits relative mouse movement. Physical USB HID mouse report coordinates are signed 8-bit integers ($-127$ to $+127$). `HIDProvider.mouse_move` implementations MUST internally decompose movements where $|dx| > 127$ or $|dy| > 127$ into chunks $\le 127$ and emit consecutive reports until the total displacement is satisfied. Chunk pairing across axes is provider-defined; the total displacement MUST be exact. |
+| `char_keycodes` | `char: str` | Resolves a character to physical keycode(s) and Shift state. Normative layout baseline: **US-ANSI** per the USB HID Usage Tables (Keyboard/Keypad page `0x07`), covering printable ASCII 32–126 plus Tab/LF/CR; the CircuitPython reference mapping is `adafruit_hid.KeyboardLayoutUS`. Ports MUST reproduce this mapping. Unmappable characters cannot reach this interface (the compiler rejects them, [dsl.md §6.8](dsl.md#68-static-compile-diagnostics)); `TYPEREG` emits only `[0-9-]`. |
 | `consumer_pulse` | `usage_id: int` | Sends a single USB HID Consumer Control press and release pulse (Usage Page 0x0C, e.g., volume, playback, power; VM opcode `0x08 CONSUMER_KEY`). |
 
 Platform implementations:
@@ -88,6 +88,8 @@ Platform implementations:
 ---
 
 ## 3. Standard Library Namespaces
+
+Namespaces expose their functions only when activated: the compiler activates each namespace declared via `\use{ns}` at compile time, registering its callbacks for the subsequent execution (activation is idempotent and persists across executions). The built-in signal `net.msg` is always active and needs no declaration.
 
 ### 3.0 Universal Return & Error Contract
 
@@ -105,7 +107,7 @@ Every standard library function invocation (`0x2A CALL_EXT`) establishes a stric
 | `2` | `ERR_INVALID_ARG` | Invalid argument value, format, or parameter out of bounds. |
 | `3` | `ERR_NO_PROVIDER` | Capture provider not connected or unavailable. |
 | `4` | `ERR_OUT_OF_BOUNDS` | Sampling coordinates exceed buffer dimensions. |
-| `5` | `ERR_HANDLE_INVALID` | Unknown, unallocated, or expired Handle ID. |
+| `5` | `ERR_HANDLE_INVALID` | Unknown, unallocated, or expired Handle ID — including a non-handle scalar supplied to a handle parameter. |
 | `6` | `ERR_RESOURCE_EXHAUSTED` | Handle table capacity or snapshot slot pool exhausted. |
 | `7` | `ERR_TIMEOUT` | Extension operation or capture request timed out. |
 | `8` | `ERR_HANDLE_MISUSE` | Handle-typed operand supplied to a scalar-only operation (arithmetic, comparison, `\typenum`); see [§4](#4-handle-lifecycle--ownership-management). |
@@ -128,7 +130,7 @@ Every standard library function invocation (`0x2A CALL_EXT`) establishes a stric
 ### 3.3 `img` Namespace (Vision & Telemetry)
 
 #### 1. Exact Pixel Matching Family
-- **`\call{img.snap}{x, y, w, h}`**: Captures the screen region at (`x`, `y`) with size `w` × `h`; returns positive snap Handle in `$ret` and `$err = ERR_OK (0)` on success. On capture failure / timeout / no provider, returns `$ret = 0` and sets `$err != 0` (e.g. `ERR_NO_PROVIDER`, `ERR_TIMEOUT`, or `ERR_RESOURCE_EXHAUSTED`).
+- **`\call{img.snap}{x, y, w, h}`**: Captures the screen region at (`x`, `y`) with size `w` × `h`; returns positive snap Handle in `$ret` and `$err = ERR_OK (0)` on success. Constraints: $1 \le w, h \le 128$ (`RECT_MAX_EDGE`) and $x, y \ge 0$ — violations return `$ret = 0`, `$err = ERR_INVALID_ARG`; if the region exceeds the capture source's bounds, the provider reports `ERR_OUT_OF_BOUNDS`. On capture failure / timeout / no provider, returns `$ret = 0` and sets `$err != 0` (e.g. `ERR_NO_PROVIDER`, `ERR_TIMEOUT`, or `ERR_RESOURCE_EXHAUSTED`).
 - **`\call{img.at}{snap_handle}{x, y}`**: Samples packed 24-bit RGB color at the snapshot-local coordinates (`x`, `y`); returns packed `0xRRGGBB` in `$ret` and `$err = ERR_OK (0)` on success. If the handle is invalid or coordinates are out of bounds, returns `$ret = 0` and sets `$err != 0` (`ERR_HANDLE_INVALID` or `ERR_OUT_OF_BOUNDS`).
 - **`\call{img.diff}{snap_a}{snap_b}{tol}`**: Compares two snapshots pixel-wise. A pixel counts as differing iff `max(|ΔR|, |ΔG|, |ΔB|) > tol` (per-channel absolute difference, strictly greater). `tol` is clamped to `[0, 255]`. Returns the count of differing pixels in `$ret` and `$err = ERR_OK (0)` on success. If handles are invalid or dimensions mismatch, returns `$ret = 0` and sets `$err != 0` (`ERR_HANDLE_INVALID` or `ERR_INVALID_ARG`).
 
@@ -152,14 +154,14 @@ Initiates continuous push telemetry from the capture provider:
 
 #### 4. Signal Validation Tiers
 - **Tier 1 (Built-In Signals)**: Statically recognized signals (`net.msg`) require no `\use` declaration.
-- **Tier 2 (Dynamic Namespace Signals)**: Signals belonging to imported namespaces (e.g., `img.<name>` under `\use{img}`) are dynamically validated at compile time against registered extension providers.
+- **Tier 2 (Dynamic Namespace Signals)**: Signals belonging to activated namespaces (e.g., `img.<name>` under `\use{img}`) are accepted at namespace level — any identifier is admitted without per-name validation; name validity is a runtime concern (an unwatched name simply never receives projections).
 - **Tier 3 (Undeclared Signals)**: Any signal path referencing an unknown or unimported namespace triggers an immediate static compile error (`unknown signal namespace`).
 
 ---
 
 ## 4. Handle Lifecycle & Ownership Management
 
-1. **Resource Type Isolation**: Heavy objects (such as snapshot framebuffers) reside in the runtime's internal object store; macros interact strictly through opaque positive `i32` Handle IDs ($1, 2, \dots$).
+1. **Resource Type Isolation**: Heavy objects (such as snapshot framebuffers) reside in the runtime's internal object store; macros interact strictly through opaque positive `i32` Handle IDs ($1, 2, \dots$), allocated from a monotonically increasing counter and never reused.
 2. **Handle Typing Metadata**: Every register carries runtime handle-typing metadata distinguishing handle references from plain scalars. A scalar whose numeric value coincidentally equals a Handle ID is NOT a reference — typing is by metadata, never by numeric value.
 3. **Shared Reference Model**:
    - Variable assignment (`\set{b}{$a}`) copies the handle ID (and its typing metadata) from `reg_a` to `reg_b`. Both registers hold identical handle IDs referencing the same underlying resource (shared reference semantics).
@@ -167,7 +169,7 @@ Initiates continuous push telemetry from the capture provider:
    - Handles passed as `\call` arguments are borrowed: the callee reads the ID and MUST NOT release it.
 4. **Table-Driven Liveness on Register Overwrite**:
    - Every register write passes through `runtime.reg_write(dst, src)`.
-   - When register `dst` is overwritten, the write lands first (`dst`'s previous reference is detached as part of the write). If the displaced handle ID is then referenced by NO register in the file (including `$ret`), the handle entry and its buffer slot are automatically freed and returned to the pool. The displaced reference in `dst` itself never counts as still-live.
+   - When register `dst` is overwritten, the write lands first (`dst`'s previous reference is detached as part of the write). If the displaced handle ID is then referenced by NO register in the file (including `$ret`), the handle entry and its buffer slot are automatically freed and returned to the pool. The displaced reference in `dst` itself never counts as still-live. (Because live handles are only ever referenced from registers, their count is structurally bounded by the register file plus the in-flight `$ret` — no separate handle-table capacity constant is needed.)
 5. **Handle Type Faults**: Handles have no arithmetic or comparison semantics:
    - Arithmetic (`\add`, `\sub`) or keystroke rendering (`\typenum`) receiving a handle operand performs **no mutation / no output** and sets `$err = ERR_HANDLE_MISUSE`.
    - A predicate triplet receiving a handle operand **evaluates to FALSE** and sets `$err = ERR_HANDLE_MISUSE`.
@@ -179,7 +181,7 @@ Initiates continuous push telemetry from the capture provider:
 ## 5. Compile-Time Const Store
 
 Compile-time constants too large or structured for operand encoding (such as `\pixelrect` pixel literals) are preprocessed by the compiler into a middleware **const store** (`add_const`/`const_entry`), reset on each compilation.
-- **Bulk Const Store Materialization (`\pixelrect`)**: Matrix dimensions are bounded by `RECT_MAX_EDGE = 128` pixels ($128^2 \times 3 = 48\text{ KiB}$ matching `SNAP_SLOT_BYTES`). The compiler parses the 2D pixel array, serializes row-major 24-bit RGB bytes, and pre-populates the runtime const store. The bytecode references entries by integer ID via `sys.const <cid>`, materializing standard snapshot Handles at zero runtime heap allocation overhead.
+- **Bulk Const Store Materialization (`\pixelrect`)**: Matrix dimensions are bounded by `RECT_MAX_EDGE = 128` pixels ($128^2 \times 3 = 48\text{ KiB}$ matching `SNAP_SLOT_BYTES`). The compiler parses the 2D pixel array, serializes row-major 24-bit RGB bytes, and pre-populates the runtime const store. The bytecode references entries by integer ID via `sys.const <cid>`, materializing standard snapshot Handles at zero runtime heap allocation overhead. Constant IDs are allocated from `0` upward in order of constructor appearance in the source.
 - **Scalar Folded Constants (`\rgb`)**: In contrast to bulk constant structures, static scalar constructors such as packed RGB colors (`\rgb{r, g, b}`) fold at compile time directly into signed 24-bit integer scalar immediates (`TAG_IMM (0)`), incurring zero const store allocation and zero runtime construction bytecode.
 - **Ownership Rules**: Handle ownership rules (shared references, overwrite-release, exit-release) apply to materialized constant handles unchanged — with one boundary: releasing a materialized const handle frees only the handle record. The underlying pixel bytes belong to the const arena (batch lifetime, wholesale reset per compilation) and are never released through handle reclamation.
 - **Concurrency Barrier**: Any compilation request received while a macro is actively running MUST be rejected as busy (`state: busy`) to prevent clobbering active constants.

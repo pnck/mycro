@@ -41,6 +41,7 @@ The following table constitutes the normative source of truth for all **DSL/VM-v
 | `MAX_RUNTIME_NEST` | `8` | Frames | Static capacity of `loop_stack`; simultaneously the **lexical nesting ceiling for all logical blocks** (`\rep` / `\if` / `\guarded`), enforced statically at compile time ([dsl.md §1.4](dsl.md#14-axiom-iv-bounded-resources--deterministic-state)). |
 | `MAX_GUARD_NEST` | `4` | Slots | Static capacity of `guard_slots`. Bounded invariant depth prevents microcontroller call-frame exhaust. |
 | `MAX_MACRO_EXPAND` | `16` | Stack Frames | Maximum compile-time `\def` macro expansion recursion depth on `_nest_stack`. |
+| `MAX_PRED_NEST` | `4` | Levels | Maximum `\all`/`\any` logic-block nesting depth in predicates (compile-time; nesting emits no bytecode, so no output-side bound applies — see [dsl.md §8.1](dsl.md#81-predicate-grammar-ebnf)). |
 | `RECT_MAX_EDGE` | `128` | Pixels | Maximum width or height of `\pixelrect` matrix ($128^2 \times 3 = 48\text{ KiB}$). |
 | `SNAP_SLOT_BYTES` | `49152` | Bytes ($48\text{ KiB}$) | Fixed byte capacity of a snapshot buffer slot ($128 \times 128 \times 3$ bytes RGB 24-bit). |
 | `MAX_BYTECODE` | `65535` | Bytes ($64\text{ KiB} - 1$) | Maximum byte length of binary bytecode stream per container (`u16` addressing horizon). |
@@ -58,6 +59,7 @@ The MYCRO VM is a linear bytecode register machine. Execution state per task:
 - `loop_stack`: Counting loop frames (remaining count + return address). Implemented as a fixed-capacity pre-allocated array of depth `MAX_RUNTIME_NEST = 8`, holding tuples of `(remaining_count: u8, loop_body_pc: u16)`; zero runtime dynamic heap allocation.
 - `str_table`: Read-only string pool loaded from the container header.
 - `guard_slots` / `guard_depth`: Flat array of capacity `MAX_GUARD_NEST = 4` and depth cursor for continuous invariant monitoring (see [§6](#6-flat-iterative-guard-model)).
+- `pace_ms`: Global inter-action pacing state, initialized to `DEFAULT_PACE_MS` at execution start and modified only by `PACE` (no per-scope save or restore).
 
 ### 1.2 Halting Decidability & Control Flow
 - **Monotonic Forward Control Flow**: The instruction pointer `ip` advances strictly forward, with the **sole exception of `LOOP_END`**, which jumps backward to its matching loop body start while the active loop frame counter $> 0$. All arbitrary branch and jump instructions (`BRA`, `JMP`, `GUARD_ENTER`) strictly utilize positive forward offsets ($\text{target} > \text{pc}$).
@@ -93,6 +95,8 @@ opcode bytecode instruction stream through EOF
 
 Execution and disassembly MUST reject any container with mismatched `MAGIC` or `VERSION`. A well-formed container's instruction stream terminates with `END`; a VM reaching end-of-stream without an `END` instruction halts via the abnormal-termination path (peripheral release and handle reclamation, [§1.3](#13-peripheral-safety-invariants)).
 
+**String Table Discipline**: Entries are interned by the compiler in order of first use and deduplicated by exact content.
+
 ### Physical Typed Operand Encoding
 
 Standard multi-operand instructions encode operands using a closed 3-tag system:
@@ -119,12 +123,12 @@ Any tag outside `{0, 1}` (or `{0, 1, 2}` where permitted) triggers a container v
 | Opcode | Mnemonic | Operands | Operational Semantics |
 |---|---|---|---|
 | `0x01` | `CHAR` | `u8 ascii` | Type ASCII character (Shift state handled automatically by keymap). |
-| `0x02` | `KEY` | `u8 keycode` | Single key tap. |
+| `0x02` | `KEY` | `u8 keycode` | Single key tap: press, hold `click_hold_ms`, release (then pacing applies). |
 | `0x03` | `COMBO` | `u8 mod_mask, u8 keycode` | **Deprecated**: recognized for backward container compatibility, advances `ip += 3` (1-byte opcode + 2-byte operands), performing NO action (NOP) in VM v4. Arbitrary chording lowers to `KEY_DOWN`/`SLEEP click_hold_ms`/`KEY_UP` sequences ([dsl.md §5.1](dsl.md#51-keyboard-operations--chording)). |
 | `0x04` | `SLEEP` | `typed(u16 ms)` | One-shot suspension (DSL `\delay`). Duration strictly bounded to `u16` ($0..65535\text{ ms}$). |
 | `0x05` | `MCLICK` | `typed(u8 btn), typed(u16 count)` | Mouse click (`btn`: 1=L, 2=R, 4=M, 8=B, 16=F; `count`: $1..65535$). |
 | `0x06` | `MMOVE` | `typed(i16 dx), typed(i16 dy)` | Relative mouse move. Physical USB mouse reports cap relative movements to $\pm 127$; underlying `HIDProvider.mouse_move` implementations chunk larger deltas into repeated reports (see [runtime.md §2](runtime.md#2-hidprovider-peripheral-abstraction-layer)). |
-| `0x07` | `PACE` | `typed(u16 ms)` | Configure inter-action pacing delay. Strictly bounded to `u16` ($0..65535\text{ ms}$). |
+| `0x07` | `PACE` | `typed(u16 ms)` | Set the global pacing state `pace_ms`. Strictly bounded to `u16` ($0..65535\text{ ms}$). See **Automatic Pacing** below. |
 | `0x08` | `CONSUMER_KEY` | `typed(u16 usage_id)` | Single Consumer Control pulse (USB HID Page 0x0C, e.g., volume, playback, brightness) via `hid.consumer_pulse()`. |
 | `0x10` | `LOOP` | `typed(u8 count), u16 len` | Push loop frame onto `loop_stack`; `len` = body byte length including `LOOP_END`. Count 0 skips loop body. |
 | `0x11` | `LOOP_END` | — | Decrement top loop counter; jump back to loop body start if $> 0$, else pop loop frame. Sole backward branch instruction in the VM. |
@@ -141,9 +145,11 @@ Any tag outside `{0, 1}` (or `{0, 1, 2}` where permitted) triggers a container v
 | `0x26` | `GUARD_EXIT` | — | Pop current guard slot; deactivate invariant monitoring. |
 | `0x28` | `READSLOT` | `u8 reg, u8 sig_str_idx, u8 field_str_idx` | Read slot value into register (mediated). |
 | `0x29` | `WAIT` | `u8 sig_str_idx, u8 field_str_idx, typed(i32 timeout_ms)` | Suspend until slot `$slot.<sig>.<field>` receives projection (or consumes pending event) or timeout expires. Signed `i32` timeout domain: $> 0$ bounded wait; $\le 0$ non-blocking immediate poll (consumes pending event if present). Writes status (0=arrival/consumed, 1=timeout) to `$timeout` (`0xFE`, mediated). |
-| `0x2A` | `CALL_EXT` | `u8 ns, u8 fn, u8 argc, argc × typed` | Invoke extension function. Callee writes return value or Handle ID to `$ret` (`0xFF`, mediated; `0` on void/failure), and error code to `$err` (`0xFD`, mediated; `0` on success, non-zero on error). |
+| `0x2A` | `CALL_EXT` | `u8 ns, u8 fn, u8 argc, argc × typed` | Invoke extension function (`ns`/`fn` are string-table indices of the namespace and function names). Callee writes return value or Handle ID to `$ret` (`0xFF`, mediated; `0` on void/failure), and error code to `$err` (`0xFD`, mediated; `0` on success, non-zero on error). |
 | `0x2B` | `TYPEREG` | `u8 reg` | Type register decimal integer value as ASCII keystrokes with active pacing (DSL `\typenum{$var}` / `\typenum{${var}}`). |
 | `0xFF` | `END` | — | Halt execution successfully. |
+
+**Automatic Pacing**: After completing any peripheral-action opcode — `CHAR`, `KEY`, `KEY_DOWN`, `KEY_UP`, `MDOWN`, `MUP`, `MCLICK` (between individual clicks and after the last), `MMOVE`, `CONSUMER_KEY`, and per character of `TYPEREG` — the VM suspends for the current `pace_ms` (guard-sliced per [§6.2](#62-dual-trigger-inspection-scheduling)). Control-flow, register, `READSLOT`, `WAIT`, `SLEEP`, `PACE`, and `CALL_EXT` opcodes are never paced.
 
 ### 4.1 Compact Predicate Descriptor Specification (`pred_descriptor`)
 
@@ -159,6 +165,7 @@ u8 header: Control bitfield packing
    bit 1..3: Reserved (must be 0)
 [u16 throttle_ms]: Present only if has_throttle == 1 (2 bytes LE)
 ```
+`has_throttle` is `1` iff the source decorator is present (an explicit `[0ms]` encodes as `has_throttle = 1` with value `0` — identical runtime semantics to the default, distinct encoding).
 
 #### Condition Triplet Encoding (`triplet_cnt` entries)
 Each triplet consists of a 1-byte specification header followed by variable-length operand payloads:
@@ -207,6 +214,13 @@ end_guarded:
 ### 5.1 Native Branch-on-False Semantics
 `OP_BRA` execution semantics are strictly: **Branch forward if condition evaluates to FALSE**.
 
+`\if` blocks lower into the following byte patterns (offsets backpatched; base point = byte immediately following the complete instruction):
+
+```
+\if{pred}{then}         →  BRA cc, reg, rhs, off→end; <then>; end:
+\if{pred}{then}{else}   →  BRA cc, reg, rhs, off→else_start; <then>; JMP end; else_start: <else>; end:
+```
+
 ### 5.2 Logical Negation Mapping (for Branch-on-False Short-Circuiting)
 1. **Conjunction Node (`\all`)**: False branches of each sub-predicate $P_i$ converge on the parent's `false_target`. The first $N-1$ successful tests fall through to $P_{i+1}$, and the final child falls through to the parent's `true_target`.
 2. **Disjunction Node (`\any`)**: The compiler maps the first $N-1$ sub-predicates to their **Logical Dual Operators (Inverse `cc`)**, emitting `OP_BRA(invert(cc), ..., then_target)`. Any sub-predicate evaluating to true immediately jumps to the then body. The final child emits its native operator `OP_BRA(cc, ..., false_target)`.
@@ -230,10 +244,12 @@ When `lhs` is an immediate literal and `rhs` is a variable/register, the compile
 | `>=` | `<=` | 5 | 3 |
 
 ### 5.4 Commutative Normalization & Ephemeral Slot Pre-Loading
+The rules in this section apply to `\if` lowering into `OP_BRA` only; `GUARD_ENTER` descriptors encode operands in source order (an immediate `lhs` is natively supported by the descriptor tags), and a single-triplet descriptor sets `logic_mode = 0`.
+
 During leaf triplet emission:
 1. **Commutative Operand Swapping**: If `lhs` is an immediate literal and `rhs` is a variable/register, operands are swapped and the relational operator is transformed via the Converse Operator Mapping ([§5.3](#53-converse-operator-mapping-for-commutative-operand-swapping)) to ensure the register occupies the `lhs` position in `OP_BRA`.
 2. **Ephemeral Slot Pre-Loading**: If an operand references `$slot.<sig>.<field>` (or delimited `${slot.<sig>.<field>}`), the compiler emits `READSLOT` to an ephemeral register immediately prior to `OP_BRA`.
-3. **Static Constant Elimination**: If both operands are compile-time constants, the condition is evaluated statically (dead branches eliminated).
+3. **Static Constant Elimination**: Constant triplets (both operands compile-time constants) are evaluated and eliminated individually; if an entire predicate folds to a constant, only the taken branch is emitted (no `BRA`/`JMP` at all).
 
 ---
 
@@ -255,7 +271,7 @@ When evaluating active guards, the VM iterates cooperatively from outermost to i
 1. **Instruction Boundary Throttling**: Evaluated cooperatively at each instruction boundary (after an instruction completes, before the next dispatch). `last_check_ms` is updated at every guard evaluation:
    - If `throttle_ms == 0`: Checks all active guards after every completed macro instruction.
    - If `throttle_ms > 0`: Checks guards when `monotonic_ms - last_check_ms >= throttle_ms`.
-2. **Delay Slicing**: When suspending during `\delay` (`OP_SLEEP`) or inter-keystroke pacing (`OP_PACE`), if `guard_depth > 0`, the VM slices total sleep duration into micro-quanta:
+2. **Delay Slicing**: When suspending during `\delay` (`OP_SLEEP`) or an automatic pacing suspension, if `guard_depth > 0`, the VM slices total sleep duration into micro-quanta:
    $$\Delta t = \min(t_{\text{remaining}}, \Delta t_{\text{slice}})$$
    $$\Delta t_{\text{slice}} = \min_{0 \le j < \text{guard\_depth}} (t_{\text{throttle}, j} > 0 \ ? \ t_{\text{throttle}, j} : \text{DELAY\_SLICE\_QUANTUM})$$
    (base quantum `DELAY_SLICE_QUANTUM = 20ms`). Guards are evaluated upon each slice wake-up; violations trigger an immediate abort.
@@ -336,4 +352,5 @@ v4 was frozen from pre-release draft iterations; no compatibility is claimed for
   - *Stream slot*: Single 48 KiB buffer matching `SNAP_SLOT_BYTES`.
 - **Budgets (Authoritative Profile Constants)**: Snapshot slot 48 KiB ($128^2$ RGB) $\times$ 8; const arena 256 KiB; stream assembly slot 48 KiB; per-connection reassembly $2 \times (8\text{ KiB} + 8)$. See [§1.0](#10-authoritative-profile-constants-table).
 - **Cache Discipline**: Handle ownership flags should reside adjacent to the register file; hoisting flags into dispatch-loop locals enables single-cycle fast paths.
+- **Slot Registry**: `(signal, field)` receptor slots are created on first projection and are unbounded by the normative profile; they hold only scalars and flags (control-plane GC objects, not bulk buffers).
 
