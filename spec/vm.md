@@ -301,6 +301,15 @@ Execution start and every exit path additionally invoke `runtime.release_handles
 
 `VERSION` gates the container format and opcode semantics. Bytecode consumers MUST reject unknown versions.
 
+**v3 → v4 Incompatibility**: The `VERSION` bump from 3 to 4 marks a hard bytecode break — a v4 consumer MUST reject `VERSION = 3` containers, and v3 bytecode is never executed under v4 semantics. Breaking changes at the bytecode level:
+- `0x03 COMBO` deprecated to NOP (arbitrary chording now lowers to `KEY_DOWN`/`SLEEP`/`KEY_UP` sequences; a v3-era COMBO under v4 semantics would silently perform nothing);
+- `0x29 WAIT` operand layout revised to explicit `(sig_str_idx, field_str_idx)` with a signed `i32` timeout domain;
+- Operand tag 2 narrowed from general string (`TAG_STR`) to Name category (`TAG_NAME`);
+- `0xFD` reassigned from reserved boundary register to `$err`;
+- New opcodes `0x24 SUB`, `0x25 GUARD_ENTER`, `0x26 GUARD_EXIT`.
+
+Source-level v3 scripts additionally require migration (e.g., `\ifnum` removed outright, `\rect` → `\pixelrect`, `net.send` labels restricted to identifier grammar, `\wait` semantics redefined; see [dsl.md §10](dsl.md#10-boundaries-and-version-history)).
+
 | Version | Key Additions and Changes |
 |---|---|
 | **v1** (gist era) | Unformatted bytecode. Immediate-only operands; fused sleep/pace. |

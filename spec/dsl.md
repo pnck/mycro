@@ -131,7 +131,7 @@ Whitespace        ::= " " | "\t"
 | Declaration Form | Internal Equivalent | Scanner Behavior | Target Use Case |
 |---|---|---|---|
 | `\#!syntax: free` | `newline=ignore, space=ignore` | **Free Layout Mode (explicitly activated)**: Unescaped newlines and spaces are silently absorbed; explicit blanks emitted via `\enter`, `\space`, `\tab`; whitespace-bearing text via verbatim text blocks `\text{}`…`\endtext{}` (see [§5.6](#56-verbatim-text-blocks-text--endtext)). Canonical recognition marker for v4 structured scripts. | Structured macro scripts (loops, branches, user macros, indentation). |
-| `\#!syntax: typewriter` | `newline=emit, space=emit` | **Typewriter Mode (default)**: Raw newlines emit `Enter`; raw spaces emit `Space`. Scripts without preamble behave byte-identically to v3. | Raw text typing, automated form filling, legacy v3 scripts. |
+| `\#!syntax: typewriter` | `newline=emit, space=emit` | **Typewriter Mode (default)**: Raw newlines emit `Enter`; raw spaces emit `Space`. Scripts without preamble behave identically to v3 at source-semantics level (identical observable keystrokes and timing; the emitted container is VERSION=4 bytecode, not byte-identical — see [vm.md §8](vm.md#8-version-policy-and-history)). | Raw text typing, automated form filling, legacy v3 scripts. |
 | `\#!syntax: newline=ignore, space=emit` | Fine-Grained Config | **Orthogonal Hybrid**: Newlines allow indentation; spaces emit `Space`. | Indented scripts requiring frequent inline whitespace typing. |
 
 - **Source-Semantics Equivalence**: Layout modes alter only the scanner's interpretation of unescaped whitespace and newlines; once tokenized, all layout modes share identical grammatical rules, instruction sets, and execution semantics.
@@ -169,7 +169,7 @@ Whitespace        ::= " " | "\t"
 \text{}echo "Hello World"\endtext{}
 \enter
 
-\# 3. Default mode (no preamble; byte-identical to v3: newlines emit Enter, spaces emit Space)
+\# 3. Default mode (no preamble; source-behavior identical to v3: newlines emit Enter, spaces emit Space)
 echo "Hello MYCRO"
 ls -la
 ```
