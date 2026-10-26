@@ -270,6 +270,9 @@ All keys in this inventory belong to standard USB HID Usage Page 0x07 (Keyboard/
   2. **Pulse Hold**: Emits `SLEEP click_hold_ms` (default 10ms).
   3. **LIFO Release**: Emits `KEY_UP` in reverse order for each key in $\operatorname{reversed}(\mathbf{K})$.
   4. **Inter-Action Pacing**: Emits active pacing delay (`pace_ms`).
+
+> [!NOTE]
+> **Hold Configuration Scope**: `click_hold_ms` is a runtime-adjustable global configuration (default 10ms) serving as the **default hold duration for single-shot press/click actions only** — keyboard taps, mouse clicks, and consumer-control pulses (HID transports only press and release events, so a single-shot action is realized as press + hold interval + release). It does NOT apply to explicit hold control: any press duration the script must control is expressed as `\kdown`/`\mdown` + `\delay` + `\kup`/`\mup`.
 - **Key Hold & Release (`\kdown`, `\kup`)**:
   - `\kdown{combo}`: Emits forward `KEY_DOWN` sequence across $\mathbf{K}$ without auto-release.
   - `\kup{combo}`: Emits reverse `KEY_UP` sequence across $\operatorname{reversed}(\mathbf{K})$.
