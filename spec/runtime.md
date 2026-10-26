@@ -39,11 +39,12 @@ The runtime establishes two orthogonal invariants separating external projection
      - If `slot.pending == 1` upon entry: Consumes the event immediately, resets `slot.pending = 0`, writes `0` to special status register `0xFE` (`$timeout`), and returns immediately with zero delay, eliminating race conditions.
      - If `slot.pending == 0`: Suspends execution until the next external projection sets `pending = 1` (or until `timeout` expires).
      - Upon projection arrival: Consumes the event (setting `pending = 0`), writes `0` to `$timeout`, and resumes execution.
-     - Upon timeout expiration: Leaves `slot.pending = 0`, writes `1` to `$timeout`, and resumes.
+     - Upon timeout expiration: The timeout path re-inspects `slot.pending` before reporting: a projection latched before the timeout handler executes is consumed as an arrival (`pending = 0`, `$timeout = 0`). Only if `pending` is still `0` at that point does it write `1` to `$timeout` (leaving `slot.pending = 0`) and resume.
    - **Atomic Latch Guarantee**: Between inspecting `slot.pending == 1` and registering the waiter callback/coroutine, there MUST be NO intervening `await` suspension point, ensuring atomic event latch consumption in single-threaded cooperative asyncio.
+   - **Latest-Value Honesty**: `\wait` guarantees that at least one unconsumed projection existed; a subsequent read returns the latest `val` at read time, which under coalescing may be newer than the payload that woke the waiter. One-to-one wake/payload correspondence is NOT provided.
    - **Timeout Domain & Immediate Polling**: The `timeout` parameter domain is a signed 32-bit integer (`i32 LE`):
      - `timeout > 0`: Bounded suspension up to `timeout` milliseconds.
-     - `timeout <= 0`: **Non-blocking immediate poll** (evaluates `slot.pending`; if `1`, consumes and writes `$timeout = 0`; else immediately writes `$timeout = 1`).
+     - `timeout <= 0`: **Non-blocking immediate poll** (evaluates `slot.pending`; if `1`, consumes and writes `$timeout = 0`; else immediately writes `$timeout = 1`). Applies uniformly to literals and dynamic values; negative literals are accepted here specifically to support countdown idioms.
      - Omitted `[timeout]`: Lowered by the compiler to $2147483647\text{ ms}$ ($2^{31}-1$, $\approx 24.8$ days). Indefinite wait without timeout is strictly prohibited to guarantee halting decidability.
    - **Status Reporting Channel**: Status is written exclusively to special register `0xFE` (`$timeout` / `${timeout}`).
 
@@ -59,6 +60,7 @@ $$\text{External Signal Projection} \longrightarrow \text{Slot Event Latch} \lon
 - The VM yields execution via `await asyncio.sleep` during `\delay` micro-slices or `\wait` suspensions. Computational bursts and predicate evaluations execute uninterrupted.
 - **Consistency Guarantee**: Single-threaded dispatch guarantees mutual exclusion for slot reads and writes, providing deterministic memory consistency without mutex locks.
 - **Single Active Task Exclusivity**: MYCRO supports exactly ONE active macro task at any given time. While a macro task is executing (`state: busy`), any incoming HTTP request to compile or execute a macro (`POST /macro`, `POST /compile`) or wire Protocol envelope (`macro.submit`) MUST be rejected immediately with HTTP 409 Conflict / protocol error (`state: busy`).
+- **Slot Lifecycle**: Slot `val`/`pending` state persists across macro executions — receptors reflect the external world, not the task. Aborting a macro removes its wait registrations without clearing slot data.
 
 ---
 
@@ -106,11 +108,16 @@ Every standard library function invocation (`0x2A CALL_EXT`) establishes a stric
 | `5` | `ERR_HANDLE_INVALID` | Unknown, unallocated, or expired Handle ID. |
 | `6` | `ERR_RESOURCE_EXHAUSTED` | Handle table capacity or snapshot slot pool exhausted. |
 | `7` | `ERR_TIMEOUT` | Extension operation or capture request timed out. |
+| `8` | `ERR_HANDLE_MISUSE` | Handle-typed operand supplied to a scalar-only operation (arithmetic, comparison, `\typenum`); see [§4](#4-handle-lifecycle--ownership-management). |
+
+#### Extension Call Completion & Exception Contract
+- **Bounded Completion**: Extension functions MUST NOT block the VM task indefinitely. Operations performing provider round-trips declare timeout behavior and report expiry via `ERR_TIMEOUT`.
+- **Exception Policy**: Declared failure modes are reported exclusively through `$err`. An unexpected exception inside an extension aborts the macro via the abnormal-termination path (peripheral release and handle reclamation, [vm.md §1.3](vm.md#13-peripheral-safety-invariants)) — bugs must not masquerade as data.
 
 ### 3.1 `sys` Namespace (System Control)
 
 - **`sys.free`**: Takes 0 arguments. Returns current free heap bytes (`i32`) in `$ret`, `$err = ERR_OK (0)`.
-- **`sys.const`**: Internal runtime intrinsic. Takes 1 immediate constant ID (`cid`). Retrieves and materializes a read-only Handle for compile-time constants (e.g., `\pixelrect` pixel literals); returns Handle ID in `$ret`, `$err = ERR_OK (0)`.
+- **`sys.const`**: Internal runtime intrinsic. Takes 1 immediate constant ID (`cid`). Retrieves and materializes a read-only Handle for compile-time constants (e.g., `\pixelrect` pixel literals); returns Handle ID in `$ret`, `$err = ERR_OK (0)` on success. On an invalid `cid` or resource exhaustion, returns `$ret = 0` with `$err = ERR_INVALID_ARG` / `ERR_RESOURCE_EXHAUSTED`.
 
 ### 3.2 `net` Namespace (Network Communication)
 
@@ -121,19 +128,19 @@ Every standard library function invocation (`0x2A CALL_EXT`) establishes a stric
 ### 3.3 `img` Namespace (Vision & Telemetry)
 
 #### 1. Exact Pixel Matching Family
-- **`\call{img.snap}{rect}`**: Captures screen region (`rect` tuple `{x, y, w, h}`); returns positive snap Handle in `$ret` and `$err = ERR_OK (0)` on success. On capture failure / timeout / no provider, returns `$ret = 0` and sets `$err != 0` (e.g. `ERR_NO_PROVIDER`, `ERR_TIMEOUT`, or `ERR_RESOURCE_EXHAUSTED`).
-- **`\call{img.at}{snap_handle}{point}`**: Samples packed 24-bit RGB color at coordinates (`point` tuple `{x, y}`); returns packed `0xRRGGBB` in `$ret` and `$err = ERR_OK (0)` on success. If the handle is invalid or coordinates are out of bounds, returns `$ret = 0` and sets `$err != 0` (`ERR_HANDLE_INVALID` or `ERR_OUT_OF_BOUNDS`).
-- **`\call{img.diff}{snap_a}{snap_b}{tol}`**: Compares two snapshots; returns count of pixels exceeding color tolerance `tol` in `$ret` and `$err = ERR_OK (0)` on success. If handles are invalid or dimensions mismatch, returns `$ret = 0` and sets `$err != 0` (`ERR_HANDLE_INVALID` or `ERR_INVALID_ARG`).
+- **`\call{img.snap}{x, y, w, h}`**: Captures the screen region at (`x`, `y`) with size `w` × `h`; returns positive snap Handle in `$ret` and `$err = ERR_OK (0)` on success. On capture failure / timeout / no provider, returns `$ret = 0` and sets `$err != 0` (e.g. `ERR_NO_PROVIDER`, `ERR_TIMEOUT`, or `ERR_RESOURCE_EXHAUSTED`).
+- **`\call{img.at}{snap_handle}{x, y}`**: Samples packed 24-bit RGB color at the snapshot-local coordinates (`x`, `y`); returns packed `0xRRGGBB` in `$ret` and `$err = ERR_OK (0)` on success. If the handle is invalid or coordinates are out of bounds, returns `$ret = 0` and sets `$err != 0` (`ERR_HANDLE_INVALID` or `ERR_OUT_OF_BOUNDS`).
+- **`\call{img.diff}{snap_a}{snap_b}{tol}`**: Compares two snapshots pixel-wise. A pixel counts as differing iff `max(|ΔR|, |ΔG|, |ΔB|) > tol` (per-channel absolute difference, strictly greater). `tol` is clamped to `[0, 255]`. Returns the count of differing pixels in `$ret` and `$err = ERR_OK (0)` on success. If handles are invalid or dimensions mismatch, returns `$ret = 0` and sets `$err != 0` (`ERR_HANDLE_INVALID` or `ERR_INVALID_ARG`).
 
 #### 2. Push-Model Telemetry Subscriptions (`img.watch`)
 Initiates continuous push telemetry from the capture provider:
 ```dsl
-\call{img.watch}{name}{coord}{interval_ms, duration_ms}
+\call{img.watch}{name}{x, y}{interval_ms, duration_ms}
 ```
-- `name`: Stream identifier; registers external signal `img.<name>` (e.g., `img.hp`).
-- `coord`: Sampling point `{x, y}` or bounding rect `{x, y, w, h}`.
-- `interval_ms`: Sampling period on the host (ms).
-- `duration_ms`: Mandatory life lease duration (ms). Capture provider terminates stream upon lease expiration.
+- `name`: Stream identifier; registers external signal `img.<name>` (e.g., `img.hp`). Re-subscribing an existing `name` replaces the prior subscription.
+- `x, y`: Sampling point coordinates (or bounding rect `x, y, w, h`).
+- `interval_ms`: Sampling period on the host (ms); must be `> 0`.
+- `duration_ms`: Mandatory life lease duration (ms); must be `> 0`. Capture provider terminates stream upon lease expiration.
 
 > [!IMPORTANT]
 > **Protocol Delta Precondition**: This subscription mechanism requires Protocol v1 to gain companion frame types (subscription request, telemetry push frames, and lease management semantics). Until [docs/protocol.md](protocol.md) gains the corresponding specification chapter, this clause states target semantics only and does not constitute an implementable specification.
@@ -153,17 +160,19 @@ Initiates continuous push telemetry from the capture provider:
 ## 4. Handle Lifecycle & Ownership Management
 
 1. **Resource Type Isolation**: Heavy objects (such as snapshot framebuffers) reside in the runtime's internal object store; macros interact strictly through opaque positive `i32` Handle IDs ($1, 2, \dots$).
-2. **Shared Reference Model**:
-   - Variable assignment (`\set{b}{$a}`) copies the handle ID from `reg_a` to `reg_b`. Both registers hold identical handle IDs referencing the same underlying resource (shared reference semantics).
+2. **Handle Typing Metadata**: Every register carries runtime handle-typing metadata distinguishing handle references from plain scalars. A scalar whose numeric value coincidentally equals a Handle ID is NOT a reference — typing is by metadata, never by numeric value.
+3. **Shared Reference Model**:
+   - Variable assignment (`\set{b}{$a}`) copies the handle ID (and its typing metadata) from `reg_a` to `reg_b`. Both registers hold identical handle IDs referencing the same underlying resource (shared reference semantics).
    - If an extension call creates a new handle, the handle ID is written to `$ret` (`0xFF`), placing it under active reference.
-3. **Table-Driven Liveness on Register Overwrite**:
+   - Handles passed as `\call` arguments are borrowed: the callee reads the ID and MUST NOT release it.
+4. **Table-Driven Liveness on Register Overwrite**:
    - Every register write passes through `runtime.reg_write(dst, src)`.
-   - When register `dst` is overwritten: if `dst` previously held a handle ID, the runtime inspects all general-purpose registers (`regs[0..MAX_REGS-1]`) and `$ret` (`0xFF`). If NO active register references that handle ID, the handle entry and its buffer slot are automatically freed and returned to the pool.
-4. **Handle Type Invariants & Prohibitions**:
-   - **Arithmetic Invariance**: Resource handles cannot participate in arithmetic; passing a handle to `\add` or `\sub` triggers an immediate static compile error.
-   - **Keystroke Rendering Invariance**: Resource handles cannot be rendered as keystroke numbers; passing a handle to `\typenum` triggers an immediate static compile error (`typenum: cannot render a <type> handle`).
-   - **Handle Comparison Prohibition**: Resource handles cannot be compared in conditional or guarded predicates (`\if{ {$h, ==, 0} }` triggers static compile error `type error: cannot compare Handle with Scalar`). Success or failure of handle-producing calls is verified exclusively by checking the error channel: `\if{ {$err, !=, 0} }`.
-5. **Deterministic Cleanup**: Upon macro completion, task abort, or unhandled exception, `runtime.release_handles()` executes unconditionally in a `finally` block, reclaiming all active Handles and freeing all allocated buffer slots.
+   - When register `dst` is overwritten, the write lands first (`dst`'s previous reference is detached as part of the write). If the displaced handle ID is then referenced by NO register in the file (including `$ret`), the handle entry and its buffer slot are automatically freed and returned to the pool. The displaced reference in `dst` itself never counts as still-live.
+5. **Handle Type Faults**: Handles have no arithmetic or comparison semantics:
+   - Arithmetic (`\add`, `\sub`) or keystroke rendering (`\typenum`) receiving a handle operand performs **no mutation / no output** and sets `$err = ERR_HANDLE_MISUSE`.
+   - A predicate triplet receiving a handle operand **evaluates to FALSE** and sets `$err = ERR_HANDLE_MISUSE`.
+   - Where a handle type is syntactically evident at compile time (e.g., a `\pixelrect` constructor in an arithmetic position), the compiler MAY reject the script early; the runtime contract above is the normative guarantee. Call success/failure is inspected via the error channel: `\if{ {$err, !=, 0} }`.
+6. **Deterministic Cleanup**: Upon macro completion, task abort, or unhandled exception, `runtime.release_handles()` executes unconditionally in a `finally` block, reclaiming all active Handles and freeing all allocated buffer slots.
 
 ---
 
@@ -172,6 +181,6 @@ Initiates continuous push telemetry from the capture provider:
 Compile-time constants too large or structured for operand encoding (such as `\pixelrect` pixel literals) are preprocessed by the compiler into a middleware **const store** (`add_const`/`const_entry`), reset on each compilation.
 - **Bulk Const Store Materialization (`\pixelrect`)**: Matrix dimensions are bounded by `RECT_MAX_EDGE = 128` pixels ($128^2 \times 3 = 48\text{ KiB}$ matching `SNAP_SLOT_BYTES`). The compiler parses the 2D pixel array, serializes row-major 24-bit RGB bytes, and pre-populates the runtime const store. The bytecode references entries by integer ID via `sys.const <cid>`, materializing standard snapshot Handles at zero runtime heap allocation overhead.
 - **Scalar Folded Constants (`\rgb`)**: In contrast to bulk constant structures, static scalar constructors such as packed RGB colors (`\rgb{r, g, b}`) fold at compile time directly into signed 24-bit integer scalar immediates (`TAG_IMM (0)`), incurring zero const store allocation and zero runtime construction bytecode.
-- **Ownership Rules**: Handle ownership rules (shared references, overwrite-release, exit-release) apply to materialized constant handles unchanged.
+- **Ownership Rules**: Handle ownership rules (shared references, overwrite-release, exit-release) apply to materialized constant handles unchanged — with one boundary: releasing a materialized const handle frees only the handle record. The underlying pixel bytes belong to the const arena (batch lifetime, wholesale reset per compilation) and are never released through handle reclamation.
 - **Concurrency Barrier**: Any compilation request received while a macro is actively running MUST be rejected as busy (`state: busy`) to prevent clobbering active constants.
 

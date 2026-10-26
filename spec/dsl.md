@@ -39,12 +39,12 @@ The Control Flow Graph (CFG) is strictly constrained to forward DAGs and bounded
 
 ### 1.4 Axiom IV: Bounded Resources & Deterministic State
 All runtime execution horizons and resource allocations conform strictly to the Authoritative Profile Constants Table in [vm.md §1.0](vm.md#10-authoritative-profile-constants-table):
-- Maximum control flow nesting depth: `MAX_RUNTIME_NEST = 8`.
+- Maximum logical block nesting depth: `MAX_RUNTIME_NEST = 8` — applies uniformly to **every** nested logical block (`\rep`, `\if`, `\guarded`); e.g. `\rep{N}{ \if{...}{ \guarded{...}{ ... } } }` nests 3 blocks. Verified statically at compile time; exceeding it triggers a compile error.
 - Maximum compile-time macro expansion depth: `MAX_MACRO_EXPAND = 16`.
 - Maximum concurrent guard nesting depth: `MAX_GUARD_NEST = 4`.
 - Variable capacity profile: Up to 32 distinct user variables per macro (mapped to `MAX_VARS = 32` / `MAX_REGS = 32` scalar `i32` registers; see [vm.md §2](vm.md#2-register-file)).
 - Maximum `\pixelrect` edge length: `RECT_MAX_EDGE = 128` pixels ($128^2 \times 3 = 48\text{ KiB}$ matching `SNAP_SLOT_BYTES`).
-- **Deterministic Key State**: Upon normal completion of a code block, physical peripheral state is governed entirely by emitted instructions. Explicitly depressed keys remain physically held until an explicit release instruction (`\kup`, `\mup`) or an emergency fail-safe release (macro termination, task abort, or guard failure).
+- **Deterministic Key State**: Upon normal completion of a code block, physical peripheral state is governed entirely by emitted instructions. Explicitly depressed keys remain physically held until an explicit release instruction (`\kup`, `\mup`) or an emergency fail-safe release (abnormal termination: task abort, uncaught exception, or guard failure).
 - **Abnormal Termination Fail-Safe**: Abnormal termination (uncaught exceptions, task cancellation, or guard failure) unconditionally executes `hid.keys_release_all()` and `hid.mouse_release(0x1F)`.
 - **Deterministic Resource Reclamation**: Managed Handle resources (such as capture buffers) are deterministically reclaimed upon macro exit via `runtime.release_handles()` (see [runtime.md §4](runtime.md#4-handle-lifecycle--ownership-management)).
 
@@ -54,7 +54,7 @@ All runtime execution horizons and resource allocations conform strictly to the 
 
 The MYCRO DSL character stream is partitioned into seven closed, deterministic lexical primitive schemas:
 
-1. **Macro Commands (`\cmd`)**: Backslash `\` followed by an alphanumeric identifier sequence (e.g., `\delay`, `\rep`, `\enter`, `\ctrl+c`, user-defined macro `\foo`). Parsed by the compiler to emit corresponding bytecode instructions or trigger compile-time macro expansion.
+1. **Macro Commands (`\cmd`)**: Backslash `\` followed by an alphanumeric identifier sequence (e.g., `\delay`, `\rep`, `\enter`, `\ctrl+c`, user-defined macro `\foo`). The identifier itself never contains `+`; a `+` immediately following the identifier continues the token as a key combination per the §5.1 `KeyCombo` grammar. Parsed by the compiler to emit corresponding bytecode instructions or trigger compile-time macro expansion.
 2. **Unified Variable Reference Sigils (`Ref`)**: Dollar sign `$` followed by an identifier reference (`$var`, `$ret`, `$timeout`, `$err`, `$slot.<sig>.<field>`) or an explicit delimited enclosure (`${var}`, `${ret}`, `${timeout}`, `${err}`, `${slot.<sig>.<field>}`). Denotes dynamic value evaluation:
    ```ebnf
    Ref          ::= BareRef | DelimitedRef
@@ -71,7 +71,7 @@ The MYCRO DSL character stream is partitioned into seven closed, deterministic l
 5. **Bracket Pairs (`[]`)**: Balanced enclosing pairs `[ ... ]`. Optional configuration modifiers or decorators (e.g., `\def{name}[argc]{body}`, `\guarded[throttle]{...}`, `\wait[timeout]{...}`).
 6. **Literal Keystroke Text**: Printable ASCII characters (codes 32–126) located in executable text positions. Emitted as physical keystrokes targeting the host operating system. In addition, Tab (code 9), LF (code 10), and CR (code 13) are valid text characters handled according to layout mode (see [§3.3](#33-lexer-scanning-state-machine)).
 7. **Comments and Shebang Directives (`\#`, `\#!`)**:
-   - Standard comments begin with `\#` and span to the end of the line; silently absorbed by the lexical scanner.
+   - Standard comments begin with `\#` and span to the end of the line, **including the terminating newline itself**; the entire span is silently absorbed by the lexical scanner (a comment line emits no Enter keystroke under any layout mode).
    - Compiler configuration directives follow Unix shebang conventions, declared via `\#!syntax: <preset>` in leading comment lines of the script (see [§3](#3-preamble-directives--document-layout-modes-syntax)).
 
 - **Case Sensitivity Principle**:
@@ -98,12 +98,12 @@ DimLiteral      ::= DecLiteral "ms" | [0-9]+ ("." [0-9]+)? "s"
 | **Decimal Integer** | `120`, `-15`, `1000` | $f(\text{raw}) = \text{int}_{10}(\text{raw})$ | `120`, `-15`, `1000` | General data, loop counters, relative coordinates |
 | **Hexadecimal Integer** | `0xFF`, `0xFF00FF` | $f(\text{raw}) = \text{int}_{16}(\text{raw})$ | `255`, `16711935` | Bitmasks, packed 24-bit RGB colors |
 | **Millisecond Primitive** | `500ms`, `20ms` | $f(\text{digits}) = \text{int}_{10}(\text{digits})$ | `500`, `20` | Delays, pacing intervals, variable values |
-| **Second Time Dimension** | `0.5s`, `1.2s`, `5s` | $f(\text{num}) = \lfloor \text{float}(\text{num}) \times 1000 + 0.5 \rfloor$ | `500`, `1200`, `5000` | Delays, guard throttling, timeout values |
+| **Second Time Dimension** | `0.5s`, `1.2s`, `5s` | Exact decimal integer folding (no binary floating point): with the literal's digits as integer $N$ and $k$ fraction digits, $f(N, k) = \lfloor (2000N + 10^k) \,/\, (2 \cdot 10^k) \rfloor$ (round-half-up) | `500`, `1200`, `5000` | Delays, guard throttling, timeout values |
 
 #### Folding Invariants & Boundary Constraints
 1. **Unified Integer Domain & Overflow Checking**: Numeric literals and folded constants evaluate to mathematical integers. The evaluated scalar must fall strictly within the signed 32-bit range $[-2^{31}, 2^{31} - 1]$. Values outside this range constitute an arithmetic overflow and trigger an immediate static compilation error.
 2. **Mandatory Suffix for Fractional Quantities**: Any literal containing a decimal point MUST explicitly carry the `s` dimensional suffix (e.g., `0.5s`). Fractional literals without `s` (e.g., `0.5`) trigger an immediate static compile error (`fractional number requires unit 's'`).
-3. **Non-Negative Duration Enforcement**: Duration literals in time positions (`\delay`, `\pace`, `\guarded`, `\wait`) cannot be negative; negative time literals (e.g., `-50ms`) trigger an immediate static compile error (`negative duration not allowed`).
+3. **Non-Negative Duration Enforcement**: Duration literals in time positions (`\delay`, `\pace`, `\guarded`) cannot be negative; negative time literals (e.g., `-50ms`) trigger an immediate static compile error (`negative duration not allowed`). (`\wait` is the deliberate exception: negative timeouts are accepted and mean immediate poll; see [§9.2](#92-asynchronous-event-synchronization-wait).)
 4. **Rounding Semantics**: Sub-millisecond fractions are rounded using half-up rounding (e.g., `0.0004s` folds to `0ms`, `0.0006s` folds to `1ms`).
 5. **Physical Range Assertions (Decoupled from Lexing)**: The lexical scanner unifies all numeric and time literals into signed `i32` mathematical scalars. The validation of whether an immediate value satisfies the physical width of its target VM opcode is decoupled from lexing and enforced as **Physical Range Assertions**, normatively specified in **[§6.7 (Physical Word-Length Contracts)](#67-physical-word-length-contracts)** and each command's dedicated section. Folded values exceeding target opcode bounds (e.g., `\delay{70s}` exceeding `u16`, `\rep{300}` exceeding `u8`) trigger immediate static compilation errors.
 
@@ -116,7 +116,7 @@ Preamble directives configure the compiler's lexical scanner behavior prior to c
 ### 3.1 Formal Grammar (EBNF)
 
 ```ebnf
-PreambleDirective ::= "\\#!" Whitespace* "syntax:" Whitespace* SyntaxConfig
+PreambleDirective ::= "\#!" Whitespace* "syntax:" Whitespace* SyntaxConfig
 SyntaxConfig      ::= Preset | ConfigList
 Preset            ::= "free" | "typewriter"
 ConfigList        ::= ConfigItem ("," Whitespace* ConfigItem)*
@@ -387,10 +387,11 @@ Payload   ::= (* any character sequence not containing "\endtext{}"; zero escape
   - The payload ends on the byte immediately preceding the `\` of `\endtext{}`.
   - Every enclosed character is emitted verbatim as physical keystrokes under **all layout modes** (spaces/tabs/newlines emit Space/Tab/Enter keys).
   - Zero escapes: No macro commands, comments, escapes (`\\`), or variable sigils (`$`) are recognized inside the payload (a backslash is a literal keystroke).
+  - **Newline Normalization**: Line endings inside the payload follow the §3.3 convention: a CRLF sequence emits a single Enter; a standalone CR emits Enter.
 - **Termination & Lexical Protection**:
   - The scanner searches the payload strictly for the literal sequence `\endtext{}`. This sequence is the payload's only reserved sequence; exhausting the character stream without it raises an `Unterminated text block` compile error.
   - User macros cannot be named `text` or `endtext`.
-- **Full Immunity in `\def`**: Parameter text inside `\def{g}[1]{\text{}#1\endtext{}}` passes directly into the payload without brace parsing, allowing parameter payloads to contain unescaped braces, brackets, or backslashes.
+- **Full Immunity in `\def`**: Parameter text inside `\def{gg}[1]{\text{}#1\endtext{}}` passes directly into the payload without brace parsing, allowing parameter payloads to contain unescaped braces, brackets, or backslashes.
 
 ---
 
@@ -434,7 +435,7 @@ SubStmt ::= "\sub" "{" VarName "}" "{" Value "}"
 - **`\set{var}{val}`**: Assigns `val` to variable `var`, replacing any previous value.
 - **`\add{var}{val}`**: Adds `val` to variable `var` in-place, with signed 32-bit two's complement modular wraparound ($[-2^{31}, 2^{31} - 1]$).
 - **`\sub{var}{val}`**: Subtracts `val` from variable `var` in-place, with signed 32-bit two's complement modular wraparound ($[-2^{31}, 2^{31} - 1]$).
-- **Handle Type Restrictions**: Opaque resource handles (such as snapshot handles returned by `\call`) cannot participate in arithmetic; passing a handle to `\add` or `\sub` raises a static compile error. Underlying handle lifetimes and resource reclamation are managed automatically by the runtime environment (see [runtime.md §4](runtime.md#4-handle-lifecycle--ownership-management)).
+- **Handle Type Restrictions**: Opaque resource handles (such as snapshot handles returned by `\call`) have no arithmetic semantics. Supplying a handle to `\add` or `\sub` is a **runtime type fault**: the operation performs no mutation and sets `$err = ERR_HANDLE_MISUSE` (see [runtime.md §4](runtime.md#4-handle-lifecycle--ownership-management)). Where a handle type is syntactically evident (e.g., a `\pixelrect` constructor in an arithmetic position), the compiler MAY reject it at compile time. Underlying handle lifetimes and resource reclamation are managed automatically by the runtime environment (see [runtime.md §4](runtime.md#4-handle-lifecycle--ownership-management)).
 
 ### 6.3 System Read-Only Variables & Receptor Slots
 
@@ -447,7 +448,7 @@ In addition to user variables (`$var`, `${var}`), MYCRO provides three specializ
 
 - **System Status Variables (`SysVarRef`)**: Dedicated registers reserved for execution status:
   - **`$ret` / `${ret}`**: Holds the scalar return value or resource Handle ID from the most recent extension call (`\call`). Overwritten on each call; evaluates to `0` if the callee returns None or encounters an error (see [§9.3](#93-runtime-extension-calls-use-call)).
-  - **`$err` / `${err}`**: Holds the error status code from the most recent extension call (`\call`). Evaluates to `0` on success, or a non-zero error code from the standard error table on failure (see [runtime.md §3.0](runtime.md#30-universal-return--error-contract)).
+  - **`$err` / `${err}`**: Holds the error status code from the most recent extension call (`\call`) or handle-misuse type fault. Evaluates to `0` on success, or a non-zero error code from the standard error table on failure (see [runtime.md §3.0](runtime.md#30-universal-return--error-contract)).
   - **`$timeout` / `${timeout}`**: Holds the completion status of the most recent receptor wait (`\wait`). Evaluates to `1` if the wait timed out, or `0` if an external projection arrived or consumed a pending event (see [§9.2](#92-asynchronous-event-synchronization-wait)).
 - **Asynchronous Receptor Slots (`SlotRef`)**: Variables prefixed with `$slot.` (e.g., `$slot.<sig>.<field>` or `${slot.<sig>.<field>}`) act as stateful event latches reflecting external signals (such as host network packets or vision telemetry). They can be evaluated as dynamic values or waited on via `\wait`. The complete Signal/Slot orthogonal architecture and synchronization contracts are normatively specified in **[§9.1](#91-the-signal--slot-orthogonal-architecture)**.
 
@@ -490,7 +491,7 @@ Every command argument position belongs to one of three orthogonal categories ba
 
 | Parameter Category | Syntactic Form & Evaluation Rules | Compilation & Runtime Mapping |
 |---|---|---|
-| **Value Category (Value)** | Dynamic variables, numeric immediates, or compile-time constructors:<br>• Variables: User variables (`$var`, `${var}`), system read-only variables (`$ret`, `${ret}`, `$timeout`, `${timeout}`, `$err`, `${err}`), receptor slots (`$slot.<sig>.<field>`, `${slot.<sig>.<field>}`);<br>• Static literals: Decimal, hex, or time literals (`500ms`, `0.5s`), folded at lex time to `i32`;<br>• Constructors: Static value constructors (packed RGB `\rgb{r, g, b}`, pixel rectangle `\pixelrect{...}`; see [§6.4](#64-static-value-constructors-rgb-pixelrect)). | **Physical 3-Tag Closed Operand Architecture**:<br>• Immediate literal $\rightarrow$ `TAG_IMM (0)` (`i32 LE`);<br>• Register $\rightarrow$ `TAG_REG (1)` (`u8 reg`);<br>• **Receptor slots (`$slot...`)** $\rightarrow$ Pre-instruction desugaring: compiler loads slot into an ephemeral register (allocated from the lowest available register index not bound to a user variable) before host instruction execution, passing `TAG_REG`. In `\guarded` descriptors, slots are encoded natively via the `SLOT` descriptor tag. |
+| **Value Category (Value)** | Dynamic variables, numeric immediates, or compile-time constructors:<br>• Variables: User variables (`$var`, `${var}`), system read-only variables (`$ret`, `${ret}`, `$timeout`, `${timeout}`, `$err`, `${err}`), receptor slots (`$slot.<sig>.<field>`, `${slot.<sig>.<field>}`);<br>• Static literals: Decimal, hex, or time literals (`500ms`, `0.5s`), folded at lex time to `i32`;<br>• Constructors: Static value constructors (packed RGB `\rgb{r, g, b}`, pixel rectangle `\pixelrect{...}`; see [§6.4](#64-static-value-constructors-rgb-pixelrect)). | **Physical 3-Tag Closed Operand Architecture**:<br>• Immediate literal $\rightarrow$ `TAG_IMM (0)` (`i32 LE`);<br>• Register $\rightarrow$ `TAG_REG (1)` (`u8 reg`);<br>• **Receptor slots (`$slot...`)** $\rightarrow$ Pre-instruction desugaring: compiler loads slot into an ephemeral register (allocated from the lowest available register index not bound to a user variable; **if no unbound register remains, compilation fails deterministically** with `no free register for slot operand`) before host instruction execution, passing `TAG_REG`. In `\guarded` descriptors, slots are encoded natively via the `SLOT` descriptor tag. |
 | **Name Category (Name)** | Static symbolic identifiers: Key names, mouse buttons, namespaces, signal channel names, variable names, and `\call` label arguments (e.g. `net.send` event labels). Bare identifiers, strictly prohibiting `$`. | Statically resolved at compile time to usage IDs or string-table indices (`u8`; `\call` name-category arguments and `net.send` labels are emitted as `TAG_NAME (2)` operands). Labels preserve exact case. |
 | **Predicate Category (Predicate)** | Conditional decision structures: Atomic triplets `{lhs, op, rhs}` or composite logic trees `\all` / `\any` (see [§8](#8-conditional-control--guarded-execution-if-guarded)). | Directly lowered by the compiler into forward short-circuit jump sequences (`OP_BRA`). |
 
@@ -500,7 +501,7 @@ While base macro instructions ([§5](#5-base-macro-instruction-system)) emit sta
 
 - **Syntactic Form**: `\typenum{$var}` (also accepts `${var}`, `$ret`, `${ret}`, `$timeout`, `${timeout}`, `$err`, `${err}`, and asynchronous slots `$slot.<sig>.<field>`, `${slot.<sig>.<field>}`).
 - **Execution Semantics**: Evaluates the signed 32-bit integer scalar stored in the variable operand, converts its value to an ASCII decimal string representation (including a leading `-` for negative quantities), and sequentially transmits each character as an individual USB HID keypress and release, adhering strictly to active pacing intervals set by `\pace`.
-- **Static Type Invariant**: `\typenum` accepts exclusively variables holding numeric scalars (`int` or `color`). Supplying a non-variable (e.g., `\typenum{100}`) or an opaque resource Handle (such as a snapshot handle) halts compilation immediately with a static diagnostic (`typenum requires a variable ($name)` or `typenum: cannot render a <type> handle`).
+- **Static Type Invariant**: `\typenum` accepts exclusively variables holding numeric scalars (`int` or `color`). Supplying a non-variable (e.g., `\typenum{100}`) halts compilation immediately (`typenum requires a variable ($name)`). A variable that holds an opaque resource Handle at runtime triggers a **runtime type fault**: no output, `$err = ERR_HANDLE_MISUSE` (see [runtime.md §4](runtime.md#4-handle-lifecycle--ownership-management)).
 
 ### 6.7 Physical Word-Length Contracts
 
@@ -512,7 +513,7 @@ Every macro instruction consuming numeric immediates enforces strict physical wo
 | `\rep{N}` | `u8` (1 byte) | $[0, 255]$ | Loop counter ceiling (`MacroError: rep count out of u8 range`; see [§5.5](#55-bounded-counting-loops-rep)). |
 | `\click{btn, count}` | `u16` (2 bytes LE) | $[1, 65535]$ | Click repeat count (defaults to 1; see [§5.3](#53-mouse-operations)). |
 | `\move{dx, dy}` | `i16` (2 bytes LE) | $[-32768, 32767]$ | Relative mouse movement offsets (see [§5.3](#53-mouse-operations)). |
-| `\wait[timeout]{ $slot... }` | `i32` (4 bytes LE) | $[0, 2147483647]\text{ ms}$ | Timeout duration (omitted = $2147483647\text{ ms}$; $\le 0$ = immediate poll; see [§9.2](#92-asynchronous-event-synchronization-wait)). |
+| `\wait[timeout]{ $slot... }` | `i32` (4 bytes LE) | $[-2^{31}, 2^{31} - 1]\text{ ms}$ | Timeout duration (omitted = $2147483647\text{ ms}$; $\le 0$ = immediate poll, for literals and dynamic values alike; see [§9.2](#92-asynchronous-event-synchronization-wait)). |
 | `\guarded[throttle_ms]` | `u16` (2 bytes LE) | $[0, 65535]\text{ ms}$ | Minimum polling interval (defaults to 0 = continuous; see [§8.3](#83-state-guarded-execution-guarded)). |
 | `\rgb{r, g, b}` | `u8` $\times 3$ (1 byte each) | $[0, 255]$ each | Red, green, blue color channels (see [§6.4](#64-static-value-constructors-rgb-pixelrect)). |
 | `\pixelrect` edge length | `u8` (1 byte) | $[1, 128]$ | Maximum width and height bounded by `RECT_MAX_EDGE = 128` (see [§6.4](#64-static-value-constructors-rgb-pixelrect)). |
@@ -524,12 +525,13 @@ Every macro instruction consuming numeric immediates enforces strict physical wo
 - **Name vs Value Partition & Identifiers**: Name positions strictly forbid `$`. Variable and identifier names are case-sensitive and must match `[a-zA-Z][a-zA-Z0-9_]*`; reserved names (`ret`, `timeout`, `err`, `slot`) cannot be used as user variable names. Undefined variables, unknown keys, unknown mouse buttons, unknown namespaces, and unknown signals raise compile errors. `net.send` labels must be non-empty (optionally dotted) identifiers; empty or non-identifier labels raise compile errors.
 - **Signal Namespace Validation**: Signals must belong to statically recognized built-in channels (`net.msg`) or namespaces imported via `\use` (`img.<name>` under `\use{img}`). Signals belonging to unknown or undeclared namespaces raise static compile errors (`unknown signal namespace`).
 - **Guard Predicate Flatness**: `\guarded` invariant predicates must be flat (1 to 8 triplets); nested `\all` or `\any` blocks trigger compile errors.
-- **Container Ceilings**: Emitted bytecode stream cannot exceed `MAX_BYTECODE = 65535` bytes; string table cannot exceed `MAX_STRINGS = 255` entries.
+- **Container Ceilings**: Emitted bytecode stream cannot exceed `MAX_BYTECODE = 65535` bytes; string table cannot exceed `MAX_STRINGS = 255` entries, and each entry cannot exceed `MAX_STRING_BYTES = 255` UTF-8 bytes.
+- **Scratch Register Exhaustion**: A Value-position slot reference when all 32 registers are bound to user variables raises a compile error (`no free register for slot operand`; see [§6.5](#65-parameter-categories--calling-contracts)).
 - **Eradication of Silent Truncation**: Immediate values outside valid physical opcode ranges halt compilation immediately.
 - **Preamble Directive Ordering**: `\#!syntax:` directives must appear at the head of the file before any executable action token.
 - **Predicate Triplet Structure**: Predicate arguments must be formatted as dual-brace triplets `{ {lhs, op, rhs} }` with operators in `{=, !=, <, <=, >, >=}`.
 - **Receptor Slot Wait Target**: The argument to `\wait` must be a `$slot.<sig>.<field>` receptor. Passing user variables, system variables, or literals raises a compile error (see [§9.2](#92-asynchronous-event-synchronization-wait)).
-- **Numeric Typenum Target**: The argument to `\typenum` must be a variable or slot reference holding an integer or color scalar. Passing non-variables or opaque resource handles triggers a compile error (see [§6.6](#66-dynamic-keystroke-rendering-typenum)).
+- **Numeric Typenum Target**: The argument to `\typenum` must be a variable or slot reference. Passing non-variables triggers a compile error; a handle held at runtime triggers a runtime type fault via `$err` (see [§6.6](#66-dynamic-keystroke-rendering-typenum)).
 - **Guard Nesting Limit**: `\guarded` nesting cannot exceed `MAX_GUARD_NEST = 4`.
 
 ---
@@ -575,7 +577,7 @@ LogicBlock     ::= "\all" "{" Predicate ("," Predicate)* "}"
   - `\all{ P1, P2, ... }`: Conjunction (AND); short-circuit evaluated.
   - `\any{ P1, P2, ... }`: Disjunction (OR); short-circuit evaluated.
 - **Structural Isomorphism Law**: The first brace group of `\if` or `\guarded` is `{ predicate }`. When containing an atomic triplet, it forms the standard dual-brace structure: `\if{ {lhs, op, rhs} }{ ... }`.
-- **Handle Comparison Prohibition**: Resource handles cannot participate in comparison. Triplet comparisons involving handle operands (e.g., `\if{ {$h, ==, 0} }`) trigger static compile error `type error: cannot compare Handle with Scalar`. To verify call success, scripts inspect the error channel: `\if{ {$err, !=, 0} }`.
+- **Handle Comparison Semantics**: Resource handles have no comparison semantics. A triplet receiving a handle operand (e.g., `\if{ {$h, =, 0} }` where `$h` holds a handle) is a **runtime type fault**: the predicate evaluates to FALSE and the VM sets `$err = ERR_HANDLE_MISUSE` (see [runtime.md §4](runtime.md#4-handle-lifecycle--ownership-management)). Where a handle type is syntactically evident, the compiler MAY reject the comparison at compile time. To verify call success, scripts inspect the error channel: `\if{ {$err, !=, 0} }`.
 
 ### 8.2 Conditional Branch Instruction (`\if`)
 
@@ -612,17 +614,18 @@ Because handles cannot be compared against scalar values, checking whether an ex
 ### 8.3 State-Guarded Execution (`\guarded`)
 
 ```ebnf
-GuardedStmt    ::= "\guarded" [ "[" Duration "]" ] "{" GuardPredicate "}" CodeBlock [ CodeBlock ]
+GuardedStmt    ::= "\guarded" [ "[" StaticDuration "]" ] "{" GuardPredicate "}" CodeBlock [ CodeBlock ]
 GuardPredicate ::= Triplet
                  | "\all" "{" Triplet ("," Triplet)* "}"
                  | "\any" "{" Triplet ("," Triplet)* "}"
+StaticDuration ::= DimLiteral | DecLiteral
 ```
 
 ```dsl
 \guarded[throttle_ms]{ predicate }{ protected_body }
 \guarded[throttle_ms]{ predicate }{ protected_body }{ on_abort }
 ```
-- `[throttle_ms]` (optional decorator): Value category minimum polling interval ($0 \le throttle\_ms \le 65535\text{ ms}$, `u16`; defaults to `0ms`, continuous checks at instruction boundaries and delay slices).
+- `[throttle_ms]` (optional decorator): **Static literal** minimum polling interval (`DimLiteral` or `DecLiteral` only, $0 \le throttle\_ms \le 65535\text{ ms}$, `u16`; defaults to `0ms`, continuous checks at instruction boundaries and delay slices). Dynamic references are rejected at compile time — the `GUARD_ENTER` descriptor encodes a fixed `u16` field.
 - `predicate`: Invariant predicate asserted continuously throughout the execution of `protected_body`.
 - **Flat Invariant Constraint**: The invariant predicate inside `\guarded` must be flat: either a single atomic triplet or a single-layer `\all` or `\any` containing between 1 and 8 triplets ($1 \le \text{count} \le 8$). Nested logical expressions (such as `\all{ \any{...} }`) are strictly prohibited in `\guarded` and trigger a compile error (`guarded does not support nested predicate logic; max 8 flat triplets`).
 - `protected_body`: Executable Code Block executed under invariant protection.
@@ -667,7 +670,8 @@ Slots bridge the synchronous macro execution engine with the asynchronous extern
 ### 9.2 Asynchronous Event Synchronization (`\wait`)
 
 ```ebnf
-WaitStmt ::= "\wait" [ "[" Duration "]" ] "{" SlotRef "}"
+WaitStmt    ::= "\wait" [ "[" WaitTimeout "]" ] "{" SlotRef "}"
+WaitTimeout ::= [ "-" ] ( DimLiteral | DecLiteral ) | ScalarRef
 ```
 
 ```dsl
@@ -681,16 +685,16 @@ WaitStmt ::= "\wait" [ "[" Duration "]" ] "{" SlotRef "}"
   - If `slot.pending == 0`, execution suspends until a new external projection arrives (setting `pending = 1`) or until `timeout` expires.
 - **Timeout Domain & Immediate Polling**: The timeout duration in brackets `[timeout]` belongs to the signed 32-bit integer domain ($[-2147483648, 2147483647]$):
   - `timeout > 0`: Bounded wait up to `timeout` milliseconds.
-  - `timeout <= 0`: **Non-blocking immediate poll** (evaluates `slot.pending`; if `1`, consumes and writes `$timeout = 0`; else immediately writes `$timeout = 1`).
+  - `timeout <= 0`: **Non-blocking immediate poll** (evaluates `slot.pending`; if `1`, consumes and writes `$timeout = 0`; else immediately writes `$timeout = 1`). This applies uniformly to literals and dynamic values — a negative literal such as `\wait[-1]{...}` is a legal immediate poll, deliberately enabling countdown idioms (e.g. `\wait[$deadline_rem]{...}` after repeated `\sub`) without guard clauses.
   - Omitted `[timeout]`: Automatically emitted by the compiler as $2147483647\text{ ms}$ ($2^{31}-1$, $\approx 24.8$ days). Indefinite wait without a timeout is strictly prohibited to guarantee halting decidability.
 - **Status Reporting**: Writes `1` to `$timeout` if the wait timed out, or `0` if an external projection arrived or a pending event was consumed.
 
 #### Event Polling Loop Idiom
 ```dsl
-\guarded{ {$err, ==, 0} }{
+\guarded{ {$err, =, 0} }{
     \rep{1000}{
         \wait[100ms]{ $slot.net.msg.val }
-        \if{ {$timeout, ==, 0} }{
+        \if{ {$timeout, =, 0} }{
             \# Event received and consumed!
             \typenum{$slot.net.msg.val}
             \enter
@@ -706,12 +710,13 @@ UseStmt     ::= "\use" "{" Namespace "}"
 CallStmt    ::= "\call" "{" ExtensionFn "}" ArgGroup*
 ExtensionFn ::= Namespace "." Identifier
 Namespace   ::= Identifier
+Name        ::= Identifier ("." Identifier)*
 ArgGroup    ::= "{" Value "}" | "{" Value ("," Value)* "}" | "{" Name "}"
 ```
 
 - **`\use{ns}`**: Compile-time dependency declaration against the runtime namespace table. Unknown namespace raises a compile error. Emits no bytecode.
 - **`\call{ns.fn}{arg}...`**: Invokes a registered runtime extension function.
-- **Argument Lowering & Flattening**: Each argument brace group following `{ns.fn}` is flattened into positional `typed(T)` bytecode operands according to the target function's registered signature. For example, `\call{img.watch}{name}{coord}{interval, duration}` lowers to a single `0x2A CALL_EXT` instruction with `argc = 4` operands.
+- **Argument Lowering & Flattening**: Each argument brace group following `{ns.fn}` is flattened into positional `typed(T)` bytecode operands according to the target function's registered signature. For example, `\call{img.watch}{name}{x, y}{interval, duration}` lowers to a single `0x2A CALL_EXT` instruction with `argc = 5` operands (name + two coordinates + two timings). The `u8 ns, u8 fn` fields of `CALL_EXT` are compile-time-resolved registry indices, valid within the compiled artifact that resolved them.
 - **Label Preservation**: Name-category arguments (such as `net.send`'s label) preserve exact casing and are emitted as string-table index operands (`TAG_NAME = 2`).
 - **Two-Channel Results**: Callee writes return value or Handle ID to `$ret` (`0xFF`, evaluates to `0` on void or failure) and error code to `$err` (`0xFD`, `0` on success, non-zero on failure).
 - Registered namespaces (`sys`, `net`, `img`), signatures, and Handle ownership semantics are normative in [runtime.md](runtime.md) (see [runtime.md §4](runtime.md#4-handle-lifecycle--ownership-management)).
@@ -723,7 +728,7 @@ ArgGroup    ::= "{" Value "}" | "{" Value ("," Value)* "}" | "{" Name "}"
 ### Deliberate Boundaries
 - Numbers are `i32` only.
 - Strings are not values anywhere in the language. Literal text has exactly two fates: keystrokes in text positions, and Name-category identifiers resolved to string-table indices. Runtime data enters as Handle resources.
-- Resource handles cannot participate in comparison or arithmetic; handle success/failure is inspected via `$err`.
+- Resource handles have no arithmetic or comparison semantics; handle misuse is a runtime type fault reported via `$err` (`ERR_HANDLE_MISUSE`), and call success/failure is inspected via `$err`.
 - No arithmetic expression trees or operator precedence; arithmetic is statement-based via `\set`, `\add`, `\sub`.
 - No backward branches or `\while` loops; iteration is strictly bounded via `\rep{N}`.
 - Single delay durations bounded by `u16` ($0..65535\text{ ms}$).
@@ -737,5 +742,5 @@ ArgGroup    ::= "{" Value "}" | "{" Value ("," Value)* "}" | "{" Name "}"
 | **v1** (gist era) | Text typing, basic key symbols, escape characters. |
 | **v2** | Mouse controls (`\click`, `\move`, `\mdown`, `\mup`), `\delay`/`\pace` split, `\rep`, `\kdown`/`\kup`, line continuations, comments. |
 | **v3** | User macros `\def`; variables/`\set`/`\add`; `$ret`/`$timeout`; signal slots; `\ifnum`; `\typenum{$var}`; `\use`/`\call`/`\wait`; Name vs Value partition; signature typing and Handle ownership; decoupled compile-time expansion (`MAX_MACRO_EXPAND=16`) and runtime nesting (`MAX_RUNTIME_NEST=8`). |
-| **v4** | Preamble layout modes (`\#!syntax: free` vs default `typewriter`); verbatim text blocks `\text{}`…`\endtext{}`; unified `i32` numeric folding with `ms`/`s` time literals; `u16 ms` physical delay clamping and eradication of silent truncation; Binary Brace Taxonomy & Structural Exclusivity Law; signal/slot orthogonal reset: bare Name projectors vs `$slot.<sig>.<field>` stateful receptors with coalescing latest-value latches; signed `i32` wait timeout domain with non-blocking immediate polling ($\le 0$); dedicated `$err` (`0xFD`) error register separated from `$ret` (`0xFF`); handle comparison prohibition; structured first-class predicates (`\if` with bare `{}` else; `\ifnum` **removed outright** — unknown command, compile error); continuous flat invariant guarding (`\guarded[throttle]` with delay-slicing and fail-safe release; nested logic forbidden); subtraction `\sub`; compile-time color packing `\rgb`; `\pixelrect` static pixel matrices; open-world Name labels for `net.send`; Authoritative Profile Constants Table integration. |
+| **v4** | Preamble layout modes (`\#!syntax: free` vs default `typewriter`); verbatim text blocks `\text{}`…`\endtext{}`; unified `i32` numeric folding with `ms`/`s` time literals; `u16 ms` physical delay clamping and eradication of silent truncation; Binary Brace Taxonomy & Structural Exclusivity Law; signal/slot orthogonal reset: bare Name projectors vs `$slot.<sig>.<field>` stateful receptors with coalescing latest-value latches; signed `i32` wait timeout domain with non-blocking immediate polling ($\le 0$, literals and dynamic values alike); dedicated `$err` (`0xFD`) error register separated from `$ret` (`0xFF`); handle type-fault discipline (runtime `$err` reporting); structured first-class predicates (`\if` with bare `{}` else; `\ifnum` **removed outright** — unknown command, compile error); continuous flat invariant guarding (`\guarded[throttle]` with delay-slicing and fail-safe release; nested logic forbidden); subtraction `\sub`; compile-time color packing `\rgb`; `\pixelrect` static pixel matrices; open-world Name labels for `net.send`; Authoritative Profile Constants Table integration. |
 
