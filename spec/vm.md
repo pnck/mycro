@@ -107,8 +107,8 @@ u8 tag:  0 = Immediate (TAG_IMM, i32 LE, 4 bytes)
 ```
 
 A `typed(T)` operand is a 1-byte physical tag (`0 = Immediate (TAG_IMM)`, `1 = Register (TAG_REG)`) followed by its physical payload:
-- If `tag == 0` (`TAG_IMM`): A 4-byte signed `i32 LE` literal, which the instruction's operational semantics cast or truncate to `T` (e.g., `u16`, `u8`, `i16`).
-- If `tag == 1` (`TAG_REG`): A 1-byte register address `u8 reg`, whose current runtime `i32` scalar is cast or clamped to `T` by the opcode semantics.
+- If `tag == 0` (`TAG_IMM`): A 4-byte signed `i32 LE` literal. Values outside the logical interval of `T` are rejected at compile time ([dsl.md §6.7](dsl.md#67-physical-word-length-contracts)).
+- If `tag == 1` (`TAG_REG`): A 1-byte register address `u8 reg`, whose current runtime `i32` scalar is **clamped** to the logical interval of `T` by the opcode semantics (uniform rule; modulo truncation is forbidden).
 - `tag == 2` (`TAG_NAME`): A 1-byte string table index `u8 str_idx`, permitted only in instructions whose signature explicitly accepts a Name category operand (such as `CALL_EXT` label arguments).
 Any tag outside `{0, 1}` (or `{0, 1, 2}` where permitted) triggers a container validation rejection.
 
@@ -353,4 +353,5 @@ v4 was frozen from pre-release draft iterations; no compatibility is claimed for
 - **Budgets (Authoritative Profile Constants)**: Snapshot slot 48 KiB ($128^2$ RGB) $\times$ 8; const arena 256 KiB; stream assembly slot 48 KiB; per-connection reassembly $2 \times (8\text{ KiB} + 8)$. See [§1.0](#10-authoritative-profile-constants-table).
 - **Cache Discipline**: Handle ownership flags should reside adjacent to the register file; hoisting flags into dispatch-loop locals enables single-cycle fast paths.
 - **Slot Registry**: `(signal, field)` receptor slots are created on first projection and are unbounded by the normative profile; they hold only scalars and flags (control-plane GC objects, not bulk buffers).
+- **Port Validation Guidance**: Bytecode containers are device-local and self-produced (compile-and-execute on the same device); full container validation is therefore out of the normative scope. Ports that accept containers from untrusted sources SHOULD additionally reject: unknown opcodes, out-of-range tags/indices, non-zero reserved bits, branch targets not at instruction boundaries, `LOOP`/`GUARD_EXIT` stack underflow, and writes to special registers.
 

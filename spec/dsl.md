@@ -55,7 +55,7 @@ All runtime execution horizons and resource allocations conform strictly to the 
 
 The MYCRO DSL character stream is partitioned into seven closed, deterministic lexical primitive schemas:
 
-1. **Macro Commands (`\cmd`)**: Backslash `\` followed by an alphanumeric identifier sequence (e.g., `\delay`, `\rep`, `\enter`, `\ctrl+c`, user-defined macro `\foo`). The identifier itself never contains `+`; a `+` immediately following the identifier continues the token as a key combination per the §5.1 `KeyCombo` grammar. Parsed by the compiler to emit corresponding bytecode instructions or trigger compile-time macro expansion.
+1. **Macro Commands (`\cmd`)**: Backslash `\` followed by an identifier matching `[a-zA-Z0-9_]+` (e.g., `\delay`, `\rep`, `\enter`, `\ctrl+c`, user-defined macro `\foo`). The identifier itself never contains `+`; a `+` immediately following the identifier continues the token as a key combination per the §5.1 `KeyCombo` grammar. Parsed by the compiler to emit corresponding bytecode instructions or trigger compile-time macro expansion.
 2. **Unified Variable Reference Sigils (`Ref`)**: Dollar sign `$` followed by an identifier reference (`$var`, `$ret`, `$timeout`, `$err`, `$slot.<sig>.<field>`) or an explicit delimited enclosure (`${var}`, `${ret}`, `${timeout}`, `${err}`, `${slot.<sig>.<field>}`). Denotes dynamic value evaluation:
    ```ebnf
    Ref          ::= BareRef | DelimitedRef
@@ -139,7 +139,7 @@ Whitespace        ::= " " | "\t"
 | `\#!syntax: newline=ignore, space=emit` | Fine-Grained Config | **Orthogonal Hybrid**: Newlines allow indentation; spaces emit `Space`. | Indented scripts requiring frequent inline whitespace typing. |
 
 - **Source-Semantics Equivalence**: Layout modes alter only the scanner's interpretation of unescaped whitespace and newlines; once tokenized, all layout modes share identical grammatical rules, instruction sets, and execution semantics.
-- **Preamble Scope**: The directive must appear in the leading comment lines of the script, before any non-comment, non-whitespace executable character. A `\#!syntax:` directive encountered after the first code token is a compile error. Unknown presets and unknown keys are compile errors. A fine-grained `ConfigList` inherits the typewriter defaults (`emit`) for unspecified keys. Multiple directives are permitted; later entries override earlier ones per key.
+- **Preamble Scope**: The directive must appear in the leading comment lines of the script, before any non-comment, non-whitespace executable character. A `\#!syntax:` directive encountered after the first code token is a compile error. Unknown presets, unknown keys, and unknown `\#!` directive names are compile errors. A fine-grained `ConfigList` inherits the typewriter defaults (`emit`) for unspecified keys. Multiple directives are permitted; later entries override earlier ones per key.
 - **Comment Orthogonality Law**:
   - `\# <text>`: Standard human-readable comments; silently ignored.
   - `\#!<directive>`: Compiler preamble directive; processed exclusively at the head of the file.
@@ -516,7 +516,7 @@ While base macro instructions ([§5](#5-base-macro-instruction-system)) emit sta
 
 ### 6.7 Physical Word-Length Contracts
 
-Every macro instruction consuming numeric immediates enforces strict physical word-length and range bounds corresponding to its target VM opcode. Values violating these intervals trigger immediate static compilation diagnostics:
+Every macro instruction consuming numeric immediates enforces strict physical word-length and range bounds corresponding to its target VM opcode. **Static immediates** violating these intervals trigger immediate static compilation diagnostics. **Dynamic register values** are uniformly **clamped** to the target interval at runtime (e.g., `\rep{$n}` with `$n = 300` runs 255 iterations; `\move{$x, 0}` with `$x = 40000` moves +32767); modulo truncation is forbidden everywhere:
 
 | Target Instruction | Opcode Parameter Width | Valid Immediate Interval | Normative Definition & Reference |
 |---|---|---|---|
