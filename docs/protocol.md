@@ -91,7 +91,7 @@ to prevent infinite error reflection storms.
 | `img.unwatch` | server → capture client | `name` | `img.unwatch.ok` |
 
 `img.frame` is the provider verb for in-band macro execution streams
-(bounded strictly by `SNAP_SLOT_BYTES` = 48 KiB, spec/vm.md Appendix A).
+(bounded strictly by `SNAP_SLOT_BYTES` = 48 KiB, spec/vm.md §1.0).
 `img.arm_preview` is the provider verb for out-of-band full-frame UI
 previews (Pixel Assist), arming a one-shot ephemeral LAN data plane
 that bypasses the microcontroller entirely.
@@ -121,10 +121,11 @@ source pixels; resampling happens only under the explicit `w,h` selector
 and never changes color depth unless `format` says so.
 
 `event.push` is the inbound half of the DSL `net` namespace: firing
-`net.msg` wakes device macros suspended in `\wait{net.msg}` and publishes
-the fields as last-published state, read via `$net.msg.<field>` slot
-references. `\wait` observes the next fire after entry only — a fire with
-no waiter is discarded (slots still record it).
+`net.msg` projects the fields into the corresponding
+`$slot.net.msg.<field>` receptors and latches `pending = 1`
+(spec/runtime.md §1.1). A fire with no waiter is NOT lost — the latch
+holds it, and the next `\wait{ $slot.net.msg.val }` consumes it
+immediately on entry.
 
 ## ADR-1: encoding and channel choices
 
@@ -160,7 +161,7 @@ same LAN plaintext model as the existing HTTP Bearer token.
 Decisions below are backed by on-device/OBS measurements, quoted at the
 end. The `img.frame` verb lives in the message-type table above; the
 DSL surface built on it (the snapshot-centric exact pixel family) is
-specified in spec/vm.md Part II.
+specified in spec/runtime.md §3.3.
 
 **Capture: an OBS script (obspython), host-side decode.** OBS's source
 screenshot API is exposed to Python scripts
@@ -218,15 +219,13 @@ in a size parameter.
 steady-state RTT ~26 ms + transfer at ~127 KB/s): `points` ~0.5 s
 (~2 Hz color checks), `rect` 256² ~2 s (low-frequency only), `w,h` gray
 80x60 ~0.6 s. The DSL's exact pixel family (`img.snap`/`img.at`/
-`img.diff`, spec/vm.md handle model) rides `rect`; template matching
+`img.diff`, spec/runtime.md §3.3 and the §4 handle model) rides `rect`; template matching
 (`w,h`) is deferred to the P3 discussion together with the CNN question
 — the bench numbers that will drive it: row-conv NCC with exact argmax,
 T=16 on 80x60 = 573 ms, T=8 on 160x120 = 1245 ms, T=16 = 2691 ms,
 T=32 = 6872 ms (quadratic in template edge; ROI windows are the planned
 lever). Ingest (raw bytes → ulab float array) is 6 ms; PSRAM is no
-constraint (peak ~160 KB used of ~7.5 MB free).
-
-**WiFi power management.** CircuitPython defaults to modem sleep
+constraint (peak ~160 KB used of ~7.5 MB free).**WiFi power management.** CircuitPython defaults to modem sleep
 (`wifi.PowerManagement.MIN`): the AP buffers inbound packets until the
 next DTIM wake, which cost ~350 ms per connection setup and produced
 sawtooth ping RTTs (30–120 ms cycling; router RTT 3–7 ms; warm-

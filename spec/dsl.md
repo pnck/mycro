@@ -55,7 +55,7 @@ All runtime execution horizons and resource allocations conform strictly to the 
 
 The MYCRO DSL character stream is partitioned into seven closed, deterministic lexical primitive schemas:
 
-1. **Macro Commands (`\cmd`)**: Backslash `\` followed by an identifier matching `[a-zA-Z0-9_]+` (e.g., `\delay`, `\rep`, `\enter`, `\ctrl+c`, user-defined macro `\foo`). The identifier itself never contains `+`; a `+` immediately following the identifier continues the token as a key combination per the §5.1 `KeyCombo` grammar. Parsed by the compiler to emit corresponding bytecode instructions or trigger compile-time macro expansion.
+1. **Macro Commands (`\cmd`)**: Backslash `\` followed by an identifier matching `[a-zA-Z] [a-zA-Z0-9_]*` (e.g., `\delay`, `\rep`, `\enter`, `\ctrl+c`, user-defined macro `\foo`). The identifier itself never contains `+`; a `+` immediately following the identifier continues the token as a key combination per the §5.1 `KeyCombo` grammar. Parsed by the compiler to emit corresponding bytecode instructions or trigger compile-time macro expansion.
 2. **Unified Variable Reference Sigils (`Ref`)**: Dollar sign `$` followed by an identifier reference (`$var`, `$ret`, `$timeout`, `$err`, `$slot.<sig>.<field>`) or an explicit delimited enclosure (`${var}`, `${ret}`, `${timeout}`, `${err}`, `${slot.<sig>.<field>}`). Denotes dynamic value evaluation:
    ```ebnf
    Ref          ::= BareRef | DelimitedRef
@@ -72,7 +72,7 @@ The MYCRO DSL character stream is partitioned into seven closed, deterministic l
 5. **Bracket Pairs (`[]`)**: Balanced enclosing pairs `[ ... ]`. Optional configuration modifiers or decorators (e.g., `\def{name}[argc]{body}`, `\guarded[throttle]{...}`, `\wait[timeout]{...}`).
 6. **Literal Keystroke Text**: Printable ASCII characters (codes 32–126) located in executable text positions. Emitted as physical keystrokes targeting the host operating system. In addition, Tab (code 9), LF (code 10), and CR (code 13) are valid text characters handled according to layout mode (see [§3.3](#33-lexer-scanning-state-machine)).
    - Bare `{` `}` `[` `]` in text positions are literal keystrokes; braces and brackets are structural only where a command's signature consumes them.
-   - **Escape Sequences**: `\` followed by one of `\ { } $` emits the literal second character. `\` followed by a newline (LF or CRLF) is a line continuation (silently absorbed, §3.3). `\` followed by an ASCII letter starts a command token. `\` followed by any other character (or end of input) is a compile error (`Invalid escape sequence`).
+   - **Escape Sequences**: `\` followed by one of `\ { } $` emits the literal second character. `\` followed by a newline (LF, CRLF, or CR) is a line continuation (silently absorbed, §3.3). `\` followed by `#` starts a comment (item 7). `\` followed by an ASCII letter starts a command token. `\` followed by any other character (or end of input) is a compile error (`Invalid escape sequence`).
    - `#` outside a `\def` body is a literal keystroke (parameter substitution exists only inside macro bodies, §7).
 7. **Comments and Shebang Directives (`\#`, `\#!`)**:
    - Standard comments begin with `\#` and span to the end of the line, **including the terminating newline itself**; the entire span is silently absorbed by the lexical scanner (a comment line emits no Enter keystroke under any layout mode).
@@ -149,7 +149,7 @@ Whitespace        ::= " " | "\t"
 | Input Stream Character | Context | `free` Mode (`\#!syntax: free`) | `typewriter` Mode (default) |
 |---|---|---|---|
 | Newline `\n` / `\r\n` / `\r` | Text Position | **Silently Absorbed** | **Emits Enter Key** (`0x02 KEY enter`) |
-| Space `' '` / Tab `\t` | Text Position | **Silently Absorbed** | **Emits Space / Tab Key** |
+| Space `' '` / Tab `\t` | Text Position | **Silently Absorbed** | **Emits Space (`CHAR 0x20`) / Tab (`KEY 0x2B`)** |
 | Explicit `\enter`, `\space`, `\tab` | Text Position | **Emits Target Keystroke** | **Emits Target Keystroke** |
 | Line Continuation `\` + Newline | Text Position | **Silently Absorbed** | **Silently Absorbed** |
 | `\text{}`…`\endtext{}` payload | Text block ([§5.6](#56-verbatim-text-blocks-text--endtext)) | **Every character emitted literally** | **Every character emitted literally** |
@@ -241,7 +241,7 @@ All keys in this inventory belong to standard USB HID Usage Page 0x07 (Keyboard/
 
 | Category | Canonical Identifiers | Aliases | Usage ID | Semantics / Target Action |
 |---|---|---|---|---|
-| **Letters** | `a` .. `z` | — | `0x04` .. `0x1D` | Letter keys; uppercase forms `\A` .. `\Z` expand to `[shift, letter]` |
+| **Letters** | `a` .. `z` | — | `0x04` .. `0x1D` | Letter keys; uppercase forms `\A` .. `\Z` expand to `[shift, letter]` (the K-expansion serves combinations and `\kdown`/`\kup` payloads; a lone `\A` lowers to `CHAR` — see Single-Key Lowering) |
 | **Digits** | `0` .. `9` | — | `0x1E` .. `0x27` | Main-row digit keys (`0x1E` = `1` … `0x26` = `9`, `0x27` = `0`) |
 | **Core Editing & Whitespace** | `enter` | `return` | `0x28` | Return / Enter key |
 | | `esc` | `escape` | `0x29` | Escape key |
@@ -291,13 +291,13 @@ All keys in this inventory belong to standard USB HID Usage Page 0x07 (Keyboard/
   3. **LIFO Release**: Emits `KEY_UP` in reverse order for each key in $\operatorname{reversed}(\mathbf{K})$.
   4. **Inter-Action Pacing**: The compiler emits no pacing bytes; each `KEY_DOWN`/`KEY_UP` of the sequence is itself a peripheral action, paced by the VM's automatic pacing rule (see [§5.4](#54-timing-delays--inter-keystroke-pacing) and [vm.md §4](vm.md#4-opcode-set-v4)).
 - **Single-Key Lowering (`SpecialKey`)**: A lone key token lowers to exactly **one** action, never a sequence:
-  - If the token names exactly one printable ASCII character — letters `\a`–`\z` / `\A`–`\Z`, character-named keys (`\plus`, `\minus`, `\equal`, `\space`, …) — it lowers to one `CHAR` opcode carrying that character (`\A` = `CHAR 0x41`). Shift resolution is the keymap's job, identical to typing the character in text position. (HID usages are caseless; case exists only as the Shift modifier or as a character. Digit keys have no command form — `\1` is rejected at the lexer, digits are typed as text characters.)
+  - If the token names exactly one printable ASCII character — letters `\a`–`\z` / `\A`–`\Z` and the character-named keys `\plus`, `\minus`, `\equal`, `\space` (the closed set) — it lowers to one `CHAR` opcode carrying that character (`\A` = `CHAR 0x41`). Shift resolution is the keymap's job, identical to typing the character in text position. (HID usages are caseless; case exists only as the Shift modifier or as a character. Digit keys have no command form — `\1` is rejected at the lexer, digits are typed as text characters. All `kp_*` keypad keys and their aliases lower to `KEY` with their dedicated keypad usages, never to `CHAR`.)
   - Otherwise (non-printable named keys: `\enter`, `\tab`, arrows, F-keys, keypad keys) it lowers to one `KEY` opcode — a VM-level tap (press, hold `click_hold_ms`, release).
 
   The character form and the physical form are both first-class and intentional: `\A` types the character A (one action, one pacing unit), while the combination syntax `\shift+a` spells out the physical chord (sequence lowering, each constituent action paced). The $K(T)$ mapping above serves combinations and `\kdown`/`\kup` payloads, where `A` still expands physically to $[\text{shift}, a]$.
 
 > [!NOTE]
-> **Hold Configuration Scope**: `click_hold_ms` is a runtime-adjustable global configuration (default 10ms) serving as the **default hold duration for single-shot press/click actions only** — keyboard taps, mouse clicks, and consumer-control pulses (HID transports only press and release events, so a single-shot action is realized as press + hold interval + release). It does NOT apply to explicit hold control: any press duration the script must control is expressed as `\kdown`/`\mdown` + `\delay` + `\kup`/`\mup`. VM-internal taps (`KEY`/`CHAR`/`MCLICK`/`CONSUMER_KEY`) read the live value at execution time; combination sequences use the value the compiler folds into the emitted `SLEEP` operand at compile time.
+> **Hold Configuration Scope**: `click_hold_ms` is a runtime-adjustable global configuration (default 10ms; adjusted out-of-band via device settings, outside the scope of the DSL and the protocol) serving as the **default hold duration for single-shot press/click actions only** — keyboard taps, mouse clicks, and consumer-control pulses (HID transports only press and release events, so a single-shot action is realized as press + hold interval + release). It does NOT apply to explicit hold control: any press duration the script must control is expressed as `\kdown`/`\mdown` + `\delay` + `\kup`/`\mup`. VM-internal taps (`KEY`/`CHAR`/`MCLICK`/`CONSUMER_KEY`, and each `TYPEREG` character) read the live value at execution time; combination sequences use the value the compiler folds into the emitted `SLEEP` operand at compile time.
 - **Key Hold & Release (`\kdown`, `\kup`)**:
   - `\kdown{combo}`: Emits forward `KEY_DOWN` sequence across $\mathbf{K}$ without auto-release.
   - `\kup{combo}`: Emits reverse `KEY_UP` sequence across $\operatorname{reversed}(\mathbf{K})$.
@@ -625,7 +625,8 @@ CodeBlock ::= "{" CodeStream "}"
 #### Canonical Error-Checking Idiom with `$err`
 Because handles cannot be compared against scalar values, checking whether an extension call succeeded uses the dedicated `$err` channel:
 ```dsl
-\call{img.snap}{rect}
+\use{img}
+\call{img.snap}{0, 0, 128, 128}
 \if{ {$err, !=, 0} }{
     \# Handle capture failure or provider timeout
     \media_stop
@@ -683,7 +684,7 @@ Identifier ::= [a-zA-Z] [a-zA-Z0-9_]*
 
 Slots bridge the synchronous macro execution engine with the asynchronous external world:
 - **Projector vs. Receptor Orthogonality**:
-  - **Signals** are pure external projection channels (**Name category**, e.g., `net.msg`, `img.frame`). They are triggered exclusively by the outside world, maintain no persistent storage, cannot be read, and cannot be awaited directly.
+  - **Signals** are pure external projection channels (**Name category**, e.g., `net.msg`, `img.hp`). They are triggered exclusively by the outside world, maintain no persistent storage, cannot be read, and cannot be awaited directly.
   - **Slots** are internal state receptors (**Value category**, mandatory prefix `$slot.`, e.g., `$slot.net.msg.val`). They hold persistent scalar payloads and arrival latches.
 - **No-Shorthand Law**: Slot field names MUST be written explicitly in source code (e.g., `$slot.net.msg.val`). An omitted form such as `$slot.<sig>` is forbidden; multi-level identifiers split deterministically at the LAST dot (e.g., `$slot.sys.net.msg.val` $\rightarrow$ signal `sys.net.msg`, field `val`).
 - **Default Signal-to-Slot Projection**: When an external signal `<sig>` is emitted without specific sub-fields (such as a single scalar or notification), it is uniformly projected into `$slot.<sig>.val`.
@@ -715,6 +716,7 @@ WaitTimeout ::= [ "-" ] ( DimLiteral | DecLiteral ) | ScalarRef
 
 #### Event Polling Loop Idiom
 ```dsl
+\use{net}
 \guarded{ {$err, =, 0} }{
     \rep{1000}{
         \wait[100ms]{ $slot.net.msg.val }

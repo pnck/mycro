@@ -50,6 +50,7 @@ The following table constitutes the normative source of truth for all **DSL/VM-v
 | `DELAY_SLICE_QUANTUM` | `20` | Milliseconds | Base time slice for continuous guard inspection during `\delay` / `\wait`. |
 | `DEFAULT_CLICK_HOLD_MS` | `10` | Milliseconds | Profile default pulse duration for single-shot key taps, mouse clicks, and consumer control pulses. |
 | `DEFAULT_PACE_MS` | `0` | Milliseconds | Default inter-action pacing delay. |
+| `EXT_TIMEOUT_MS` | `5000` | Milliseconds | Timeout for extension calls requiring a provider round-trip (`img.*`); expiry surfaces as `ERR_TIMEOUT` ([runtime.md §3.0](runtime.md#30-universal-return--error-contract)). |
 
 ### 1.1 Execution State Machine
 
@@ -146,10 +147,10 @@ Any tag outside `{0, 1}` (or `{0, 1, 2}` where permitted) triggers a container v
 | `0x28` | `READSLOT` | `u8 reg, u8 sig_str_idx, u8 field_str_idx` | Read slot value into register (mediated). |
 | `0x29` | `WAIT` | `u8 sig_str_idx, u8 field_str_idx, typed(i32 timeout_ms)` | Suspend until slot `$slot.<sig>.<field>` receives projection (or consumes pending event) or timeout expires. Signed `i32` timeout domain: $> 0$ bounded wait; $\le 0$ non-blocking immediate poll (consumes pending event if present). Writes status (0=arrival/consumed, 1=timeout) to `$timeout` (`0xFE`, mediated). |
 | `0x2A` | `CALL_EXT` | `u8 ns, u8 fn, u8 argc, argc × typed` | Invoke extension function (`ns`/`fn` are string-table indices of the namespace and function names). Callee writes return value or Handle ID to `$ret` (`0xFF`, mediated; `0` on void/failure), and error code to `$err` (`0xFD`, mediated; `0` on success, non-zero on error). |
-| `0x2B` | `TYPEREG` | `u8 reg` | Type register decimal integer value as ASCII keystrokes with active pacing (DSL `\typenum{$var}` / `\typenum{${var}}`). |
+| `0x2B` | `TYPEREG` | `u8 reg` | Type register decimal integer value as ASCII keystrokes: each character is a tap (press, hold `click_hold_ms`, release), paced per character including the last (DSL `\typenum{$var}` / `\typenum{${var}}`). |
 | `0xFF` | `END` | — | Halt execution successfully. |
 
-**Automatic Pacing**: After completing any peripheral-action opcode — `CHAR`, `KEY`, `KEY_DOWN`, `KEY_UP`, `MDOWN`, `MUP`, `MCLICK` (between individual clicks and after the last), `MMOVE`, `CONSUMER_KEY`, and per character of `TYPEREG` — the VM suspends for the current `pace_ms` (guard-sliced per [§6.2](#62-dual-trigger-inspection-scheduling)). Control-flow, register, `READSLOT`, `WAIT`, `SLEEP`, `PACE`, and `CALL_EXT` opcodes are never paced.
+**Automatic Pacing**: After completing any peripheral-action opcode — `CHAR`, `KEY`, `KEY_DOWN`, `KEY_UP`, `MDOWN`, `MUP`, `MCLICK` (between individual clicks and after the last), `MMOVE`, `CONSUMER_KEY`, and `TYPEREG` (each character, including the last) — the VM suspends for the current `pace_ms` (guard-sliced per [§6.2](#62-dual-trigger-inspection-scheduling)). Control-flow, register, `READSLOT`, `WAIT`, `SLEEP`, `PACE`, and `CALL_EXT` opcodes are never paced.
 
 ### 4.1 Compact Predicate Descriptor Specification (`pred_descriptor`)
 
@@ -331,7 +332,7 @@ Source-level v3 scripts additionally require migration (e.g., `\ifnum` removed o
 | **v1** (gist era) | Unformatted bytecode. Immediate-only operands; fused sleep/pace. |
 | **v2** | Container header (`MAGIC + VERSION`). `SLEEP` and `PACE` split. |
 | **v3** | Typed operands (`TAG_IMM=0`, `TAG_REG=1`, `TAG_STR=2`); 32-register file; `SET`/`ADD`/`BRA`/`JMP`/`TYPEREG`; string table + `READSLOT`/`WAIT`/`CALL_EXT`; register-write mediation. |
-| **v4** | Container `VERSION = 4`; split dedicated `$err` (`0xFD`) error register from `$ret` (`0xFF`); operand tag 2 renamed `TAG_STR` → `TAG_NAME` (semantic narrowing: Name-category operands only); `COMBO` opcode deprecated (recognized as NOP advancing `ip += 3`); native atomic subtraction `0x24 SUB`; signed `i32` two's complement wraparound arithmetic; converse operator mapping for commutative normalization; flat invariant guard opcodes `0x25 GUARD_ENTER` and `0x26 GUARD_EXIT` with delay slicing and in-place loop frame rollback; revised `0x29 WAIT` with explicit `(sig_str_idx, field_str_idx)` and signed `i32` timeout domain supporting non-blocking immediate polling. |
+| **v4** | Container `VERSION = 4`; split dedicated `$err` (`0xFD`) error register from `$ret` (`0xFF`); operand tag 2 renamed `TAG_STR` → `TAG_NAME` (semantic narrowing: Name-category operands only); `COMBO` opcode deprecated (recognized as NOP advancing `ip += 3`); native atomic subtraction `0x24 SUB`; signed `i32` two's complement wraparound arithmetic; converse operator mapping for commutative normalization; flat invariant guard opcodes `0x25 GUARD_ENTER` and `0x26 GUARD_EXIT` with delay slicing and in-place loop frame rollback; revised `0x29 WAIT` with explicit `(sig_str_idx, field_str_idx)` and signed `i32` timeout domain supporting non-blocking immediate polling; VM-applied automatic pacing after every peripheral action; lone printable-character keys lower to a single `CHAR` action; uniform clamping of dynamic operands. |
 
 v4 was frozen from pre-release draft iterations; no compatibility is claimed for artifacts produced against pre-freeze v4 drafts.
 

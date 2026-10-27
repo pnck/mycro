@@ -13,7 +13,7 @@
 `src/lib/runtime.py` governs four dimensions of runtime resources:
 - **Namespaces**: Functional and peripheral boundaries (`sys`, `net`, `img`).
 - **Function Signatures**: Input parameter schemas (Value types vs Name types vs Handle types), return value contracts, and standard error code conventions.
-- **Signals**: Pure Name-category external projection channels (`net.msg`, `img.frame`).
+- **Signals**: Pure Name-category external projection channels (`net.msg`, `img.<name>`).
 - **Slots**: Pure Value-category state receptors, mandatory-prefixed with `$slot.` (e.g., `$slot.net.msg.val`, `$slot.img.hp.val`), holding scalar payloads and arrival latches.
 
 ### 1.1 Signal / Slot Orthogonal Paradigm Axioms
@@ -76,7 +76,7 @@ The VM core and compiler remain fully decoupled from physical hardware. All peri
 | `mouse_press` | `btn: int` | Presses mouse buttons (bitmask: 1=L, 2=R, 4=M, 8=B, 16=F). |
 | `mouse_release` | `btn: int` | Releases mouse buttons. |
 | `mouse_move` | `dx: int, dy: int` | Emits relative mouse movement. Physical USB HID mouse report coordinates are signed 8-bit integers ($-127$ to $+127$). `HIDProvider.mouse_move` implementations MUST internally decompose movements where $|dx| > 127$ or $|dy| > 127$ into chunks $\le 127$ and emit consecutive reports until the total displacement is satisfied. Chunk pairing across axes is provider-defined; the total displacement MUST be exact. |
-| `char_keycodes` | `char: str` | Resolves a character to physical keycode(s) and Shift state. Normative layout baseline: **US-ANSI** per the USB HID Usage Tables (Keyboard/Keypad page `0x07`), covering printable ASCII 32–126 plus Tab/LF/CR; the CircuitPython reference mapping is `adafruit_hid.KeyboardLayoutUS`. Ports MUST reproduce this mapping. Unmappable characters cannot reach this interface (the compiler rejects them, [dsl.md §6.8](dsl.md#68-static-compile-diagnostics)); `TYPEREG` emits only `[0-9-]`. |
+| `char_keycodes` | `char: str` | Resolves a character to physical keycode(s) and Shift state. Normative layout baseline: **US-ANSI** per the USB HID Usage Tables (Keyboard/Keypad page `0x07`), covering printable ASCII 32–126 (Tab/LF/CR never reach this interface — they lower to `KEY`; [dsl.md §3.3](dsl.md#33-lexer-scanning-state-machine)); the CircuitPython reference mapping is `adafruit_hid.KeyboardLayoutUS`. Ports MUST reproduce this mapping. Unmappable characters cannot reach this interface (the compiler rejects them, [dsl.md §6.8](dsl.md#68-static-compile-diagnostics)); `TYPEREG` emits only `[0-9-]`. |
 | `consumer_pulse` | `usage_id: int` | Sends a single USB HID Consumer Control press and release pulse (Usage Page 0x0C, e.g., volume, playback, power; VM opcode `0x08 CONSUMER_KEY`). |
 
 Platform implementations:
@@ -108,7 +108,7 @@ Every standard library function invocation (`0x2A CALL_EXT`) establishes a stric
 | `3` | `ERR_NO_PROVIDER` | Capture provider not connected or unavailable. |
 | `4` | `ERR_OUT_OF_BOUNDS` | Sampling coordinates exceed buffer dimensions. |
 | `5` | `ERR_HANDLE_INVALID` | Unknown, unallocated, or expired Handle ID — including a non-handle scalar supplied to a handle parameter. |
-| `6` | `ERR_RESOURCE_EXHAUSTED` | Handle table capacity or snapshot slot pool exhausted. |
+| `6` | `ERR_RESOURCE_EXHAUSTED` | Snapshot slot pool or arena exhausted. |
 | `7` | `ERR_TIMEOUT` | Extension operation or capture request timed out. |
 | `8` | `ERR_HANDLE_MISUSE` | Handle-typed operand supplied to a scalar-only operation (arithmetic, comparison, `\typenum`); see [§4](#4-handle-lifecycle--ownership-management). |
 
@@ -129,6 +129,8 @@ Every standard library function invocation (`0x2A CALL_EXT`) establishes a stric
 
 ### 3.3 `img` Namespace (Vision & Telemetry)
 
+All `img.*` functions that require a provider round-trip are bounded by `EXT_TIMEOUT_MS` ([vm.md §1.0](vm.md#10-authoritative-profile-constants-table)); expiry surfaces as `$err = ERR_TIMEOUT`. Provider error envelopes map to `$err` as: `field` → `ERR_INVALID_ARG`, all others → `ERR_GENERIC`.
+
 #### 1. Exact Pixel Matching Family
 - **`\call{img.snap}{x, y, w, h}`**: Captures the screen region at (`x`, `y`) with size `w` × `h`; returns positive snap Handle in `$ret` and `$err = ERR_OK (0)` on success. Constraints: $1 \le w, h \le 128$ (`RECT_MAX_EDGE`) and $x, y \ge 0$ — violations return `$ret = 0`, `$err = ERR_INVALID_ARG`; if the region exceeds the capture source's bounds, the provider reports `ERR_OUT_OF_BOUNDS`. On capture failure / timeout / no provider, returns `$ret = 0` and sets `$err != 0` (e.g. `ERR_NO_PROVIDER`, `ERR_TIMEOUT`, or `ERR_RESOURCE_EXHAUSTED`).
 - **`\call{img.at}{snap_handle}{x, y}`**: Samples packed 24-bit RGB color at the snapshot-local coordinates (`x`, `y`); returns packed `0xRRGGBB` in `$ret` and `$err = ERR_OK (0)` on success. If the handle is invalid or coordinates are out of bounds, returns `$ret = 0` and sets `$err != 0` (`ERR_HANDLE_INVALID` or `ERR_OUT_OF_BOUNDS`).
@@ -143,6 +145,7 @@ Initiates continuous push telemetry from the capture provider:
 - `x, y`: Sampling point coordinates — pushes packed `0xRRGGBB`. Extended form `x, y, w, h`: bounding rect — pushes the per-channel mean, packed `0xRRGGBB`.
 - `interval_ms`: Requested sampling period on the host (ms); must be `> 0`. The provider clamps to its capture-chain floor and reports the effective period in `img.watch.ok`.
 - `duration_ms`: Mandatory life lease duration (ms); must be `> 0`. Capture provider terminates stream upon lease expiration.
+- **Result**: On success `$ret = 0` and `$err = ERR_OK` (void function). The extended rect form is called as `\call{img.watch}{name}{x, y, w, h}{interval_ms, duration_ms}` (`argc = 7`).
 - **Wire Path**: Subscription and cancellation ride the reverse-request channel (`img.watch` / `img.unwatch`); telemetry rides `event.push` — normative in [docs/protocol.md](../docs/protocol.md).
 - **Errors**: No registered capture provider → `$ret = 0`, `$err = ERR_NO_PROVIDER`; subscription timeout → `ERR_TIMEOUT`; invalid parameters → `ERR_INVALID_ARG`.
 - **Cancellation**: The device un-watches all active subscriptions on macro completion or abort; provider disconnect terminates all watches (slots simply stop updating).
