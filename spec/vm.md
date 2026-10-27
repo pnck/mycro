@@ -122,7 +122,7 @@ Any tag outside `{0, 1}` (or `{0, 1, 2}` where permitted) triggers a container v
 
 | Opcode | Mnemonic | Operands | Operational Semantics |
 |---|---|---|---|
-| `0x01` | `CHAR` | `u8 ascii` | Type ASCII character (Shift state handled automatically by keymap). |
+| `0x01` | `CHAR` | `u8 ascii` | Type ASCII character (Shift state handled automatically by keymap). Also the lowering target of lone printable-character key commands ([dsl.md §5.1](dsl.md#51-keyboard-operations--chording)). |
 | `0x02` | `KEY` | `u8 keycode` | Single key tap: press, hold `click_hold_ms`, release (then pacing applies). |
 | `0x03` | `COMBO` | `u8 mod_mask, u8 keycode` | **Deprecated**: recognized for backward container compatibility, advances `ip += 3` (1-byte opcode + 2-byte operands), performing NO action (NOP) in VM v4. Arbitrary chording lowers to `KEY_DOWN`/`SLEEP click_hold_ms`/`KEY_UP` sequences ([dsl.md §5.1](dsl.md#51-keyboard-operations--chording)). |
 | `0x04` | `SLEEP` | `typed(u16 ms)` | One-shot suspension (DSL `\delay`). Duration strictly bounded to `u16` ($0..65535\text{ ms}$). |

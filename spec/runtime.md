@@ -89,7 +89,7 @@ Platform implementations:
 
 ## 3. Standard Library Namespaces
 
-Namespaces expose their functions only when activated: the compiler activates each namespace declared via `\use{ns}` at compile time, registering its callbacks for the subsequent execution (activation is idempotent and persists across executions). The built-in signal `net.msg` is always active and needs no declaration.
+Namespaces expose their functions only when activated: the compiler activates each namespace declared via `\use{ns}` at compile time, registering its callbacks for the subsequent execution (activation is idempotent and persists across executions). There are no built-in exemptions — `net` included: the protocol transport being always online is unrelated to the DSL-visible activation of the namespace.
 
 ### 3.0 Universal Return & Error Contract
 
@@ -152,10 +152,10 @@ Initiates continuous push telemetry from the capture provider:
 - **Zero-Copy Reading**: Macro code reads the latest sample directly via `$slot.img.<name>.val` (initialized to 0).
 - **Frame Synchronization**: Awaited via `\wait{ $slot.img.<name>.val }`.
 
-#### 4. Signal Validation Tiers
-- **Tier 1 (Built-In Signals)**: Statically recognized signals (`net.msg`) require no `\use` declaration.
-- **Tier 2 (Dynamic Namespace Signals)**: Signals belonging to activated namespaces (e.g., `img.<name>` under `\use{img}`) are accepted at namespace level — any identifier is admitted without per-name validation; name validity is a runtime concern (an unwatched name simply never receives projections).
-- **Tier 3 (Undeclared Signals)**: Any signal path referencing an unknown or unimported namespace triggers an immediate static compile error (`unknown signal namespace`).
+#### 4. Signal Validation
+- Every signal or slot reference requires its namespace to be activated by a preceding top-level `\use{ns}` — no exemptions (`net.msg` included).
+- Signals under an activated namespace are accepted at namespace level — any identifier is admitted without per-name validation; name validity is a runtime concern (an unwatched name simply never receives projections).
+- A signal path referencing an unknown or undeclared namespace triggers an immediate static compile error (`unknown signal namespace`).
 
 ---
 
