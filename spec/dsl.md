@@ -233,7 +233,7 @@ KeyCombo     ::= "\" KeyName ("+" KeyName)+
 KeyHold      ::= "\kdown" "{" ComboPayload "}"
 KeyRelease   ::= "\kup" "{" (ComboPayload | "0") "}"
 ComboPayload ::= KeyName ("+" KeyName)*
-KeyName      ::= [a-zA-Z0-9_]+
+KeyName      ::= [a-zA-Z] [a-zA-Z0-9_]*
 ```
 
 #### Keyboard Inventory Table (USB HID Page 0x07)
@@ -291,7 +291,7 @@ All keys in this inventory belong to standard USB HID Usage Page 0x07 (Keyboard/
   3. **LIFO Release**: Emits `KEY_UP` in reverse order for each key in $\operatorname{reversed}(\mathbf{K})$.
   4. **Inter-Action Pacing**: The compiler emits no pacing bytes; each `KEY_DOWN`/`KEY_UP` of the sequence is itself a peripheral action, paced by the VM's automatic pacing rule (see [§5.4](#54-timing-delays--inter-keystroke-pacing) and [vm.md §4](vm.md#4-opcode-set-v4)).
 - **Single-Key Lowering (`SpecialKey`)**: A lone key token lowers to exactly **one** action, never a sequence:
-  - If the token names exactly one printable ASCII character — letters `\a`–`\z` / `\A`–`\Z`, digits `\0`–`\9`, character-named keys (`\plus`, `\minus`, `\equal`, `\space`, …) — it lowers to one `CHAR` opcode carrying that character (`\A` = `CHAR 0x41`). Shift resolution is the keymap's job, identical to typing the character in text position. (HID usages are caseless; case exists only as the Shift modifier or as a character.)
+  - If the token names exactly one printable ASCII character — letters `\a`–`\z` / `\A`–`\Z`, character-named keys (`\plus`, `\minus`, `\equal`, `\space`, …) — it lowers to one `CHAR` opcode carrying that character (`\A` = `CHAR 0x41`). Shift resolution is the keymap's job, identical to typing the character in text position. (HID usages are caseless; case exists only as the Shift modifier or as a character. Digit keys have no command form — `\1` is rejected at the lexer, digits are typed as text characters.)
   - Otherwise (non-printable named keys: `\enter`, `\tab`, arrows, F-keys, keypad keys) it lowers to one `KEY` opcode — a VM-level tap (press, hold `click_hold_ms`, release).
 
   The character form and the physical form are both first-class and intentional: `\A` types the character A (one action, one pacing unit), while the combination syntax `\shift+a` spells out the physical chord (sequence lowering, each constituent action paced). The $K(T)$ mapping above serves combinations and `\kdown`/`\kup` payloads, where `A` still expands physically to $[\text{shift}, a]$.

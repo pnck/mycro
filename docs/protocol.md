@@ -83,7 +83,7 @@ to prevent infinite error reflection storms.
 | `device.info` | client → server | optional `gc`: true → reading taken after a GC sweep (steady-state truth) | `board`, `fw`, `free_mem`, `proto` (protocol version) |
 | `event.push` | client → server | `name`: signal name, `fields`: object of i32 slot values | — (error `unknown_signal` for unregistered signals) |
 | `macro.result` | server → clients | `state`, `ms` (execution wall time) | push, `id` = 0 |
-| `net.msg` | server → clients | emitted by `\call{net.send}` | push, `id` = 0 |
+| `net.msg` | server → clients | `tag`: the event label string from `\call{net.send}` (carried verbatim, case preserved) | push, `id` = 0 |
 | `img.hello` | capture client → server | `caps`: list (`["frame", "direct_preview"]`) | push, `id` = 0; registers the client as the capture provider |
 | `img.frame` | server → capture client | one selector: `rect` {x,y,w,h} → lossless RGB8 crop (≤ 128²) / `points` [[x,y],…] → exact colors / `w`,`h` + `format` (`rgb8`/`gray8`) → whole-source resample | `img.frame.ok` with `width`/`height` (native dims), selector-specific fields, and for pixel streams `stream_id`/`chunks`/`bytes` (total payload length) followed by kind-1 chunks |
 | `img.arm_preview` | server → capture client | `nonce`: 32-hex ephemeral random nonce | `img.arm_preview.ok` with `port`: ephemeral TCP port, `width`/`height`: native source dimensions |
