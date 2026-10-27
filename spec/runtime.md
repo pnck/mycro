@@ -141,7 +141,7 @@ Initiates continuous push telemetry from the capture provider:
 ```dsl
 \call{img.watch}{name}{x, y}{interval_ms, duration_ms}
 ```
-- `name`: Stream identifier; registers external signal `img.<name>` (e.g., `img.hp`) with the device, which is what admits the provider's `event.push` frames for that name. Re-subscribing an existing `name` replaces the prior subscription.
+- `name`: Stream identifier; registers external signal `img.<name>` (e.g., `img.hp`) with the device, which is what admits the provider's `event.push` frames for that name. The device never fires signals — the name only selects the subscription and thereby the receiving slot (`$slot.img.<name>.val`); all projections originate from the provider. Re-subscribing an existing `name` replaces the prior subscription.
 - `x, y`: Sampling point coordinates — pushes packed `0xRRGGBB`. Extended form `x, y, w, h`: bounding rect — pushes the per-channel mean, packed `0xRRGGBB`.
 - `interval_ms`: Requested sampling period on the host (ms); must be `> 0`. The provider clamps to its capture-chain floor and reports the effective period in `img.watch.ok`.
 - `duration_ms`: Mandatory life lease duration (ms); must be `> 0`. Capture provider terminates stream upon lease expiration.
