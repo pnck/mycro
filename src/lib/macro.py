@@ -12,15 +12,30 @@
 
 import asyncio
 
+import keymap
 from keymap import (
-    ENTER, ESCAPE, BACKSPACE, TAB, SPACE, DELETE,
+    ENTER, ESCAPE, BACKSPACE, TAB, SPACE, MINUS, EQUALS, DELETE,
     RIGHT_ARROW, LEFT_ARROW, DOWN_ARROW, UP_ARROW,
     PAGE_UP, PAGE_DOWN, HOME, END, INSERT, CAPS_LOCK,
+    PRINT_SCREEN, SCROLL_LOCK, PAUSE, APPLICATION,
     F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
-    CONTROL, SHIFT, ALT, GUI,
+    F13, F14, F15, F16, F17, F18, F19, F20, F21, F22, F23, F24,
+    CONTROL, SHIFT, ALT, GUI, RCONTROL, RSHIFT, RALT, RGUI,
+    NUMLOCK, KP_SLASH, KP_STAR, KP_MINUS, KP_PLUS, KP_ENTER,
+    KP_1, KP_2, KP_3, KP_4, KP_5, KP_6, KP_7, KP_8, KP_9, KP_0,
+    KP_DOT, KP_EQUAL,
     BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_BACK, BTN_FORWARD, BTN_ALL,
     letter_keycode, digit_keycode,
 )
+
+MAX_COMBO_KEYS = 8
+DEFAULT_CLICK_HOLD_MS = 10
+_PRINTABLE_LONE_KEYS = {
+    "plus": ord("+"),
+    "minus": ord("-"),
+    "equal": ord("="),
+    "space": ord(" "),
+}
 
 # Bytecode format header: MAGIC, VERSION, STR_COUNT, strings..., then opcodes
 MAGIC = 0xA6
@@ -93,6 +108,7 @@ class MacroError(Exception):
 
 class Macro:
     KEYS = {
+        # Editing
         "enter": ENTER,
         "return": ENTER,
         "esc": ESCAPE,
@@ -103,6 +119,9 @@ class Macro:
         "backspace": BACKSPACE,
         "del": DELETE,
         "delete": DELETE,
+        "minus": MINUS,
+        "equal": EQUALS,
+        # Navigation
         "up": UP_ARROW,
         "down": DOWN_ARROW,
         "left": LEFT_ARROW,
@@ -110,16 +129,50 @@ class Macro:
         "home": HOME,
         "end": END,
         "pgup": PAGE_UP,
+        "pageup": PAGE_UP,
         "pgdn": PAGE_DOWN,
+        "pagedown": PAGE_DOWN,
         "ins": INSERT,
+        "insert": INSERT,
+        # Locks
         "caps": CAPS_LOCK,
+        "capslock": CAPS_LOCK,
+        "numlock": NUMLOCK,
+        "scrlk": SCROLL_LOCK,
+        "scrolllock": SCROLL_LOCK,
+        # System
+        "prtscr": PRINT_SCREEN,
+        "printscreen": PRINT_SCREEN,
+        "snapshot": PRINT_SCREEN,
+        "pause": PAUSE,
+        "break": PAUSE,
+        "menu": APPLICATION,
+        "app": APPLICATION,
+        "contextmenu": APPLICATION,
+        # Function keys F1-F12
         "f1": F1, "f2": F2, "f3": F3, "f4": F4, "f5": F5, "f6": F6,
         "f7": F7, "f8": F8, "f9": F9, "f10": F10, "f11": F11, "f12": F12,
-        "ctrl": CONTROL,
-        "shift": SHIFT,
-        "alt": ALT,
-        "win": GUI,
-        "gui": GUI,
+        # Extended function keys F13-F24
+        "f13": F13, "f14": F14, "f15": F15, "f16": F16, "f17": F17, "f18": F18,
+        "f19": F19, "f20": F20, "f21": F21, "f22": F22, "f23": F23, "f24": F24,
+        # Keypad
+        "kp_0": KP_0, "kp_1": KP_1, "kp_2": KP_2, "kp_3": KP_3, "kp_4": KP_4,
+        "kp_5": KP_5, "kp_6": KP_6, "kp_7": KP_7, "kp_8": KP_8, "kp_9": KP_9,
+        "kp_dot": KP_DOT, "kp_period": KP_DOT,
+        "kp_enter": KP_ENTER,
+        "kp_plus": KP_PLUS, "kp_minus": KP_MINUS,
+        "kp_multiply": KP_STAR, "kp_star": KP_STAR,
+        "kp_divide": KP_SLASH, "kp_slash": KP_SLASH,
+        "kp_equal": KP_EQUAL,
+        # Modifiers
+        "ctrl": CONTROL, "lctrl": CONTROL, "control": CONTROL, "lcontrol": CONTROL,
+        "rctrl": RCONTROL, "rcontrol": RCONTROL,
+        "shift": SHIFT, "lshift": SHIFT,
+        "rshift": RSHIFT,
+        "alt": ALT, "lalt": ALT, "opt": ALT, "option": ALT, "lopt": ALT, "loption": ALT,
+        "ralt": RALT, "ropt": RALT, "roption": RALT, "altgr": RALT,
+        "gui": GUI, "lgui": GUI, "win": GUI, "lwin": GUI, "cmd": GUI, "command": GUI, "lcmd": GUI, "lcommand": GUI,
+        "rgui": RGUI, "rwin": RGUI, "rcmd": RGUI, "rcommand": RGUI,
     }
 
     MODS = {
@@ -161,11 +214,12 @@ class Macro:
     BTN_FORWARD = BTN_FORWARD
     BTN_ALL = BTN_ALL
 
-    def __init__(self, hid, runtime=None):
+    def __init__(self, hid, runtime=None, click_hold_ms=DEFAULT_CLICK_HOLD_MS):
         self.hid = hid
         self.runtime = runtime  # Runtime registry; required for \use/\call/\wait/slots
+        self.click_hold_ms = click_hold_ms
 
-    def compile(self, text):
+    def compile(self, text, config=None, click_hold_ms=None):
         """Compile macro text to bytecode. Returns (bytecode, error_msg).
 
         Nesting (rep/ifnum/macro bodies) is parsed iteratively on an explicit
@@ -174,6 +228,12 @@ class Macro:
         (each level cost 5 fat frames: compile/_parse/_parse_command/
         _cmd_*/_compile_sub) once the asyncio+httpserver baseline is on it.
         """
+        if config and isinstance(config, dict) and "click_hold_ms" in config:
+            self._click_hold_ms = config["click_hold_ms"]
+        elif click_hold_ms is not None:
+            self._click_hold_ms = click_hold_ms
+        else:
+            self._click_hold_ms = getattr(self, "click_hold_ms", DEFAULT_CLICK_HOLD_MS)
         self._bc = bytearray()
         self._text = text
         self._pos = 0
@@ -242,7 +302,7 @@ class Macro:
                 return "$err"
             return f"$r{r}"
 
-        def fmt_arg(width, signed=False):
+        def fmt_arg(width=4, signed=False):
             nonlocal i
             tag = bytecode[i]
             i += 1
@@ -250,15 +310,7 @@ class Macro:
                 r = bytecode[i]
                 i += 1
                 return fmt_reg(r)
-            if width == 1:
-                v = bytecode[i]
-                i += 1
-            elif width == 2:
-                v = bytecode[i] | (bytecode[i + 1] << 8)
-                i += 2
-                if signed and v > 32767:
-                    v -= 65536
-            else:
+            if tag == TAG_IMM:
                 v = (
                     bytecode[i]
                     | (bytecode[i + 1] << 8)
@@ -266,9 +318,10 @@ class Macro:
                     | (bytecode[i + 3] << 24)
                 )
                 i += 4
-                if v > 2147483647:
+                if signed and v > 2147483647:
                     v -= 4294967296
-            return str(v)
+                return str(v)
+            return f"INVALID_TAG_{tag}"
 
         def fmt_key_arg():
             nonlocal i
@@ -278,11 +331,18 @@ class Macro:
                 r = f"$r{bytecode[i]}"
                 i += 1
                 return r
-            kc = bytecode[i]
-            i += 1
-            if kc == 0:
-                return "ALL"
-            return self._keycode_name(kc)
+            if tag == TAG_IMM:
+                kc = (
+                    bytecode[i]
+                    | (bytecode[i + 1] << 8)
+                    | (bytecode[i + 2] << 16)
+                    | (bytecode[i + 3] << 24)
+                )
+                i += 4
+                if kc == 0:
+                    return "ALL"
+                return self._keycode_name(kc)
+            return f"INVALID_TAG_{tag}"
 
         def fmt_btn_arg():
             nonlocal i
@@ -292,10 +352,17 @@ class Macro:
                 r = f"$r{bytecode[i]}"
                 i += 1
                 return r
-            b = bytecode[i]
-            i += 1
-            names = {1: "LEFT", 2: "RIGHT", 4: "MIDDLE", 8: "BACK", 16: "FORWARD", 0x1F: "ALL"}
-            return names.get(b, str(b))
+            if tag == TAG_IMM:
+                b = (
+                    bytecode[i]
+                    | (bytecode[i + 1] << 8)
+                    | (bytecode[i + 2] << 16)
+                    | (bytecode[i + 3] << 24)
+                )
+                i += 4
+                names = {1: "LEFT", 2: "RIGHT", 4: "MIDDLE", 8: "BACK", 16: "FORWARD", 0x1F: "ALL"}
+                return names.get(b, str(b))
+            return f"INVALID_TAG_{tag}"
 
         while i < len(bytecode):
             op = bytecode[i]
@@ -479,6 +546,28 @@ class Macro:
             return key
         raise MacroError(f"Unknown key: {name}", pos)
 
+    def _resolve_combo_key(self, token, pos):
+        if token.startswith("$"):
+            raise MacroError("kdown/kup takes a key name, not a variable", pos)
+        if len(token) == 1:
+            if "a" <= token <= "z":
+                return [letter_keycode(token)]
+            if "A" <= token <= "Z":
+                return [SHIFT, letter_keycode(token)]
+            if "0" <= token <= "9":
+                return [digit_keycode(token)]
+            if token == "-":
+                return [MINUS]
+            if token == "=":
+                return [EQUALS]
+            raise MacroError(f"Unknown key: {token}", pos)
+        low = token.lower()
+        if low == "plus":
+            return [SHIFT, EQUALS]
+        if low in self.KEYS:
+            return [self.KEYS[low]]
+        raise MacroError(f"Unknown key: {token}", pos)
+
     def _emit(self, *args):
         if len(self._bc) >= MAX_BYTECODE - 10:
             raise MacroError("Bytecode limit exceeded", self._pos)
@@ -500,16 +589,14 @@ class Macro:
         v &= 0xFFFFFFFF
         self._emit(v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF)
 
-    def _emit_typed(self, val, width):
-        """val = (TAG_IMM, int) or (TAG_REG, reg); width in bytes (1/2/4)."""
+    def _emit_typed(self, val, width=4):
+        """val = (TAG_IMM, int) or (TAG_REG, reg).
+
+        In v4, all TAG_IMM typed operands are physically 4-byte signed i32.
+        """
         tag, v = val
         if tag == TAG_REG:
             self._emit(TAG_REG, v)
-        elif width == 1:
-            self._emit(TAG_IMM, v & 0xFF)
-        elif width == 2:
-            self._emit(TAG_IMM)
-            self._emit_u16(v & 0xFFFF)
         else:
             self._emit(TAG_IMM)
             self._emit_i32(v)
@@ -528,7 +615,7 @@ class Macro:
         return ch
 
     def _read_name(self):
-        """Read alphanumeric command name."""
+        """Read alphanumeric command name, preserving raw case."""
         start = self._pos
         while self._pos < self._len:
             ch = self._text[self._pos]
@@ -536,7 +623,7 @@ class Macro:
                 self._pos += 1
             else:
                 break
-        return self._text[start : self._pos].lower()
+        return self._text[start : self._pos]
 
     def _read_braces(self):
         r"""Read content between { and }. Escaped braces/backslashes (\{ \} \\)
@@ -562,31 +649,22 @@ class Macro:
 
     def _parse_key_or_combo(self, name):
         """Parse key/combo starting with name, handle + chains."""
-        mods = 0
-        key = None
+        tokens = [name]
         pos = self._pos
 
-        # First part
-        if name in self.MODS:
-            mods |= self.MODS[name]
-        else:
-            key = self._resolve_key(name, pos)
-
-        # Handle + chains: \ctrl+\shift+c
+        # Handle + chains: \ctrl+\shift+c, \a+b, \ctrl+c
         while self._peek() == "+":
             self._advance()  # skip +
             if self._peek() == "\\":
                 self._advance()  # skip \
                 next_name = self._read_name()
-            elif self._peek() and _is_alnum(self._peek()):
+            elif self._peek() and (_is_alnum(self._peek()) or self._peek() == "_"):
                 next_name = self._read_name()
+            elif self._peek() in ("-", "="):
+                next_name = self._advance()
             else:
                 raise MacroError("Expected key after +", self._pos)
-
-            if next_name in self.MODS:
-                mods |= self.MODS[next_name]
-            else:
-                key = self._resolve_key(next_name, self._pos)
+            tokens.append(next_name)
 
         # Skip empty {} separator
         if (
@@ -596,13 +674,41 @@ class Macro:
         ):
             self._pos += 2
 
-        # Emit
-        if mods and key:
-            self._emit(OP_COMBO, mods, key)
-        elif mods:
-            self._emit(OP_COMBO, mods, 0)
-        elif key:
-            self._emit(OP_KEY, key)
+        if len(tokens) > MAX_COMBO_KEYS:
+            raise MacroError(
+                f"key combination exceeds MAX_COMBO_KEYS={MAX_COMBO_KEYS}", pos
+            )
+
+        if len(tokens) == 1:
+            tok = tokens[0]
+            if len(tok) == 1:
+                if ("a" <= tok <= "z") or ("A" <= tok <= "Z") or ("0" <= tok <= "9"):
+                    self._emit(OP_CHAR, ord(tok))
+                    return
+            low = tok.lower()
+            if low in _PRINTABLE_LONE_KEYS:
+                self._emit(OP_CHAR, _PRINTABLE_LONE_KEYS[low])
+                return
+            if low in self.KEYS:
+                self._emit(OP_KEY, self.KEYS[low])
+                return
+            raise MacroError(f"Unknown key: {tok}", pos)
+
+        # Combination lowering: forward KEY_DOWN, SLEEP click_hold_ms, reverse KEY_UP
+        K = []
+        for tok in tokens:
+            K.extend(self._resolve_combo_key(tok, pos))
+
+        for kc in K:
+            self._emit(OP_KEY_DOWN)
+            self._emit_typed((TAG_IMM, kc))
+
+        self._emit(OP_SLEEP)
+        self._emit_typed((TAG_IMM, self._click_hold_ms))
+
+        for kc in reversed(K):
+            self._emit(OP_KEY_UP)
+            self._emit_typed((TAG_IMM, kc))
 
     def _parse_command(self):
         """Parse command after backslash."""
@@ -612,22 +718,23 @@ class Macro:
         if not name:
             raise MacroError("Expected command name", pos)
 
-        handler = getattr(self, "_cmd_" + name, None)
+        name_lower = name.lower()
+        handler = getattr(self, "_cmd_" + name_lower, None)
         if handler:
             handler(pos)
             return
 
-        if name == "rect":
+        if name_lower == "rect":
             raise MacroError(
                 "\\rect{...} is a value-position literal (valid inside "
                 "\\set{h}{...} or a handle argument)", pos)
 
         # User-defined macro: \name{arg}... (compile-time expansion)
-        if name in self._defs:
-            self._expand_macro(name, pos)
+        if name_lower in self._defs:
+            self._expand_macro(name_lower, pos)
             return
 
-        # Otherwise it's a key or combo: \enter, \ctrl+c
+        # Otherwise it's a key or combo: \enter, \ctrl+c, \a, \A
         self._parse_key_or_combo(name)
 
     def _cmd_def(self, pos):
@@ -648,7 +755,12 @@ class Macro:
             )
         if name in self._defs:
             raise MacroError(f"macro redefined: {name}", pos)
-        if getattr(self, "_cmd_" + name, None) or name in self.KEYS or name in self.MODS:
+        if (
+            getattr(self, "_cmd_" + name, None)
+            or name in self.KEYS
+            or name in self.MODS
+            or name in _PRINTABLE_LONE_KEYS
+        ):
             raise MacroError(f"macro name conflicts with builtin: {name}", pos)
 
         argc = 0
@@ -1294,7 +1406,9 @@ class Macro:
             raise MacroError("rep requires {count}", self._pos)
         count = self._parse_value(arg, pos)
         if count[0] == TAG_IMM:
-            count = (TAG_IMM, max(1, min(255, count[1])))
+            if not (0 <= count[1] <= 255):
+                raise MacroError("rep count out of u8 range", pos)
+            count = (TAG_IMM, count[1])
 
         body = self._read_braces()
         if body is None:
@@ -1309,19 +1423,57 @@ class Macro:
         arg = self._read_braces()
         if arg is None:
             raise MacroError("kdown requires {key}", self._pos)
-        kc = self._parse_key_arg(arg, pos)
-        self._emit(OP_KEY_DOWN, TAG_IMM, kc)
+        arg = arg.strip()
+        if not arg:
+            raise MacroError("kdown requires {key}", pos)
+        if arg.startswith("$"):
+            raise MacroError("kdown/kup takes a key name, not a variable", pos)
+        if arg == "0":
+            self._emit(OP_KEY_DOWN)
+            self._emit_typed((TAG_IMM, 0))
+            return
+        tokens = [t.strip() for t in arg.split("+")]
+        if any(not t for t in tokens):
+            raise MacroError("Expected key after +", pos)
+        if len(tokens) > MAX_COMBO_KEYS:
+            raise MacroError(
+                f"key combination exceeds MAX_COMBO_KEYS={MAX_COMBO_KEYS}", pos
+            )
+        K = []
+        for t in tokens:
+            if t.startswith("\\"):
+                t = t[1:].strip()
+            K.extend(self._resolve_combo_key(t, pos))
+        for kc in K:
+            self._emit(OP_KEY_DOWN)
+            self._emit_typed((TAG_IMM, kc))
 
     def _cmd_kup(self, pos):
         arg = self._read_braces()
         if arg is None:
             raise MacroError("kup requires {key} or {}", self._pos)
-        arg = arg.strip().lower()
-        if not arg:
-            self._emit(OP_KEY_UP, TAG_IMM, 0)  # release all
-        else:
-            kc = self._parse_key_arg(arg, pos)
-            self._emit(OP_KEY_UP, TAG_IMM, kc)
+        arg = arg.strip()
+        if not arg or arg == "0":
+            self._emit(OP_KEY_UP)
+            self._emit_typed((TAG_IMM, 0))  # release all
+            return
+        if arg.startswith("$"):
+            raise MacroError("kdown/kup takes a key name, not a variable", pos)
+        tokens = [t.strip() for t in arg.split("+")]
+        if any(not t for t in tokens):
+            raise MacroError("Expected key after +", pos)
+        if len(tokens) > MAX_COMBO_KEYS:
+            raise MacroError(
+                f"key combination exceeds MAX_COMBO_KEYS={MAX_COMBO_KEYS}", pos
+            )
+        K = []
+        for t in tokens:
+            if t.startswith("\\"):
+                t = t[1:].strip()
+            K.extend(self._resolve_combo_key(t, pos))
+        for kc in reversed(K):
+            self._emit(OP_KEY_UP)
+            self._emit_typed((TAG_IMM, kc))
 
     def _cmd_click(self, pos):
         arg = self._read_braces()
@@ -1334,8 +1486,9 @@ class Macro:
             count = self._parse_value(parts[1], pos)
             if count[0] == TAG_IMM:
                 count = (TAG_IMM, max(1, min(65535, count[1])))
-        self._emit(OP_MCLICK, TAG_IMM, btn)
-        self._emit_typed(count, 2)
+        self._emit(OP_MCLICK)
+        self._emit_typed((TAG_IMM, btn))
+        self._emit_typed(count)
 
     def _cmd_move(self, pos):
         arg = self._read_braces()
@@ -1356,29 +1509,36 @@ class Macro:
                 mx = max(-32767, min(32767, vx))
                 my = max(-32767, min(32767, vy))
                 self._emit(OP_MMOVE)
-                self._emit_typed((TAG_IMM, mx), 2)
-                self._emit_typed((TAG_IMM, my), 2)
+                self._emit_typed((TAG_IMM, mx))
+                self._emit_typed((TAG_IMM, my))
                 vx -= mx
                 vy -= my
         else:
             # Register moves: a single op, VM reads at exec time
             self._emit(OP_MMOVE)
-            self._emit_typed(dx, 2)
-            self._emit_typed(dy, 2)
+            self._emit_typed(dx)
+            self._emit_typed(dy)
 
     def _cmd_mdown(self, pos):
         arg = self._read_braces()
         if arg is None:
             raise MacroError("mdown requires {btn}", self._pos)
         btn = self._parse_btn_arg(arg, pos)
-        self._emit(OP_MDOWN, TAG_IMM, btn)
+        self._emit(OP_MDOWN)
+        self._emit_typed((TAG_IMM, btn))
 
     def _cmd_mup(self, pos):
         arg = self._read_braces()
         if arg is None:
-            raise MacroError("mup requires {btn}", self._pos)
-        btn = self._parse_btn_arg(arg, pos)
-        self._emit(OP_MUP, TAG_IMM, btn)
+            raise MacroError("mup requires {btn} or {}", self._pos)
+        arg = arg.strip().lower()
+        if not arg:
+            self._emit(OP_MUP)
+            self._emit_typed((TAG_IMM, keymap.BTN_ALL))
+        else:
+            btn = self._parse_btn_arg(arg, pos)
+            self._emit(OP_MUP)
+            self._emit_typed((TAG_IMM, btn))
 
     def _parse(self):
         """Main parse driver — iterative nesting via _nest_stack (heap frames),
@@ -1500,19 +1660,18 @@ class Macro:
             ip += 4
             return v - 4294967296 if v > 2147483647 else v
 
-        def read_argx(width, signed=False):
+        def read_argx(width=4, signed=False):
             """Typed operand with source identity (register-write
             mediation needs to know when a value comes from a register)."""
-            if read_u8() == TAG_REG:
+            tag = read_u8()
+            if tag == TAG_REG:
                 r = read_u8()
                 return regs[r], r
-            if width == 1:
-                return read_u8(), None
-            if width == 2:
-                return (read_i16() if signed else read_u16()), None
-            return read_i32(), None
+            if tag == TAG_IMM:
+                return read_i32(), None
+            raise RuntimeError(f"Invalid operand tag: {tag}")
 
-        def read_arg(width, signed=False):
+        def read_arg(width=4, signed=False):
             """Typed operand: TAG_REG reads a register, TAG_IMM reads inline."""
             return read_argx(width, signed)[0]
 
@@ -1550,32 +1709,20 @@ class Macro:
                     await sleep_ms(delay_ms)
 
                 elif op == OP_COMBO:
-                    mods = read_u8()
-                    key = read_u8()
-                    for i in range(4):
-                        if mods & (1 << i):
-                            hid.key_press(self.MOD_KEYS[i])
-                    if key:
-                        hid.key_press(key)
-                    await sleep_ms(click_hold_ms)
-                    if key:
-                        hid.key_release(key)
-                    for i in reversed(range(4)):
-                        if mods & (1 << i):
-                            hid.key_release(self.MOD_KEYS[i])
-                    await sleep_ms(delay_ms)
+                    read_u8()
+                    read_u8()
 
                 elif op == OP_SLEEP:
                     # One-shot sleep (DSL \delay)
-                    await sleep_ms(clamp(read_arg(2), 0, 65535))
+                    await sleep_ms(clamp(read_arg(), 0, 65535))
 
                 elif op == OP_PACE:
                     # Set inter-action delay for following ops (DSL \pace)
-                    delay_ms = clamp(read_arg(2), 0, 65535)
+                    delay_ms = clamp(read_arg(), 0, 65535)
 
                 elif op == OP_MCLICK:
-                    btn = read_arg(1) & 0xFF
-                    count = clamp(read_arg(2), 0, 65535)
+                    btn = read_arg() & 0xFF
+                    count = clamp(read_arg(), 0, 65535)
                     for i in range(count):
                         hid.mouse_press(btn)
                         await sleep_ms(click_hold_ms)
@@ -1585,13 +1732,13 @@ class Macro:
                     await sleep_ms(delay_ms)
 
                 elif op == OP_MMOVE:
-                    dx = read_arg(2, signed=True)
-                    dy = read_arg(2, signed=True)
+                    dx = clamp(read_arg(signed=True), -32767, 32767)
+                    dy = clamp(read_arg(signed=True), -32767, 32767)
                     hid.mouse_move(dx, dy)
                     await sleep_ms(delay_ms)
 
                 elif op == OP_LOOP:
-                    count = clamp(read_arg(1), 0, 255)
+                    count = clamp(read_arg(), 0, 255)
                     body_len = read_u16()
                     if ip + body_len > n:
                         raise RuntimeError("LOOP body overruns bytecode")
@@ -1611,20 +1758,20 @@ class Macro:
                             delay_ms = saved_delay
 
                 elif op == OP_KEY_DOWN:
-                    hid.key_press(read_arg(1) & 0xFF)
+                    hid.key_press(read_arg() & 0xFF)
 
                 elif op == OP_KEY_UP:
-                    key = read_arg(1) & 0xFF
+                    key = read_arg() & 0xFF
                     if key == 0:
                         hid.keys_release_all()
                     else:
                         hid.key_release(key)
 
                 elif op == OP_MDOWN:
-                    hid.mouse_press(read_arg(1) & 0xFF)
+                    hid.mouse_press(read_arg() & 0xFF)
 
                 elif op == OP_MUP:
-                    btn = read_arg(1) & 0xFF
+                    btn = read_arg() & 0xFF
                     hid.mouse_release(btn)
 
                 elif op == OP_SET:

@@ -106,6 +106,36 @@ def test_kdown_remains_held_after_script_completion():
     assert hid.events == [("kp", ka), ("kr", ka)]
 
 
+def test_kdown_kup_combo_execution():
+    hid = MockHID()
+    m = Macro(hid)
+    bc, err = m.compile(r"\kdown{ctrl+c}")
+    assert err is None
+    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    kc = keymap.letter_keycode("c")
+    assert hid.events == [("kp", keymap.CONTROL), ("kp", kc)]
+
+    bc_up, err = m.compile(r"\kup{ctrl+c}")
+    assert err is None
+    asyncio.run(m.execute(bc_up, default_delay_ms=0, click_hold_ms=0))
+    assert hid.events == [("kp", keymap.CONTROL), ("kp", kc), ("kr", kc), ("kr", keymap.CONTROL)]
+
+
+def test_combo_execution_press_hold_release():
+    hid = MockHID()
+    m = Macro(hid)
+    bc, err = m.compile(r"\ctrl+c")
+    assert err is None
+    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    kc = keymap.letter_keycode("c")
+    assert hid.events == [
+        ("kp", keymap.CONTROL),
+        ("kp", kc),
+        ("kr", kc),
+        ("kr", keymap.CONTROL),
+    ]
+
+
 def test_mdown_remains_held_after_script_completion():
     """A standalone \\mdown{L} macro must leave left mouse button pressed upon normal completion."""
     hid = MockHID()
@@ -169,7 +199,7 @@ def test_loop_count_zero_skips_body():
     hid = MockHID()
     m = Macro(hid)
     body = bytes([OP_CHAR, ord("x")])
-    bc = bytes([MAGIC, VERSION, 0, OP_LOOP, 0, 0, len(body) + 1, 0]) + body + bytes([
+    bc = bytes([MAGIC, VERSION, 0, OP_LOOP, 0, 0, 0, 0, 0, len(body) + 1, 0]) + body + bytes([
         OP_LOOP_END, OP_CHAR, ord("y"), OP_END,
     ])
     asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
@@ -178,6 +208,17 @@ def test_loop_count_zero_skips_body():
     assert chars == [("kp", keymap.letter_keycode("y")), ("kra",)] or \
         ("kp", keymap.letter_keycode("y")) in chars and \
         ("kp", keymap.letter_keycode("x")) not in chars
+
+
+def test_combo_opcode_deprecated_nop():
+    hid = MockHID()
+    m = Macro(hid)
+    # OP_COMBO with dummy mods=0x01, key=0x04 should be a 3-byte NOP in v4
+    bc = bytes([MAGIC, VERSION, 0, 0x03, 0x01, 0x04, OP_CHAR, ord("a"), OP_END])
+    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    # OP_COMBO did not press ctrl, only OP_CHAR pressed and released 'a'
+    assert ("kp", keymap.CONTROL) not in hid.events
+    assert ("kp", keymap.letter_keycode("a")) in hid.events
 
 
 # --- B2 cleanup guarantees ---

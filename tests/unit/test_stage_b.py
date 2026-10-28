@@ -120,7 +120,7 @@ def test_typed_delay():
 
 def test_imm_delay_stays_imm():
     bc = compile_ok("\\delay{0.5}")
-    assert bc[3:] == bytes([OP_SLEEP, TAG_IMM, 500 & 0xFF, 500 >> 8, OP_END])
+    assert bc[3:] == bytes([OP_SLEEP, TAG_IMM, 500 & 0xFF, 500 >> 8, 0, 0, OP_END])
 
 
 def test_typed_rep_count():
@@ -135,7 +135,7 @@ def test_typed_rep_count():
 def test_typed_click():
     bc = compile_ok("\\set{n}{3}\\click{L,$n}")
     assert bc[3 + 7 :] == bytes([
-        OP_MCLICK, TAG_IMM, keymap.BTN_LEFT, TAG_REG, 0, OP_END,
+        OP_MCLICK, TAG_IMM, keymap.BTN_LEFT, 0, 0, 0, TAG_REG, 0, OP_END,
     ])
 
 
@@ -153,12 +153,12 @@ def test_mouse_btn_name_position():
 
 def test_kup_imm_still_works():
     bc = compile_ok("\\kup{}")
-    assert bc[3:] == bytes([OP_KEY_UP, TAG_IMM, 0, OP_END])
+    assert bc[3:] == bytes([OP_KEY_UP, TAG_IMM, 0, 0, 0, 0, OP_END])
 
 
 def test_braced_var_form():
     bc = compile_ok("\\set{n1}{7}\\move{${n1},0}")
-    assert bc[3 + 7 :] == bytes([OP_MMOVE, TAG_REG, 0, TAG_IMM, 0, 0, OP_END])
+    assert bc[3 + 7 :] == bytes([OP_MMOVE, TAG_REG, 0, TAG_IMM, 0, 0, 0, 0, OP_END])
 
 
 # --- \ifnum emission (backpatched offsets) ---

@@ -48,17 +48,35 @@ def test_special_key():
 
 def test_combo():
     bc = compile_ok("\\ctrl+c")
-    assert bc == H + bytes([OP_COMBO, 0x01, keymap.letter_keycode("c"), OP_END])
+    kc = keymap.letter_keycode("c")
+    assert bc == H + bytes([
+        OP_KEY_DOWN, 0, keymap.CONTROL, 0, 0, 0,
+        OP_KEY_DOWN, 0, kc, 0, 0, 0,
+        OP_SLEEP, 0, 10, 0, 0, 0,
+        OP_KEY_UP, 0, kc, 0, 0, 0,
+        OP_KEY_UP, 0, keymap.CONTROL, 0, 0, 0,
+        OP_END,
+    ])
 
 
 def test_combo_chain():
     bc = compile_ok("\\ctrl+\\shift+t")
-    assert bc == H + bytes([OP_COMBO, 0x03, keymap.letter_keycode("t"), OP_END])
+    kt = keymap.letter_keycode("t")
+    assert bc == H + bytes([
+        OP_KEY_DOWN, 0, keymap.CONTROL, 0, 0, 0,
+        OP_KEY_DOWN, 0, keymap.SHIFT, 0, 0, 0,
+        OP_KEY_DOWN, 0, kt, 0, 0, 0,
+        OP_SLEEP, 0, 10, 0, 0, 0,
+        OP_KEY_UP, 0, kt, 0, 0, 0,
+        OP_KEY_UP, 0, keymap.SHIFT, 0, 0, 0,
+        OP_KEY_UP, 0, keymap.CONTROL, 0, 0, 0,
+        OP_END,
+    ])
 
 
 def test_modifier_only():
     bc = compile_ok("\\ctrl")
-    assert bc == H + bytes([OP_COMBO, 0x01, 0, OP_END])
+    assert bc == H + bytes([OP_KEY, keymap.CONTROL, OP_END])
 
 
 def test_empty_braces_separator():
@@ -74,12 +92,12 @@ def test_empty_braces_separator():
 
 def test_delay_is_one_shot_sleep():
     bc = compile_ok("\\delay{0.5}")
-    assert bc == H + bytes([OP_SLEEP, 0, 500 & 0xFF, 500 >> 8, OP_END])
+    assert bc == H + bytes([OP_SLEEP, 0, 500 & 0xFF, 500 >> 8, 0, 0, OP_END])
 
 
 def test_pace():
     bc = compile_ok("\\pace{0.1}")
-    assert bc == H + bytes([OP_PACE, 0, 100, 0, OP_END])
+    assert bc == H + bytes([OP_PACE, 0, 100, 0, 0, 0, OP_END])
 
 
 # --- DSL v2: line continuation ---
@@ -144,7 +162,7 @@ def test_escaped_brace_in_rep_body():
     bc = compile_ok("\\rep{2}{a\\{b}")
     # body: CHAR a, CHAR {, CHAR b (the \{ must not break depth counting)
     assert bc == H + bytes([
-        OP_LOOP, 0, 2, 7, 0,
+        OP_LOOP, 0, 2, 0, 0, 0, 7, 0,
         OP_CHAR, ord("a"), OP_CHAR, ord("{"), OP_CHAR, ord("b"), OP_LOOP_END,
         OP_END,
     ])
@@ -161,7 +179,7 @@ def test_escaped_closing_brace_does_not_close_arg():
 def test_rep_basic():
     bc = compile_ok("\\rep{3}{ab}")
     assert bc == H + bytes([
-        OP_LOOP, 0, 3, 5, 0,
+        OP_LOOP, 0, 3, 0, 0, 0, 5, 0,
         OP_CHAR, ord("a"), OP_CHAR, ord("b"), OP_LOOP_END,
         OP_END,
     ])
@@ -203,7 +221,7 @@ def test_invalid_char():
 
 def test_mouse_commands():
     bc = compile_ok("\\click{R,3}")
-    assert bc == H + bytes([OP_MCLICK, 0, keymap.BTN_RIGHT, 0, 3, 0, OP_END])
+    assert bc == H + bytes([OP_MCLICK, 0, keymap.BTN_RIGHT, 0, 0, 0, 0, 3, 0, 0, 0, OP_END])
     bc = compile_ok("\\move{100,-50}")
     assert bc[3] == OP_MMOVE
     bc = compile_ok("\\mdown{L}\\mup{L}")
@@ -213,12 +231,12 @@ def test_mouse_commands():
 def test_mouse_side_buttons():
     # default CP mouse descriptor declares 5 buttons: back/X1=bit3, forward/X2=bit4
     bc = compile_ok("\\click{back}")
-    assert bc == H + bytes([OP_MCLICK, 0, keymap.BTN_BACK, 0, 1, 0, OP_END])
+    assert bc == H + bytes([OP_MCLICK, 0, keymap.BTN_BACK, 0, 0, 0, 0, 1, 0, 0, 0, OP_END])
     bc = compile_ok("\\click{x2}\\mdown{fwd}\\mup{b}")
     assert bc == H + bytes([
-        OP_MCLICK, 0, keymap.BTN_FORWARD, 0, 1, 0,
-        0x14, 0, keymap.BTN_FORWARD,  # OP_MDOWN
-        0x15, 0, keymap.BTN_BACK,     # OP_MUP
+        OP_MCLICK, 0, keymap.BTN_FORWARD, 0, 0, 0, 0, 1, 0, 0, 0,
+        0x14, 0, keymap.BTN_FORWARD, 0, 0, 0,  # OP_MDOWN
+        0x15, 0, keymap.BTN_BACK, 0, 0, 0,     # OP_MUP
         OP_END,
     ])
 
@@ -226,11 +244,56 @@ def test_mouse_side_buttons():
 def test_kdown_kup():
     bc = compile_ok("\\kdown{ctrl}c\\kup{}")
     assert bc == H + bytes([
-        OP_KEY_DOWN, 0, keymap.CONTROL,
+        OP_KEY_DOWN, 0, keymap.CONTROL, 0, 0, 0,
         OP_CHAR, ord("c"),
-        OP_KEY_UP, 0, 0,
+        OP_KEY_UP, 0, 0, 0, 0, 0,
         OP_END,
     ])
+
+
+def test_combo_eight_exact():
+    m = Macro(MockHID())
+    bc, err = m.compile("\\a+b+c+d+e+f+g+h", config={"click_hold_ms": 3})
+    assert err is None
+    # 8 KEY_DOWN, SLEEP 3, 8 KEY_UP in reverse, OP_END
+    expected = H
+    for c in "abcdefgh":
+        expected += bytes([OP_KEY_DOWN, 0, keymap.letter_keycode(c), 0, 0, 0])
+    expected += bytes([OP_SLEEP, 0, 3, 0, 0, 0])
+    for c in reversed("abcdefgh"):
+        expected += bytes([OP_KEY_UP, 0, keymap.letter_keycode(c), 0, 0, 0])
+    expected += bytes([OP_END])
+    assert bc == expected
+
+
+def test_combo_over_limit():
+    err = compile_err("\\a+b+c+d+e+f+g+h+i")
+    assert "key combination exceeds MAX_COMBO_KEYS=8" in err
+
+
+def test_combo_case_expansion():
+    # \a+A -> [a, shift, a] down, hold, reverse up
+    bc = compile_ok("\\a+A")
+    ka = keymap.letter_keycode("a")
+    assert bc == H + bytes([
+        OP_KEY_DOWN, 0, ka, 0, 0, 0,
+        OP_KEY_DOWN, 0, keymap.SHIFT, 0, 0, 0,
+        OP_KEY_DOWN, 0, ka, 0, 0, 0,
+        OP_SLEEP, 0, 10, 0, 0, 0,
+        OP_KEY_UP, 0, ka, 0, 0, 0,
+        OP_KEY_UP, 0, keymap.SHIFT, 0, 0, 0,
+        OP_KEY_UP, 0, ka, 0, 0, 0,
+        OP_END,
+    ])
+
+
+def test_lone_printable_keys():
+    for ch in ("a", "z", "A", "Z"):
+        bc = compile_ok(f"\\{ch}")
+        assert bc == H + bytes([OP_CHAR, ord(ch), OP_END])
+    for cmd, ascii_val in (("plus", ord("+")), ("minus", ord("-")), ("equal", ord("=")), ("space", ord(" "))):
+        bc = compile_ok(f"\\{cmd}")
+        assert bc == H + bytes([OP_CHAR, ascii_val, OP_END])
 
 
 def test_bytecode_limit():
