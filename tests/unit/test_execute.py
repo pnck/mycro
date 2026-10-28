@@ -242,3 +242,13 @@ def test_macro_btn_constants():
     assert Macro.BTN_MIDDLE == keymap.BTN_MIDDLE
     assert Macro.BTN_BACK == keymap.BTN_BACK
     assert Macro.BTN_FORWARD == keymap.BTN_FORWARD
+
+
+def test_execute_rejects_bad_header():
+    import pytest
+    hid = MockHID()
+    m = Macro(hid)
+    with pytest.raises(ValueError, match="Bytecode version mismatch"):
+        asyncio.run(m.execute(bytes([0xA5, 0x03, 0, OP_END])))
+    with pytest.raises(ValueError, match="Bytecode version mismatch"):
+        asyncio.run(m.execute(bytes([0x99, VERSION, 0, OP_END])))

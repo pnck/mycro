@@ -266,3 +266,19 @@ def test_disassemble_canonical_key_names():
     # CircuitPython dicts are hash-ordered, unlike CPython insertion order
     bc = compile_ok("\\enter")
     assert "KEY_TAP ENTER" in Macro(MockHID()).disassemble(bc)
+
+
+def test_header_magic_and_version():
+    assert MAGIC == 0xA6
+    assert VERSION == 4
+    bc = compile_ok("")
+    assert bc[:2] == bytes([0xA6, 0x04])
+
+
+def test_header_rejects_mismatched_magic_or_version():
+    import pytest
+    m = Macro(MockHID())
+    with pytest.raises(ValueError, match="Bytecode version mismatch"):
+        m.disassemble(bytes([0xA5, 0x03, 0, OP_END]))
+    with pytest.raises(ValueError, match="Bytecode version mismatch"):
+        m.disassemble(bytes([0x99, VERSION, 0, OP_END]))

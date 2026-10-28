@@ -9,9 +9,9 @@ import asyncio
 import keymap
 from macro import (
     Macro,
-    MAGIC, VERSION, TAG_IMM, TAG_REG, REG_RET, REG_TIMEOUT,
+    MAGIC, VERSION, TAG_IMM, TAG_REG, REG_RET, REG_TIMEOUT, REG_ERR,
     OP_CHAR, OP_SLEEP, OP_PACE, OP_MCLICK, OP_MMOVE, OP_LOOP, OP_LOOP_END,
-    OP_KEY_DOWN, OP_KEY_UP, OP_SET, OP_ADD, OP_BRA, OP_JMP, OP_TYPEREG, OP_END,
+    OP_KEY_DOWN, OP_KEY_UP, OP_SET, OP_ADD, OP_SUB, OP_BRA, OP_JMP, OP_TYPEREG, OP_END,
 )
 from mock_hid import MockHID
 
@@ -72,6 +72,32 @@ def test_set_from_var():
 def test_add_emission():
     bc = compile_ok("\\set{x}{1}\\add{x}{-3}")
     assert bc[3 + 7 :] == bytes([OP_ADD, 0, TAG_IMM, 0xFD, 0xFF, 0xFF, 0xFF, OP_END])
+
+
+def test_sub_emission():
+    bc = compile_ok("\\set{x}{1}\\sub{x}{3}")
+    assert bc[3 + 7 :] == bytes([OP_SUB, 0, TAG_IMM, 3, 0, 0, 0, OP_END])
+
+
+def test_sub_from_var():
+    bc = compile_ok("\\set{x}{10}\\set{y}{4}\\sub{x}{$y}")
+    assert bc[3 + 7 * 2 :] == bytes([OP_SUB, 0, TAG_REG, 1, OP_END])
+
+
+def test_reg_err_and_special_reservations():
+    assert "Reserved variable name: err" in compile_err("\\set{err}{1}")
+    assert "Reserved variable name: ret" in compile_err("\\set{ret}{1}")
+    assert "Reserved variable name: timeout" in compile_err("\\set{timeout}{1}")
+    assert "Reserved variable name: slot" in compile_err("\\set{slot}{1}")
+    assert "cannot modify a special register" in compile_err("\\add{err}{1}")
+    assert "cannot modify a special register" in compile_err("\\sub{err}{1}")
+
+
+def test_read_err_register():
+    bc = compile_ok("\\set{x}{$err}")
+    assert bc == H + bytes([OP_SET, 0, TAG_REG, REG_ERR, OP_END])
+    bc2 = compile_ok("\\set{x}{${err}}")
+    assert bc2 == H + bytes([OP_SET, 0, TAG_REG, REG_ERR, OP_END])
 
 
 def test_reg_allocation_order():
@@ -303,6 +329,22 @@ def test_run_add_i32_wraps():
     kc2 = keymap.digit_keycode("2")
     # 0x7fffffff + 1 wraps to -2147483648: must render '-' and digits
     assert ("kp", keymap.MINUS) in hid.events
+
+
+def test_run_sub_i32_wraps():
+    # -2147483648 - 1 wraps to 2147483647: must render digits without '-'
+    hid = run("\\set{y}{-2147483648}\\sub{y}{1}\\typenum{$y}")
+    assert ("kp", keymap.MINUS) not in hid.events
+    assert ("kp", keymap.digit_keycode("2")) in hid.events
+
+
+def test_disassemble_sub_and_err():
+    m = Macro(MockHID())
+    bc = compile_ok("\\set{x}{10}\\sub{x}{3}\\set{y}{$err}\\sub{x}{$y}")
+    dis = m.disassemble(bc)
+    assert "SUB $r0, 3" in dis
+    assert "SET $r1, $err" in dis
+    assert "SUB $r0, $r1" in dis
 
 
 def test_disassemble_stage_b():

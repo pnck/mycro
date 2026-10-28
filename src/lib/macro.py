@@ -23,13 +23,13 @@ from keymap import (
 )
 
 # Bytecode format header: MAGIC, VERSION, STR_COUNT, strings..., then opcodes
-MAGIC = 0xA5
-VERSION = 3
+MAGIC = 0xA6
+VERSION = 4
 
 # Opcodes
 OP_CHAR = 0x01  # <ascii>
 OP_KEY = 0x02  # <keycode>
-OP_COMBO = 0x03  # <mod_mask> <keycode>
+OP_COMBO = 0x03  # <mod_mask> <keycode> — deprecated NOP in v4
 OP_SLEEP = 0x04  # typed(u16) — one-shot sleep (DSL \delay)
 OP_MCLICK = 0x05  # typed(u8) btn, typed(u16) count
 OP_MMOVE = 0x06  # typed(i16) dx, typed(i16) dy
@@ -44,6 +44,7 @@ OP_SET = 0x20  # reg, typed(i32)
 OP_ADD = 0x21  # reg, typed(i32)
 OP_BRA = 0x22  # cc, reg, typed(i32) rhs, u16 off — jump if cond FALSE
 OP_JMP = 0x23  # u16 off
+OP_SUB = 0x24  # reg, typed(i32)
 OP_READSLOT = 0x28  # reg, sig_str, field_str — read signal slot into register
 OP_WAIT = 0x29  # sig_str, typed(u32) timeout_ms (0 = forever)
 OP_CALL_EXT = 0x2A  # ns_str, fn_str, argc, typed args...
@@ -58,6 +59,7 @@ TAG_STR = 2  # string table index (ext args only)
 # Register space
 MAX_REGS = 32  # user registers 0x00-0x1F (spec/vm.md: profile constant, u8 ceiling 256)
 RECT_MAX_EDGE = 128  # \rect literal / snapshot edge cap
+REG_ERR = 0xFD  # $err
 REG_SCRATCH = 0xFD  # reserved (special-register guard boundary)
 REG_TIMEOUT = 0xFE  # $timeout
 REG_RET = 0xFF  # $ret
@@ -231,14 +233,23 @@ class Macro:
         indent = 0
         CC_NAMES = ["=", "!=", "<", "<=", ">", ">="]
 
+        def fmt_reg(r):
+            if r == REG_RET:
+                return "$ret"
+            if r == REG_TIMEOUT:
+                return "$timeout"
+            if r == REG_ERR:
+                return "$err"
+            return f"$r{r}"
+
         def fmt_arg(width, signed=False):
             nonlocal i
             tag = bytecode[i]
             i += 1
             if tag == TAG_REG:
-                r = f"$r{bytecode[i]}"
+                r = bytecode[i]
                 i += 1
-                return r
+                return fmt_reg(r)
             if width == 1:
                 v = bytecode[i]
                 i += 1
@@ -305,7 +316,7 @@ class Macro:
             elif op == OP_COMBO:
                 mods = self._mod_names(bytecode[i + 1])
                 key_name = self._keycode_name(bytecode[i + 2])
-                lines.append(f"{prefix}COMBO {mods}+{key_name}")
+                lines.append(f"{prefix}COMBO (NOP) {mods}+{key_name}")
                 i += 3
             elif op == OP_SLEEP:
                 i += 1
@@ -350,11 +361,15 @@ class Macro:
             elif op == OP_SET:
                 reg = bytecode[i + 1]
                 i += 2
-                lines.append(f"{prefix}SET $r{reg}, {fmt_arg(4)}")
+                lines.append(f"{prefix}SET {fmt_reg(reg)}, {fmt_arg(4)}")
             elif op == OP_ADD:
                 reg = bytecode[i + 1]
                 i += 2
-                lines.append(f"{prefix}ADD $r{reg}, {fmt_arg(4)}")
+                lines.append(f"{prefix}ADD {fmt_reg(reg)}, {fmt_arg(4)}")
+            elif op == OP_SUB:
+                reg = bytecode[i + 1]
+                i += 2
+                lines.append(f"{prefix}SUB {fmt_reg(reg)}, {fmt_arg(4)}")
             elif op == OP_BRA:
                 cc = bytecode[i + 1]
                 reg = bytecode[i + 2]
@@ -363,7 +378,7 @@ class Macro:
                 off = bytecode[i] | (bytecode[i + 1] << 8)
                 i += 2
                 cc_name = CC_NAMES[cc] if cc < len(CC_NAMES) else f"0x{cc:02X}"
-                lines.append(f"{prefix}BRA $r{reg} {cc_name} {rhs} +{off}")
+                lines.append(f"{prefix}BRA {fmt_reg(reg)} {cc_name} {rhs} +{off}")
             elif op == OP_JMP:
                 off = bytecode[i + 1] | (bytecode[i + 2] << 8)
                 lines.append(f"{prefix}JMP +{off}")
@@ -813,6 +828,8 @@ class Macro:
             return REG_RET
         if name == "timeout":
             return REG_TIMEOUT
+        if name == "err":
+            return REG_ERR
         if "." in name:
             # $sig.field — signal names may themselves contain dots
             # (net.msg), so split at the LAST dot
@@ -842,8 +859,10 @@ class Macro:
 
     def _alloc_var(self, name, pos):
         """Resolve a variable name for assignment, allocating a register if new."""
-        if name in ("ret", "timeout"):
+        if name in ("ret", "timeout", "err"):
             raise MacroError(f"Reserved variable name: {name}", pos)
+        if name == "slot":
+            raise MacroError("Reserved variable name: slot", pos)
         if "." in name:
             raise MacroError("'.' not allowed in variable names", pos)
         if (
@@ -864,7 +883,7 @@ class Macro:
         (type environment, spec/vm.md Part II §2)."""
         if reg == REG_RET:
             return self._ret_type
-        if reg == REG_TIMEOUT:
+        if reg == REG_TIMEOUT or reg == REG_ERR:
             return "int"
         for name, r in self._vars.items():
             if r == reg:
@@ -1045,6 +1064,27 @@ class Macro:
             raise MacroError("add requires {value}", self._pos)
         v = self._parse_value(arg, pos)  # parse first: slot desugars emit READSLOT
         self._emit(OP_ADD, reg)
+        self._emit_typed(v, 4)
+
+    def _cmd_sub(self, pos):
+        r"""\sub{x}{i32|$var} — subtract from an existing variable."""
+        name = self._read_braces()
+        if name is None:
+            raise MacroError("sub requires {name}", self._pos)
+        name = name.strip().lower()
+        if "." in name:
+            raise MacroError("sub: cannot modify a signal slot", pos)
+        reg = self._var_reg(name, pos)
+        if reg >= REG_SCRATCH:
+            raise MacroError("sub: cannot modify a special register", pos)
+        if self._reg_type(reg) != "int":
+            raise MacroError(
+                f"sub: cannot modify a {self._reg_type(reg)} handle", pos)
+        arg = self._read_braces()
+        if arg is None:
+            raise MacroError("sub requires {value}", self._pos)
+        v = self._parse_value(arg, pos)  # parse first: slot desugars emit READSLOT
+        self._emit(OP_SUB, reg)
         self._emit_typed(v, 4)
 
     def _cmd_ifnum(self, pos):
@@ -1599,12 +1639,16 @@ class Macro:
                     val = read_arg(4)
                     if runtime is not None:
                         runtime.reg_write(reg, None)
-                    regs[reg] = regs[reg] + val
-                    # keep registers in signed i32 range
-                    if regs[reg] > 2147483647:
-                        regs[reg] -= 4294967296
-                    elif regs[reg] < -2147483648:
-                        regs[reg] += 4294967296
+                    u = (regs[reg] + val) % 4294967296
+                    regs[reg] = u if u < 2147483648 else u - 4294967296
+
+                elif op == OP_SUB:
+                    reg = read_u8()
+                    val = read_arg(4)
+                    if runtime is not None:
+                        runtime.reg_write(reg, None)
+                    u = (regs[reg] - val) % 4294967296
+                    regs[reg] = u if u < 2147483648 else u - 4294967296
 
                 elif op == OP_BRA:
                     cc = read_u8()
