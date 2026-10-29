@@ -598,3 +598,110 @@ def test_spec_section_3_4_normative_examples():
         "ls -la\n"
     )
     compile_ok(ex3)
+
+
+# --- DSL v4: Step 2 & Modularization Coverage Additions ---
+
+def test_compiler_class_direct_usage():
+    from compiler import Compiler
+    c = Compiler()
+    bc, err = c.compile("a")
+    assert err is None
+    assert bc == H + bytes([OP_CHAR, ord("a"), OP_END])
+
+
+def test_bytecode_read_header():
+    from bytecode import read_header
+    bc = H + bytes([OP_END])
+    strs, off = read_header(bc)
+    assert strs == []
+    assert off == 3
+
+
+def test_combo_uppercase_expansion():
+    # \ctrl+A expands A to [shift, a] -> down ctrl, down shift, down a, sleep, up a, up shift, up ctrl
+    bc = compile_ok("\\ctrl+A")
+    kc_a = keymap.letter_keycode("a")
+    assert bc == H + bytes([
+        OP_KEY_DOWN, 0, keymap.CONTROL, 0, 0, 0,
+        OP_KEY_DOWN, 0, keymap.SHIFT, 0, 0, 0,
+        OP_KEY_DOWN, 0, kc_a, 0, 0, 0,
+        OP_SLEEP, 0, 10, 0, 0, 0,
+        OP_KEY_UP, 0, kc_a, 0, 0, 0,
+        OP_KEY_UP, 0, keymap.SHIFT, 0, 0, 0,
+        OP_KEY_UP, 0, keymap.CONTROL, 0, 0, 0,
+        OP_END,
+    ])
+
+
+def test_kdown_kup_multi_key_combo():
+    # \kdown emits keys forward, \kup emits keys reversed
+    bc = compile_ok("\\kdown{ctrl+c}\\kup{ctrl+c}")
+    kc_c = keymap.letter_keycode("c")
+    assert bc == H + bytes([
+        OP_KEY_DOWN, 0, keymap.CONTROL, 0, 0, 0,
+        OP_KEY_DOWN, 0, kc_c, 0, 0, 0,
+        OP_KEY_UP, 0, kc_c, 0, 0, 0,
+        OP_KEY_UP, 0, keymap.CONTROL, 0, 0, 0,
+        OP_END,
+    ])
+
+
+def test_kup_explicit_zero_releases_all():
+    bc = compile_ok("\\kup{0}")
+    assert bc == H + bytes([OP_KEY_UP, 0, 0, 0, 0, 0, OP_END])
+
+
+def test_combo_max_keys_limit():
+    # 8 keys is allowed
+    compile_ok("\\a+b+c+d+e+f+g+h")
+    # 9 keys exceeds MAX_COMBO_KEYS=8
+    err = compile_err("\\a+b+c+d+e+f+g+h+i")
+    assert "exceeds MAX_COMBO_KEYS=8" in err
+
+    # \kdown with 9 keys
+    err_kdown = compile_err("\\kdown{a+b+c+d+e+f+g+h+i}")
+    assert "exceeds MAX_COMBO_KEYS=8" in err_kdown
+
+
+def test_keypad_and_right_modifier_combos():
+    bc1 = compile_ok("\\rctrl+c")
+    kc_c = keymap.letter_keycode("c")
+    assert bc1 == H + bytes([
+        OP_KEY_DOWN, 0, keymap.RCONTROL, 0, 0, 0,
+        OP_KEY_DOWN, 0, kc_c, 0, 0, 0,
+        OP_SLEEP, 0, 10, 0, 0, 0,
+        OP_KEY_UP, 0, kc_c, 0, 0, 0,
+        OP_KEY_UP, 0, keymap.RCONTROL, 0, 0, 0,
+        OP_END,
+    ])
+
+    bc2 = compile_ok("\\ctrl+kp_1")
+    assert bc2 == H + bytes([
+        OP_KEY_DOWN, 0, keymap.CONTROL, 0, 0, 0,
+        OP_KEY_DOWN, 0, keymap.KP_1, 0, 0, 0,
+        OP_SLEEP, 0, 10, 0, 0, 0,
+        OP_KEY_UP, 0, keymap.KP_1, 0, 0, 0,
+        OP_KEY_UP, 0, keymap.CONTROL, 0, 0, 0,
+        OP_END,
+    ])
+
+
+def test_empty_text_block():
+    bc = compile_ok("\\text{}\\endtext{}")
+    assert bc == H + bytes([OP_END])
+
+
+def test_free_mode_absorbed_whitespace_between_args():
+    text = (
+        "\\#!syntax: free\n"
+        "\\rep{2}\n"
+        "  {ab}\n"
+    )
+    bc = compile_ok(text)
+    assert bc == H + bytes([
+        OP_LOOP, 0, 2, 0, 0, 0, 5, 0,
+        OP_CHAR, ord("a"), OP_CHAR, ord("b"), OP_LOOP_END,
+        OP_END,
+    ])
+

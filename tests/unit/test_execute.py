@@ -309,3 +309,15 @@ def test_execute_text_block_in_free_mode():
     kp_events = [e[1] for e in hid.events if e[0] == "kp"]
     assert keymap.ENTER in kp_events
     assert 0x2C in kp_events  # space keycode
+
+
+def test_vm_class_direct_usage():
+    from vm import VM
+    hid = MockHID()
+    vm = VM(hid)
+    bc = bytes([MAGIC, VERSION, 0, OP_CHAR, ord("z"), OP_END])
+    asyncio.run(vm.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    assert ("kp", keymap.letter_keycode("z")) in hid.events
+    dis = vm.disassemble(bc)
+    assert "CHAR 'z'" in dis
+
