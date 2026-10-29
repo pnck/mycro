@@ -144,15 +144,15 @@ def test_macro_expansion_exceeding_limit_rejected():
     assert f"macro expansion exceeds {MAX_MACRO_EXPAND} levels" in err
 
 
-def test_ifnum_nesting_at_limit():
-    code = "\\set{x}{1}" + "\\ifnum{$x}{=}{1}{" * MAX_RUNTIME_NEST + "a" + "}" * MAX_RUNTIME_NEST
+def test_if_nesting_at_limit():
+    code = "\\set{x}{1}" + "\\if{ {$x, =, 1} }{" * MAX_RUNTIME_NEST + "a" + "}" * MAX_RUNTIME_NEST
     compile_ok(code)
 
 
-def test_ifnum_nesting_exceeding_limit_rejected():
-    code = "\\set{x}{1}" + "\\ifnum{$x}{=}{1}{" * (MAX_RUNTIME_NEST + 1) + "a" + "}" * (MAX_RUNTIME_NEST + 1)
+def test_if_nesting_exceeding_limit_rejected():
+    code = "\\set{x}{1}" + "\\if{ {$x, =, 1} }{" * (MAX_RUNTIME_NEST + 1) + "a" + "}" * (MAX_RUNTIME_NEST + 1)
     err = compile_err(code)
-    assert f"ifnum nesting exceeds {MAX_RUNTIME_NEST} levels" in err
+    assert f"if nesting exceeds {MAX_RUNTIME_NEST} levels" in err
 
 
 def test_decoupled_macro_and_runtime_nesting():

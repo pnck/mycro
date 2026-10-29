@@ -61,11 +61,14 @@ REG_RET = 0xFF        # $ret
 # Condition codes and branch helpers
 CC_OPS = {"=": 0, "!=": 1, "<": 2, "<=": 3, ">": 4, ">=": 5}
 CC_NAMES = ["=", "!=", "<", "<=", ">", ">="]
+CONVERSE_CC = {0: 0, 1: 1, 2: 4, 3: 5, 4: 2, 5: 3}
+INVERT_CC = {0: 1, 1: 0, 2: 5, 3: 4, 4: 3, 5: 2}
 
 # Limits and configuration
 MAX_BYTECODE = 4096
 MAX_RUNTIME_NEST = 8
 MAX_MACRO_EXPAND = 16
+MAX_PRED_NEST = 4
 MAX_COMBO_KEYS = 8
 DEFAULT_CLICK_HOLD_MS = 10
 

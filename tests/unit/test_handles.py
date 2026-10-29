@@ -124,15 +124,15 @@ def test_non_handle_return_does_not_claim():
 
 def test_ret_exemption_does_not_survive_storage():
     r"""Checking $ret directly after a snap is exempt (error sentinels);
-    storing it types the VARIABLE as a handle and ifnum rejects it —
+    storing it types the VARIABLE as a handle and \if rejects it —
     this is why device tests check $ret in place (devicetest G10)."""
     rt = make_runtime()
     err = compile_err("\\call{img.snap}{0,0,4,4}\\set{i}{$ret}"
-                      "\\ifnum{$i}{<}{0}{\\call{img.use}{$i}}", rt)
+                      "\\if{ {$i, <, 0} }{\\call{img.use}{$i}}", rt)
     assert "handle" in err
     # the correct idiom compiles
     compile_ok("\\call{img.snap}{0,0,4,4}"
-               "\\ifnum{$ret}{<}{0}{\\call{img.use}{$ret}}", rt)
+               "\\if{ {$ret, <, 0} }{\\call{img.use}{$ret}}", rt)
 
 
 # --- \rect literal (compile-time pixel constant -> const store -> handle) ---
@@ -159,8 +159,8 @@ def test_rect_literal_executes_and_interops():
     seen = []
     rt.register_ns("probe", {"n": ([], "int", lambda: seen.append(1) or 0)})
     run("\\set{t}{" + RECT2 + "}"
-        "\\call{img.at}{$t}{1,0}\\ifnum{$ret}{=}{0x00FF00}{\\call{probe.n}}"
-        "\\call{img.diff}{$t}{$t}{0}\\ifnum{$ret}{=}{0}{\\call{probe.n}}", rt)
+        "\\call{img.at}{$t}{1,0}\\if{ {$ret, =, 0x00FF00} }{\\call{probe.n}}"
+        "\\call{img.diff}{$t}{$t}{0}\\if{ {$ret, =, 0} }{\\call{probe.n}}", rt)
     assert seen == [1, 1]
     assert rt._handles == {}  # released at exit
 
@@ -171,7 +171,7 @@ def test_rect_literal_as_call_arg():
     rt.register_ns("probe", {"n": ([], "int", lambda: seen.append(1) or 0)})
     # rect literal directly as a handle-typed argument
     run("\\call{img.diff}{" + RECT2 + "}{" + RECT2 + "}{0}"
-        "\\ifnum{$ret}{=}{0}{\\call{probe.n}}", rt)
+        "\\if{ {$ret, =, 0} }{\\call{probe.n}}", rt)
     assert seen == [1]
 
 

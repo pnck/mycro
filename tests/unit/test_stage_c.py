@@ -103,18 +103,18 @@ def test_add_rejects_handle():
         "\\call{img.load}{name}\\set{h}{$ret}\\add{h}{1}")
 
 
-def test_ifnum_rejects_handle():
+def test_if_rejects_handle():
     assert "cannot compare a tpl handle" in compile_err(
-        "\\call{img.load}{name}\\set{h}{$ret}\\ifnum{$h}{=}{1}{a}")
+        "\\call{img.load}{name}\\set{h}{$ret}\\if{ {$h, =, 1} }{a}")
     assert "cannot compare a tpl handle" in compile_err(
-        "\\call{img.load}{name}\\set{h}{$ret}\\set{x}{1}\\ifnum{$x}{=}{$h}{a}")
+        "\\call{img.load}{name}\\set{h}{$ret}\\set{x}{1}\\if{ {$x, =, $h} }{a}")
 
 
-def test_ifnum_ret_exemption():
+def test_if_ret_exemption():
     # $ret carries error sentinels alongside results — checking it is the
     # mandatory failure path, exempt from the handle comparison ban
-    compile_ok("\\call{img.load}{name}\\ifnum{$ret}{<}{0}{a}")
-    compile_ok("\\call{img.load}{name}\\set{x}{1}\\ifnum{$x}{=}{$ret}{a}")
+    compile_ok("\\call{img.load}{name}\\if{ {$ret, <, 0} }{a}")
+    compile_ok("\\call{img.load}{name}\\set{x}{1}\\if{ {$x, =, $ret} }{a}")
 
 
 def test_str_arg_unescape_and_strip():
@@ -283,10 +283,10 @@ def test_slot_move_two_slots():
     assert ("mm", 10, 20) in hid.events
 
 
-def test_slot_ifnum_both_operands():
+def test_slot_if_both_operands():
     rt = make_runtime()
     rt.fire_signal("go", {"a": 5, "b": 6})
-    hid = run("\\ifnum{$go.a}{<}{$go.b}{\\call{sys.free}\\typenum{$ret}}", rt=rt)
+    hid = run("\\if{ {$go.a, <, $go.b} }{\\call{sys.free}\\typenum{$ret}}", rt=rt)
     for d in "12345":
         assert ("kp", keymap.digit_keycode(d)) in hid.events
 

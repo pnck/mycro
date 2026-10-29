@@ -14,12 +14,104 @@ from bytecode import (
     OP_CALL_EXT, OP_TYPEREG, OP_END,
     TAG_IMM, TAG_REG, TAG_STR,
     MAX_REGS, RECT_MAX_EDGE, REG_ERR, REG_SCRATCH, REG_TIMEOUT, REG_RET,
-    CC_OPS, MAX_BYTECODE, MAX_RUNTIME_NEST, MAX_MACRO_EXPAND,
+    CC_OPS, CONVERSE_CC, INVERT_CC,
+    MAX_BYTECODE, MAX_RUNTIME_NEST, MAX_MACRO_EXPAND, MAX_PRED_NEST,
     MAX_COMBO_KEYS, DEFAULT_CLICK_HOLD_MS, _PRINTABLE_LONE_KEYS,
     _is_alpha, _is_alnum,
     KEYS, MODS, MOUSE_BTNS,
     MacroError,
 )
+
+
+class Label:
+    """Forward branch label with backpatching fixup list."""
+
+    def __init__(self, name=""):
+        self.name = name
+        self.target = None
+        self.fixups = []
+
+    def mark(self, compiler):
+        """Mark this label at the current bytecode position and resolve all pending fixups."""
+        pos = len(compiler._bc)
+        self.target = pos
+        for patch_pos in self.fixups:
+            off = pos - (patch_pos + 2)
+            if off < 0:
+                raise MacroError("Negative branch offset", patch_pos)
+            if off > 65535:
+                raise MacroError("Branch offset exceeds 65535", patch_pos)
+            compiler._patch_u16(patch_pos, off)
+        self.fixups.clear()
+
+    def add_fixup(self, patch_pos, compiler):
+        """Add a fixup for this label. If label is already marked, patch immediately."""
+        if self.target is not None:
+            off = self.target - (patch_pos + 2)
+            if off < 0:
+                raise MacroError("Negative branch offset", patch_pos)
+            if off > 65535:
+                raise MacroError("Branch offset exceeds 65535", patch_pos)
+            compiler._patch_u16(patch_pos, off)
+        else:
+            self.fixups.append(patch_pos)
+
+
+class TripletNode:
+    """Atomic comparison node: lhs, cc, rhs."""
+
+    def __init__(self, lhs_str, cc, rhs_str, pos):
+        self.lhs_str = lhs_str
+        self.cc = cc
+        self.rhs_str = rhs_str
+        self.pos = pos
+
+
+class LogicNode:
+    """Compound logic node: 'all' or 'any' with children predicates."""
+
+    def __init__(self, op, children, pos):
+        self.op = op
+        self.children = children
+        self.pos = pos
+
+
+def _split_compound_group(s, pos):
+    """Split string by top-level commas respecting nested braces.
+    Rejects trailing commas and empty elements per spec/dsl.md §6.8."""
+    s = s.strip()
+    if not s:
+        return []
+    items = []
+    start = 0
+    brace_depth = 0
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if ch == "\\" and i + 1 < n and s[i + 1] in "{}\\":
+            i += 2
+            continue
+        if ch == "{":
+            brace_depth += 1
+        elif ch == "}":
+            brace_depth -= 1
+            if brace_depth < 0:
+                raise MacroError("Unmatched }", pos)
+        elif ch == "," and brace_depth == 0:
+            piece = s[start:i].strip()
+            if not piece:
+                raise MacroError("empty element in compound group", pos)
+            items.append(piece)
+            start = i + 1
+        i += 1
+    if brace_depth != 0:
+        raise MacroError("Unmatched {", pos)
+    piece = s[start:].strip()
+    if not piece:
+        raise MacroError("trailing comma is not allowed", pos)
+    items.append(piece)
+    return items
 
 
 class Compiler:
@@ -512,22 +604,20 @@ class Compiler:
             self._emit_u16(len(sub) + 1)  # +1 for LOOP_END
             self._emit(sub)
             self._emit(OP_LOOP_END)
-        elif kind == "ifnum_then":
-            off_pos, else_body = cont[1], cont[2]
+        elif kind == "if_then":
+            false_label, else_body = cont[1], cont[2]
             self._emit(sub)
             if else_body is not None:
-                self._emit(OP_JMP)
-                jmp_pos = len(self._bc)
-                self._emit_u16(0)  # backpatched when the else body completes
-                # BRA target = else start (right after the JMP operand)
-                self._patch_u16(off_pos, (jmp_pos + 2) - (off_pos + 2))
-                self._nest_into(else_body, "ifnum else", ("ifnum_else", jmp_pos))
+                end_label = Label("if_end")
+                self._emit_jmp(end_label)
+                false_label.mark(self)
+                self._nest_into(else_body, "if else", ("if_else", end_label))
             else:
-                self._patch_u16(off_pos, len(self._bc) - (off_pos + 2))
-        elif kind == "ifnum_else":
-            jmp_pos = cont[1]
+                false_label.mark(self)
+        elif kind == "if_else":
+            end_label = cont[1]
             self._emit(sub)
-            self._patch_u16(jmp_pos, len(self._bc) - (jmp_pos + 2))
+            end_label.mark(self)
 
     def _str_idx(self, s, pos):
         """Intern a string into the shared string table (dedup)."""
@@ -645,6 +735,8 @@ class Compiler:
             return REG_TIMEOUT
         if name == "err":
             return REG_ERR
+        if name.startswith("slot."):
+            name = name[5:]
         if "." in name:
             # $sig.field — signal names may themselves contain dots
             # (net.msg), so split at the LAST dot
@@ -902,48 +994,161 @@ class Compiler:
         self._emit(OP_SUB, reg)
         self._emit_typed(v, 4)
 
-    def _cmd_ifnum(self, pos):
-        r"""\ifnum{$a}{op}{b}{then}[{else}] — conditional branch."""
-        if self._runtime_depth >= MAX_RUNTIME_NEST:
-            raise MacroError(f"ifnum nesting exceeds {MAX_RUNTIME_NEST} levels", pos)
-        left = self._read_braces()
-        if left is None or not left.strip().startswith("$"):
-            raise MacroError("ifnum left operand must be a variable ($name)", pos)
-        reg = self._parse_var_ref(left.strip(), pos)
-        lt = self._reg_type(reg)
-        # $ret is exempt: it carries error sentinels alongside results,
-        # so comparing it is the mandatory failure check (spec/vm.md)
-        if reg != REG_RET and lt not in ("int", "color"):
-            raise MacroError(f"ifnum: cannot compare a {lt} handle", pos)
-
-        op = self._read_braces()
-        if op is None:
-            raise MacroError("ifnum requires {op}", self._pos)
-        cc = CC_OPS.get(op.strip())
-        if cc is None:
-            raise MacroError("ifnum op must be one of = != < <= > >=", pos)
-
-        rhs = self._read_braces()
-        if rhs is None:
-            raise MacroError("ifnum requires {value}", self._pos)
-        then_body = self._read_braces()
-        if then_body is None:
-            raise MacroError("ifnum requires {then}", self._pos)
-        else_body = self._read_braces()  # optional
-
-        # Parse rhs before emitting: a slot operand desugars to a READSLOT
-        # that must precede the branch, and must not clobber a slot-temp
-        # already holding the left operand
-        rhs_val = self._parse_value(rhs, pos, reserved=(reg,))
-        if rhs_val[0] == TAG_REG and rhs_val[1] != REG_RET \
-                and self._reg_type(rhs_val[1]) not in ("int", "color"):
-            raise MacroError(
-                f"ifnum: cannot compare a {self._reg_type(rhs_val[1])} handle", pos)
+    def _emit_bra(self, cc, reg, rhs_val, target_label):
         self._emit(OP_BRA, cc, reg)
         self._emit_typed(rhs_val, 4)
-        off_pos = len(self._bc)
-        self._emit_u16(0)  # backpatched by _pop_nest
-        self._nest_into(then_body, "ifnum then", ("ifnum_then", off_pos, else_body))
+        patch_pos = len(self._bc)
+        self._emit_u16(0)
+        target_label.add_fixup(patch_pos, self)
+
+    def _emit_jmp(self, target_label):
+        self._emit(OP_JMP)
+        patch_pos = len(self._bc)
+        self._emit_u16(0)
+        target_label.add_fixup(patch_pos, self)
+
+    def _emit_triplet(self, node, true_target, false_target):
+        # Step 1: Ephemeral Value Pre-Loading in source order (§5.4 #1)
+        lhs_val = self._parse_value(node.lhs_str, node.pos)
+        rhs_reserved = (lhs_val[1],) if lhs_val[0] == TAG_REG else ()
+        rhs_val = self._parse_value(node.rhs_str, node.pos, reserved=rhs_reserved)
+        cc = node.cc
+
+        # Check handle types if known at compile time
+        if (
+            lhs_val[0] == TAG_REG
+            and lhs_val[1] != REG_RET
+            and self._reg_type(lhs_val[1]) not in ("int", "color")
+        ):
+            raise MacroError(
+                f"if: cannot compare a {self._reg_type(lhs_val[1])} handle", node.pos
+            )
+        if (
+            rhs_val[0] == TAG_REG
+            and rhs_val[1] != REG_RET
+            and self._reg_type(rhs_val[1]) not in ("int", "color")
+        ):
+            raise MacroError(
+                f"if: cannot compare a {self._reg_type(rhs_val[1])} handle", node.pos
+            )
+
+        # Step 2: Immediate/Register Swapping (§5.3 Converse Operator Mapping)
+        if lhs_val[0] == TAG_IMM and rhs_val[0] == TAG_REG:
+            lhs_val, rhs_val = rhs_val, lhs_val
+            cc = CONVERSE_CC[cc]
+
+        # Step 3: Static Constant Elimination (§5.4 #3)
+        if lhs_val[0] == TAG_IMM and rhs_val[0] == TAG_IMM:
+            a = lhs_val[1]
+            b = rhs_val[1]
+            if cc == 0:
+                cond = (a == b)
+            elif cc == 1:
+                cond = (a != b)
+            elif cc == 2:
+                cond = (a < b)
+            elif cc == 3:
+                cond = (a <= b)
+            elif cc == 4:
+                cond = (a > b)
+            else:
+                cond = (a >= b)
+            if cond:
+                self._emit_jmp(true_target)
+            else:
+                self._emit_jmp(false_target)
+            return
+
+        # Step 4: Emit native BRA + JMP (§5.2 #1)
+        self._emit_bra(cc, lhs_val[1], rhs_val, false_target)
+        self._emit_jmp(true_target)
+
+    def _emit_predicate(self, node, true_target, false_target):
+        if isinstance(node, TripletNode):
+            self._emit_triplet(node, true_target, false_target)
+        elif isinstance(node, LogicNode):
+            n = len(node.children)
+            if node.op == "all":
+                for i, child in enumerate(node.children):
+                    if i < n - 1:
+                        child_true = Label(f"all_{i+1}")
+                    else:
+                        child_true = true_target
+                    self._emit_predicate(child, child_true, false_target)
+                    if i < n - 1:
+                        child_true.mark(self)
+            elif node.op == "any":
+                for i, child in enumerate(node.children):
+                    if i < n - 1:
+                        child_false = Label(f"any_{i+1}")
+                    else:
+                        child_false = false_target
+                    self._emit_predicate(child, true_target, child_false)
+                    if i < n - 1:
+                        child_false.mark(self)
+
+    def _parse_predicate(self, s, pos, nest_depth=1):
+        """Parse a Predicate (Triplet or LogicBlock) with nesting limit MAX_PRED_NEST."""
+        if nest_depth > MAX_PRED_NEST:
+            raise MacroError(f"Predicate nesting exceeds {MAX_PRED_NEST} levels", pos)
+        s = s.strip()
+        if s.startswith(r"\all") or s.startswith(r"\any"):
+            kind = "all" if s.startswith(r"\all") else "any"
+            rest = s[4:].lstrip()
+            if not (rest.startswith("{") and rest.endswith("}")):
+                raise MacroError(f"\\{kind} requires {{...}}", pos)
+            inner = rest[1:-1].strip()
+            items = _split_compound_group(inner, pos)
+            if not items:
+                raise MacroError(f"\\{kind} requires at least one predicate", pos)
+            children = [
+                self._parse_predicate(item, pos, nest_depth + 1)
+                for item in items
+            ]
+            return LogicNode(kind, children, pos)
+        elif s.startswith("{") and s.endswith("}"):
+            inner = s[1:-1].strip()
+            parts = _split_compound_group(inner, pos)
+            if len(parts) != 3:
+                raise MacroError("Predicate triplet requires {lhs, op, rhs}", pos)
+            lhs_str, op_str, rhs_str = parts[0].strip(), parts[1].strip(), parts[2].strip()
+            if op_str not in CC_OPS:
+                raise MacroError(
+                    f"Invalid relational operator: {op_str} (must be one of = != < <= > >=)", pos
+                )
+            cc = CC_OPS[op_str]
+            return TripletNode(lhs_str, cc, rhs_str, pos)
+        else:
+            raise MacroError(r"Invalid predicate: expected {...}, \all, or \any", pos)
+
+    def _cmd_if(self, pos):
+        r"""\if{predicate}{then}[{else}] — conditional branch."""
+        if self._runtime_depth >= MAX_RUNTIME_NEST:
+            raise MacroError(f"if nesting exceeds {MAX_RUNTIME_NEST} levels", pos)
+        pred_str = self._read_braces()
+        if pred_str is None:
+            raise MacroError("if requires {predicate}", pos)
+        if not pred_str.strip():
+            raise MacroError("empty predicate", pos)
+        pred_node = self._parse_predicate(pred_str, pos)
+
+        then_body = self._read_braces()
+        if then_body is None:
+            raise MacroError("if requires {then}", pos)
+        else_body = self._read_braces()  # optional
+
+        then_label = Label("then_start")
+        false_label = Label("false_target")
+
+        self._emit_predicate(pred_node, then_label, false_label)
+        then_label.mark(self)
+        self._nest_into(then_body, "if then", ("if_then", false_label, else_body))
+
+    def _cmd_all(self, pos):
+        raise MacroError(r"\all is only valid inside a predicate", pos)
+
+    def _cmd_any(self, pos):
+        raise MacroError(r"\any is only valid inside a predicate", pos)
 
     def _cmd_typenum(self, pos):
         r"""\typenum{$var} — render a numeric register as decimal keystrokes (text position)."""

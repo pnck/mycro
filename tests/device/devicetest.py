@@ -432,14 +432,14 @@ def c14_compile_busy_when_running(ctx):
 
 WAIT_MOVE = "\\use{net}\\wait{net.msg}{30}\\move{$net.msg.x,$net.msg.y}\\call{net.send}{woke}"
 WAIT_TIMEOUT = ("\\use{net}\\wait{net.msg}{1}"
-                "\\ifnum{$timeout}{=}{1}{\\call{net.send}{timeout}}{\\call{net.send}{fired}}")
+                "\\if{ {$timeout, =, 1} }{\\call{net.send}{timeout}}{\\call{net.send}{fired}}")
 WAIT_COUNT = ("\\use{net}\\wait{net.msg}{30}\\call{net.send}{probe}"
-              "\\ifnum{$ret}{=}{2}{\\call{net.send}{two}}{\\call{net.send}{not2}}")
+              "\\if{ {$ret, =, 2} }{\\call{net.send}{two}}{\\call{net.send}{not2}}")
 SLOT_PROBE = ("\\use{net}"
-              "\\ifnum{$net.msg.x}{=}{7}{\\call{net.send}{state7}}{\\call{net.send}{nostate}}")
+              "\\if{ {$net.msg.x, =, 7} }{\\call{net.send}{state7}}{\\call{net.send}{nostate}}")
 SLOT_XY_CHECK = ("\\use{net}\\wait{net.msg}{30}"
-                 "\\ifnum{$net.msg.x}{=}{10}{"
-                 "\\ifnum{$net.msg.y}{=}{20}{\\call{net.send}{xy-ok}}{\\call{net.send}{y-wrong}}"
+                 "\\if{ {$net.msg.x, =, 10} }{"
+                 "\\if{ {$net.msg.y, =, 20} }{\\call{net.send}{xy-ok}}{\\call{net.send}{y-wrong}}"
                  "}{\\call{net.send}{x-wrong}}")
 
 
@@ -692,12 +692,12 @@ def g2_latency_probe(ctx, n=10):
 
 IMG_NOPROV = ("\\use{img}\\use{net}"
               "\\call{img.snap}{10,8,1,1}"
-              "\\ifnum{$ret}{<}{0}{\\call{net.send}{noprov}}{\\call{net.send}{prov-ok}}")
+              "\\if{ {$ret, <, 0} }{\\call{net.send}{noprov}}{\\call{net.send}{prov-ok}}")
 
 IMG_AT = ("\\use{img}\\use{net}"
           "\\call{img.snap}{10,8,1,1}\\set{s}{$ret}"
           "\\call{img.at}{$s}{0,0}"
-          "\\ifnum{$ret}{=}{0x466E96}{\\call{net.send}{at-ok}}{\\call{net.send}{at-wrong}}")
+          "\\if{ {$ret, =, 0x466E96} }{\\call{net.send}{at-ok}}{\\call{net.send}{at-wrong}}")
 
 IMG_DIFF = ("\\use{img}\\use{net}"
             "\\call{img.snap}{0,0,8,8}\\set{a}{$ret}"
@@ -705,13 +705,13 @@ IMG_DIFF = ("\\use{img}\\use{net}"
             "\\wait{net.msg}{30}"
             "\\call{img.snap}{0,0,8,8}\\set{b}{$ret}"
             "\\call{img.diff}{$a}{$b}{0}"
-            "\\ifnum{$ret}{>}{0}{\\call{net.send}{diff-ok}}{\\call{net.send}{no-diff}}")
+            "\\if{ {$ret, >, 0} }{\\call{net.send}{diff-ok}}{\\call{net.send}{no-diff}}")
 
 IMG_REUSE = ("\\use{img}\\use{net}"
              "\\call{img.snap}{0,0,4,4}\\set{a}{$ret}"
              "\\call{img.snap}{10,8,4,4}\\set{a}{$ret}"  # overwrite releases
              "\\call{img.at}{$a}{0,0}"
-             "\\ifnum{$ret}{=}{0x466E96}{\\call{net.send}{reuse-ok}}{\\call{net.send}{reuse-wrong}}")
+             "\\if{ {$ret, =, 0x466E96} }{\\call{net.send}{reuse-ok}}{\\call{net.send}{reuse-wrong}}")
 
 
 def g3_img_no_provider(ctx):
@@ -802,7 +802,7 @@ IMG_REFLIT = ("\\use{img}\\use{net}"
               "\\set{r}{\\rect{\\row{0x002850,0x032B53}}}"
               "\\call{img.snap}{0,0,2,1}\\set{c}{$ret}"
               "\\call{img.diff}{$r}{$c}{0}"
-              "\\ifnum{$ret}{=}{0}{\\call{net.send}{ref-ok}}{\\call{net.send}{ref-wrong}}")
+              "\\if{ {$ret, =, 0} }{\\call{net.send}{ref-ok}}{\\call{net.send}{ref-wrong}}")
 
 
 def g7_capture_passthrough(ctx):
@@ -1042,15 +1042,15 @@ IMG_POOL = ("\\use{img}\\use{net}"
                       f"$ret}}" for v in "abcdefgh")  # fill all SNAP_SLOTS
             + "\\call{img.snap}{0,0,4,4}"  # 9th: pool full -> $ret=-1
             # $ret must be checked directly: storing it types the variable
-            # as a handle and ifnum rejects handle operands (the $ret
+            # as a handle and \if rejects handle operands (the $ret
             # exemption exists exactly for error-sentinel checks)
-            "\\ifnum{$ret}{<}{0}{\\call{net.send}{pool-full}}"
+            "\\if{ {$ret, <, 0} }{\\call{net.send}{pool-full}}"
             "{\\call{net.send}{pool-nine}}"
             "\\set{a}{0}"  # overwrite-release happens at the WRITE: the
             # slot must be freed BEFORE the next snap, one breath earlier
             "\\call{img.snap}{10,8,4,4}\\set{a}{$ret}"
             "\\call{img.at}{$a}{0,0}"
-            "\\ifnum{$ret}{=}{0x466E96}{\\call{net.send}{pool-reused}}"
+            "\\if{ {$ret, =, 0x466E96} }{\\call{net.send}{pool-reused}}"
             "{\\call{net.send}{pool-bad}}")
 
 
@@ -1074,7 +1074,7 @@ def g10_snap_pool_exhaustion(ctx):
 
 IMG_OUT_OF_BOUNDS = ("\\use{img}\\use{net}"
                      "\\call{img.snap}{9999,9999,10,10}"
-                     "\\ifnum{$ret}{<}{0}{\\call{net.send}{oob-fail}}{\\call{net.send}{oob-ok}}")
+                     "\\if{ {$ret, <, 0} }{\\call{net.send}{oob-fail}}{\\call{net.send}{oob-ok}}")
 
 
 def g11_img_out_of_bounds_rect(ctx):

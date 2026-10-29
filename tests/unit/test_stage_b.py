@@ -161,36 +161,43 @@ def test_braced_var_form():
     assert bc[3 + 7 :] == bytes([OP_MMOVE, TAG_REG, 0, TAG_IMM, 0, 0, 0, 0, OP_END])
 
 
-# --- \ifnum emission (backpatched offsets) ---
+# --- \if emission (backpatched offsets) ---
 
-def test_ifnum_no_else_layout():
-    bc = compile_ok("\\set{x}{1}\\ifnum{$x}{=}{1}{a}")
+def test_if_no_else_layout():
+    bc = compile_ok("\\set{x}{1}\\if{ {$x, =, 1} }{a}")
     bra = 3 + 7  # after header + SET
     assert bc[bra : bra + 8] == bytes([OP_BRA, 0, 0, TAG_IMM, 1, 0, 0, 0])
-    off = bc[bra + 8] | (bc[bra + 9] << 8)
-    then_start = bra + 10
-    assert off == len(bc) - 1 - then_start  # target = END (past trailing OP_END? no:)
-    assert bc[then_start : then_start + 2] == bytes([OP_CHAR, ord("a")])
-
-
-def test_ifnum_else_layout():
-    bc = compile_ok("\\set{x}{1}\\ifnum{$x}{=}{1}{a}{b}")
-    bra = 3 + 7
-    then_start = bra + 10
     bra_off = bc[bra + 8] | (bc[bra + 9] << 8)
-    # then body = CHAR a (2B), then JMP (3B), else starts after JMP
-    jmp_at = then_start + 2
-    else_start = jmp_at + 3
-    assert bra_off == else_start - then_start
+    jmp_at = bra + 10
     assert bc[jmp_at] == OP_JMP
     jmp_off = bc[jmp_at + 1] | (bc[jmp_at + 2] << 8)
-    assert jmp_off == 2  # else body = CHAR b
+    then_start = jmp_at + 3
+    assert jmp_off == 0  # jumps to then_start
+    assert bc[then_start : then_start + 2] == bytes([OP_CHAR, ord("a")])
+    end = then_start + 2
+    assert bra_off == end - (bra + 10)  # false target = end
+
+
+def test_if_else_layout():
+    bc = compile_ok("\\set{x}{1}\\if{ {$x, =, 1} }{a}{b}")
+    bra = 3 + 7
+    bra_off = bc[bra + 8] | (bc[bra + 9] << 8)
+    jmp_at = bra + 10
+    then_start = jmp_at + 3
+    assert bc[then_start : then_start + 2] == bytes([OP_CHAR, ord("a")])
+    jmp_end_at = then_start + 2
+    assert bc[jmp_end_at] == OP_JMP
+    else_start = jmp_end_at + 3
+    assert bra_off == else_start - (bra + 10)
     assert bc[else_start : else_start + 2] == bytes([OP_CHAR, ord("b")])
+    end = else_start + 2
+    jmp_end_off = bc[jmp_end_at + 1] | (bc[jmp_end_at + 2] << 8)
+    assert jmp_end_off == end - (jmp_end_at + 3)
 
 
-def test_ifnum_all_ops_compile():
+def test_if_all_ops_compile():
     for op in ("=", "!=", "<", "<=", ">", ">="):
-        compile_ok(f"\\set{{x}}{{1}}\\ifnum{{$x}}{{{op}}}{{2}}{{a}}")
+        compile_ok(f"\\set{{x}}{{1}}\\if{{ {{$x, {op}, 2}} }}{{a}}")
 
 
 def test_typenum_emission():
@@ -227,12 +234,20 @@ def test_err_add_special_reg():
     assert "special" in compile_err("\\add{ret}{1}")
 
 
-def test_err_ifnum_left_not_var():
-    assert "must be a variable" in compile_err("\\ifnum{5}{=}{5}{a}")
+def test_err_ifnum_decommissioned():
+    assert "Unknown" in compile_err("\\ifnum{$x}{=}{1}{a}")
 
 
-def test_err_ifnum_bad_op():
-    assert "op must be" in compile_err("\\set{x}{1}\\ifnum{$x}{==}{1}{a}")
+def test_err_if_bad_op():
+    assert "Invalid relational operator" in compile_err("\\set{x}{1}\\if{ {$x, ==, 1} }{a}")
+
+
+def test_err_if_trailing_comma():
+    assert "trailing comma" in compile_err("\\set{x}{1}\\if{ {$x, =, 1,} }{a}")
+
+
+def test_err_if_empty_element():
+    assert "empty element" in compile_err("\\set{x}{1}\\if{ {$x, , 1} }{a}")
 
 
 def test_err_too_many_vars():
@@ -283,7 +298,7 @@ def test_run_counter_loop():
     assert key_events(hid, keymap.digit_keycode("3"))
 
 
-def test_run_ifnum_all_ops():
+def test_run_if_all_ops():
     cases = [
         ("=", 5, 5, True), ("=", 5, 4, False),
         ("!=", 5, 4, True), ("!=", 5, 5, False),
@@ -293,11 +308,31 @@ def test_run_ifnum_all_ops():
         (">=", 5, 5, True), (">=", 4, 5, False),
     ]
     for op, a, b, expect in cases:
-        hid = run(f"\\set{{x}}{{{a}}}\\ifnum{{$x}}{{{op}}}{{{b}}}{{y}}{{z}}")
+        hid = run(f"\\set{{x}}{{{a}}}\\if{{ {{$x, {op}, {b}}} }}{{y}}{{z}}")
         typed = [e for e in hid.events if e[0] == "kp" and e[1] in (
             keymap.letter_keycode("y"), keymap.letter_keycode("z"))]
         want = keymap.letter_keycode("y") if expect else keymap.letter_keycode("z")
         assert ("kp", want) in typed, f"{a} {op} {b} -> expect {expect}"
+        other = keymap.letter_keycode("z") if expect else keymap.letter_keycode("y")
+        assert ("kp", other) not in typed
+
+
+def test_run_if_converse_ops():
+    cases = [
+        ("=", 5, 5, True), ("=", 4, 5, False),
+        ("!=", 4, 5, True), ("!=", 5, 5, False),
+        ("<", 4, 5, True), ("<", 5, 4, False),
+        ("<=", 5, 5, True), ("<=", 5, 4, False),
+        (">", 5, 4, True), (">", 4, 5, False),
+        (">=", 5, 5, True), (">=", 4, 5, False),
+    ]
+    for op, a, b, expect in cases:
+        # immediate on left, register on right
+        hid = run(f"\\set{{x}}{{{b}}}\\if{{ {{{a}, {op}, $x}} }}{{y}}{{z}}")
+        typed = [e for e in hid.events if e[0] == "kp" and e[1] in (
+            keymap.letter_keycode("y"), keymap.letter_keycode("z"))]
+        want = keymap.letter_keycode("y") if expect else keymap.letter_keycode("z")
+        assert ("kp", want) in typed, f"{a} {op} $x({b}) -> expect {expect}"
         other = keymap.letter_keycode("z") if expect else keymap.letter_keycode("y")
         assert ("kp", other) not in typed
 
@@ -349,7 +384,7 @@ def test_disassemble_sub_and_err():
 
 def test_disassemble_stage_b():
     m = Macro(MockHID())
-    bc, err = m.compile("\\set{x}{1}\\ifnum{$x}{=}{1}{a}\\typenum{$x}")
+    bc, err = m.compile("\\set{x}{1}\\if{ {$x, =, 1} }{a}\\typenum{$x}")
     assert err is None
     out = m.disassemble(bc)
     assert "SET $r0, 1" in out
