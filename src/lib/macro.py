@@ -218,6 +218,9 @@ class Macro:
         self.hid = hid
         self.runtime = runtime  # Runtime registry; required for \use/\call/\wait/slots
         self.click_hold_ms = click_hold_ms
+        self._emit_newline = True
+        self._emit_space = True
+        self._first_executable_pos = 0
 
     def compile(self, text, config=None, click_hold_ms=None):
         """Compile macro text to bytecode. Returns (bytecode, error_msg).
@@ -248,10 +251,14 @@ class Macro:
         self._strs = []
         self._strmap = {}
         self._nest_stack = []
+        self._emit_newline = True
+        self._emit_space = True
+        self._first_executable_pos = 0
         if self.runtime is not None:
             self.runtime.clear_consts()  # const resources belong to one compilation
 
         try:
+            self._parse_preamble()
             self._emit(MAGIC, VERSION, 0)  # header placeholder, rebuilt below
             self._parse()
             self._emit(OP_END)
@@ -625,9 +632,125 @@ class Macro:
                 break
         return self._text[start : self._pos]
 
+    def _apply_preamble_directive(self, raw_line, pos):
+        """Parse and apply a preamble directive line like \\#!syntax: free."""
+        line = raw_line.rstrip("\r\n")
+        if len(line) > 3:
+            cmt_idx = line[3:].find(r"\#")
+            if cmt_idx != -1:
+                line = line[: 3 + cmt_idx]
+
+        content = line[3:].lstrip(" \t")
+        if not content.startswith("syntax:"):
+            raise MacroError(f"Unknown preamble directive: {line.strip()}", pos)
+
+        cfg_str = content[len("syntax:") :].strip()
+        if not cfg_str:
+            raise MacroError("Invalid syntax configuration", pos)
+
+        if cfg_str == "free":
+            self._emit_newline = False
+            self._emit_space = False
+        elif cfg_str == "typewriter":
+            self._emit_newline = True
+            self._emit_space = True
+        else:
+            items = cfg_str.split(",")
+            for raw_item in items:
+                item = raw_item.strip()
+                if not item:
+                    raise MacroError("Invalid syntax configuration", pos)
+                if "=" not in item:
+                    raise MacroError(f"Unknown layout preset: {item}", pos)
+                k, v = item.split("=", 1)
+                k = k.strip()
+                v = v.strip()
+                if k not in ("newline", "space"):
+                    raise MacroError(f"Unknown syntax config key: {k}", pos)
+                if v not in ("ignore", "emit"):
+                    raise MacroError(f"Unknown syntax config value: {v}", pos)
+                if k == "newline":
+                    self._emit_newline = v == "emit"
+                elif k == "space":
+                    self._emit_space = v == "emit"
+
+    def _parse_preamble(self):
+        """Scan leading comment-and-whitespace region for preamble directives."""
+        self._emit_newline = True
+        self._emit_space = True
+        pos = 0
+        text = self._text
+        n = self._len
+
+        while pos < n:
+            ch = text[pos]
+            if ch in " \t\r\n":
+                pos += 1
+                continue
+            if ch == "\\" and pos + 1 < n and text[pos + 1] in "\r\n":
+                # Line continuation: backslash + newline
+                pos += 2
+                if text[pos - 1] == "\r" and pos < n and text[pos] == "\n":
+                    pos += 1
+                continue
+            if ch == "\\" and pos + 1 < n and text[pos + 1] == "#":
+                line_start = pos
+                is_directive = pos + 2 < n and text[pos + 2] == "!"
+                pos += 2
+                while pos < n and text[pos] not in "\r\n":
+                    pos += 1
+                line_end = pos
+                if pos < n and text[pos] == "\r":
+                    pos += 1
+                if pos < n and text[pos] == "\n":
+                    pos += 1
+
+                if is_directive:
+                    self._apply_preamble_directive(text[line_start:line_end], line_start)
+                continue
+
+            # First executable token reached!
+            break
+
+        self._first_executable_pos = pos
+
+    def _skip_absorbed_whitespace(self):
+        """In free mode (or fine-grained ignore), skip layout-absorbed whitespace and comments."""
+        while self._pos < self._len:
+            ch = self._peek()
+            if ch in " \t" and not self._emit_space:
+                self._advance()
+            elif ch in "\r\n" and not self._emit_newline:
+                self._advance()
+            elif (
+                ch == "\\"
+                and self._pos + 1 < self._len
+                and self._text[self._pos + 1] in "\r\n"
+            ):
+                self._advance()
+                if self._peek() == "\r":
+                    self._advance()
+                if self._peek() == "\n":
+                    self._advance()
+            elif (
+                ch == "\\"
+                and self._pos + 1 < self._len
+                and self._text[self._pos + 1] == "#"
+            ):
+                self._pos += 2
+                while self._pos < self._len and self._text[self._pos] not in "\r\n":
+                    self._pos += 1
+                if self._peek() == "\r":
+                    self._advance()
+                if self._peek() == "\n":
+                    self._advance()
+            else:
+                break
+
     def _read_braces(self):
         r"""Read content between { and }. Escaped braces/backslashes (\{ \} \\)
         are not counted toward nesting depth."""
+        self._skip_absorbed_whitespace()
         if self._peek() != "{":
             return None
         self._advance()  # skip {
@@ -763,6 +886,7 @@ class Macro:
         ):
             raise MacroError(f"macro name conflicts with builtin: {name}", pos)
 
+        self._skip_absorbed_whitespace()
         argc = 0
         if self._peek() == "[":
             self._advance()  # skip [
@@ -782,6 +906,9 @@ class Macro:
         body = self._read_braces()
         if body is None:
             raise MacroError("def requires {body}", self._pos)
+        if r"\#!" in body:
+            idx = body.find(r"\#!")
+            raise MacroError("directive in executable code", pos + idx)
         self._defs[name] = (argc, body)
 
     def _nest_into(self, body, what, cont):
@@ -854,6 +981,13 @@ class Macro:
             raise MacroError(f"macro expansion exceeds {MAX_MACRO_EXPAND} levels", pos)
         argc, body = self._defs[name]
         args = []
+        if argc == 0:
+            if (
+                self._peek() == "{"
+                and self._pos + 1 < self._len
+                and self._text[self._pos + 1] == "}"
+            ):
+                self._pos += 2
         for _ in range(argc):
             a = self._read_braces()
             if a is None:
@@ -1419,6 +1553,61 @@ class Macro:
             raise MacroError(f"rep nesting exceeds {MAX_RUNTIME_NEST} levels", pos)
         self._nest_into(body, "rep body", ("rep", count))
 
+    def _cmd_text(self, pos):
+        """Verbatim text block: \\text{} payload \\endtext{}"""
+        if (
+            self._peek() != "{"
+            or self._pos + 1 >= self._len
+            or self._text[self._pos + 1] != "}"
+        ):
+            raise MacroError(r"\text requires {}", pos)
+        self._pos += 2  # skip {}
+
+        payload_start = self._pos
+        term = self._text.find(r"\endtext{}", payload_start)
+        if term == -1:
+            raise MacroError("Unterminated text block", pos)
+
+        i = payload_start
+        text = self._text
+        while i < term:
+            ch = text[i]
+            if ch == "\r":
+                if i + 1 < term and text[i + 1] == "\n":
+                    self._emit(OP_KEY, ENTER)
+                    i += 2
+                    continue
+                else:
+                    self._emit(OP_KEY, ENTER)
+                    i += 1
+                    continue
+            elif ch == "\n":
+                self._emit(OP_KEY, ENTER)
+                i += 1
+                continue
+            elif ch == "\t":
+                self._emit(OP_KEY, TAB)
+                i += 1
+                continue
+            elif 32 <= ord(ch) <= 126:
+                self._emit(OP_CHAR, ord(ch))
+                i += 1
+                continue
+            else:
+                raise MacroError(f"Invalid char: 0x{ord(ch):02X}", i)
+
+        self._pos = term + len(r"\endtext{}")
+
+    def _cmd_endtext(self, pos):
+        """Mismatched \\endtext{} outside text block."""
+        if (
+            self._peek() != "{"
+            or self._pos + 1 >= self._len
+            or self._text[self._pos + 1] != "}"
+        ):
+            raise MacroError(r"\endtext requires {}", pos)
+        raise MacroError("endtext without text block", pos)
+
     def _cmd_kdown(self, pos):
         arg = self._read_braces()
         if arg is None:
@@ -1577,7 +1766,16 @@ class Macro:
                 # Comment: \# to end of line; the newline itself is consumed
                 # (no ENTER emitted). Use \enter to type Enter explicitly.
                 if next_ch == "#":
+                    pos_directive = self._pos - 1
                     self._advance()  # skip #
+                    if self._peek() == "!":
+                        if (
+                            self._nest_stack
+                            or pos_directive >= self._first_executable_pos
+                        ):
+                            raise MacroError(
+                                "directive in executable code", pos_directive
+                            )
                     while self._pos < self._len and self._text[self._pos] not in "\r\n":
                         self._pos += 1
                     if self._peek() == "\r":
@@ -1599,21 +1797,28 @@ class Macro:
             # Regular character
             if ch == "\n":
                 # Unix/Mac line ending - emit ENTER
-                self._emit(OP_KEY, ENTER)
+                if self._emit_newline:
+                    self._emit(OP_KEY, ENTER)
             elif ch == "\r":
                 # Windows CR or old Mac - check if followed by \n
                 if self._pos + 1 < self._len and self._text[self._pos + 1] == "\n":
                     # Windows \r\n - emit ENTER and skip both chars
-                    self._emit(OP_KEY, ENTER)
+                    if self._emit_newline:
+                        self._emit(OP_KEY, ENTER)
                     self._advance()  # skip \r
                     self._advance()  # skip \n
                     continue
                 else:
                     # Standalone \r - emit ENTER
-                    self._emit(OP_KEY, ENTER)
+                    if self._emit_newline:
+                        self._emit(OP_KEY, ENTER)
             elif ch == "\t":
-                self._emit(OP_KEY, TAB)
-            elif ord(ch) >= 32 and ord(ch) <= 126:
+                if self._emit_space:
+                    self._emit(OP_KEY, TAB)
+            elif ch == " ":
+                if self._emit_space:
+                    self._emit(OP_CHAR, 0x20)
+            elif 33 <= ord(ch) <= 126:
                 self._emit(OP_CHAR, ord(ch))
             else:
                 raise MacroError(f"Invalid char: 0x{ord(ch):02X}", self._pos)

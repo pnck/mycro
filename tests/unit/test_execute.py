@@ -293,3 +293,19 @@ def test_execute_rejects_bad_header():
         asyncio.run(m.execute(bytes([0xA5, 0x03, 0, OP_END])))
     with pytest.raises(ValueError, match="Bytecode version mismatch"):
         asyncio.run(m.execute(bytes([0x99, VERSION, 0, OP_END])))
+
+
+def test_execute_text_block_in_free_mode():
+    hid = MockHID()
+    m = Macro(hid)
+    text = (
+        "\\#!syntax: free\n"
+        "\\text{}hello world\n\\endtext{}\n"
+        "\\enter\n"
+    )
+    bc, err = m.compile(text)
+    assert err is None
+    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    kp_events = [e[1] for e in hid.events if e[0] == "kp"]
+    assert keymap.ENTER in kp_events
+    assert 0x2C in kp_events  # space keycode

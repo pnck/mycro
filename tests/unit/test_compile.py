@@ -345,3 +345,256 @@ def test_header_rejects_mismatched_magic_or_version():
         m.disassemble(bytes([0xA5, 0x03, 0, OP_END]))
     with pytest.raises(ValueError, match="Bytecode version mismatch"):
         m.disassemble(bytes([0x99, VERSION, 0, OP_END]))
+
+
+# --- DSL v4: Step 3 Preamble & Layout Modes ---
+
+def test_preamble_typewriter_default_and_explicit():
+    # Default is typewriter: spaces emit OP_CHAR 0x20, newlines emit ENTER
+    bc_def = compile_ok("a b\nc")
+    assert bc_def == H + bytes([
+        OP_CHAR, ord("a"), OP_CHAR, 0x20, OP_CHAR, ord("b"),
+        OP_KEY, keymap.ENTER,
+        OP_CHAR, ord("c"),
+        OP_END,
+    ])
+    # Explicit typewriter directive
+    bc_exp = compile_ok("\\#!syntax: typewriter\na b\nc")
+    assert bc_exp == H + bytes([
+        OP_CHAR, ord("a"), OP_CHAR, 0x20, OP_CHAR, ord("b"),
+        OP_KEY, keymap.ENTER,
+        OP_CHAR, ord("c"),
+        OP_END,
+    ])
+
+
+def test_preamble_free_mode_absorbs_whitespace():
+    # In free mode, spaces, tabs, and newlines are absorbed
+    text = "\\#!syntax: free\n  a   b  \t  \n  c  \n"
+    bc = compile_ok(text)
+    assert bc == H + bytes([
+        OP_CHAR, ord("a"), OP_CHAR, ord("b"), OP_CHAR, ord("c"), OP_END,
+    ])
+
+
+def test_preamble_free_mode_explicit_keystrokes():
+    # In free mode, explicit commands emit target keystrokes
+    text = "\\#!syntax: free\na\\space{}b\\tab{}c\\enter"
+    bc = compile_ok(text)
+    assert bc == H + bytes([
+        OP_CHAR, ord("a"),
+        OP_CHAR, 0x20,
+        OP_CHAR, ord("b"),
+        OP_KEY, keymap.TAB,
+        OP_CHAR, ord("c"),
+        OP_KEY, keymap.ENTER,
+        OP_END,
+    ])
+
+
+def test_preamble_fine_grained_newline_ignore_space_emit():
+    text = "\\#!syntax: newline=ignore, space=emit\na b\nc d"
+    bc = compile_ok(text)
+    assert bc == H + bytes([
+        OP_CHAR, ord("a"), OP_CHAR, 0x20, OP_CHAR, ord("b"),
+        OP_CHAR, ord("c"), OP_CHAR, 0x20, OP_CHAR, ord("d"),
+        OP_END,
+    ])
+
+
+def test_preamble_fine_grained_newline_emit_space_ignore():
+    text = "\\#!syntax: newline=emit, space=ignore\na b\nc d"
+    bc = compile_ok(text)
+    assert bc == H + bytes([
+        OP_CHAR, ord("a"), OP_CHAR, ord("b"),
+        OP_KEY, keymap.ENTER,
+        OP_CHAR, ord("c"), OP_CHAR, ord("d"),
+        OP_END,
+    ])
+
+
+def test_preamble_fine_grained_single_key_inherits_default():
+    # newline=ignore inherits space=emit
+    bc1 = compile_ok("\\#!syntax: newline=ignore\na b\nc")
+    assert bc1 == H + bytes([
+        OP_CHAR, ord("a"), OP_CHAR, 0x20, OP_CHAR, ord("b"),
+        OP_CHAR, ord("c"),
+        OP_END,
+    ])
+    # space=ignore inherits newline=emit
+    bc2 = compile_ok("\\#!syntax: space=ignore\na b\nc")
+    assert bc2 == H + bytes([
+        OP_CHAR, ord("a"), OP_CHAR, ord("b"),
+        OP_KEY, keymap.ENTER,
+        OP_CHAR, ord("c"),
+        OP_END,
+    ])
+
+
+def test_preamble_multiple_directives_override_per_key():
+    text = "\\#!syntax: free\n\\#!syntax: newline=emit\na\nb"
+    bc = compile_ok(text)
+    assert bc == H + bytes([
+        OP_CHAR, ord("a"), OP_KEY, keymap.ENTER, OP_CHAR, ord("b"), OP_END,
+    ])
+
+
+def test_preamble_comments_and_line_continuations():
+    text = (
+        "\\# Leading header comment\n"
+        "\\\n"  # line continuation
+        "\\#!syntax: free \\# trailing comment\n"
+        "  x  \n"
+    )
+    bc = compile_ok(text)
+    assert bc == H + bytes([OP_CHAR, ord("x"), OP_END])
+
+
+def test_preamble_errors_in_executable_code():
+    err1 = compile_err("echo\n\\#!syntax: free")
+    assert "directive in executable code" in err1
+
+    err2 = compile_err("\\def{foo}{\\#!syntax: free}")
+    assert "directive in executable code" in err2
+
+    err3 = compile_err("\\rep{2}{\\#!syntax: free}")
+    assert "directive in executable code" in err3
+
+
+def test_preamble_syntax_errors():
+    assert "Unknown preamble directive" in compile_err("\\#!unknown_dir: free")
+    assert "Unknown layout preset" in compile_err("\\#!syntax: unknown_preset")
+    assert "Unknown syntax config key" in compile_err("\\#!syntax: indents=ignore")
+    assert "Unknown syntax config value" in compile_err("\\#!syntax: newline=discard")
+    assert "Invalid syntax configuration" in compile_err("\\#!syntax:")
+    assert "Invalid syntax configuration" in compile_err("\\#!syntax: newline=ignore,")
+
+
+# --- DSL v4: Step 3 Verbatim Text Blocks ---
+
+def test_text_block_basic():
+    bc = compile_ok('\\text{}echo "Hello World"\\endtext{}')
+    expected_payload = b'echo "Hello World"'
+    expected_ops = []
+    for b in expected_payload:
+        expected_ops.extend([OP_CHAR, b])
+    assert bc == H + bytes(expected_ops + [OP_END])
+
+
+def test_text_block_in_free_mode_preserves_spaces():
+    text = '\\#!syntax: free\n\\text{}a   b\\endtext{}'
+    bc = compile_ok(text)
+    assert bc == H + bytes([
+        OP_CHAR, ord("a"),
+        OP_CHAR, 0x20, OP_CHAR, 0x20, OP_CHAR, 0x20,
+        OP_CHAR, ord("b"),
+        OP_END,
+    ])
+
+
+def test_text_block_line_endings_and_tab():
+    # LF emits ENTER, CRLF emits single ENTER, standalone CR emits ENTER, Tab emits TAB
+    text = "\\text{}a\nb\r\nc\rd\te\\endtext{}"
+    bc = compile_ok(text)
+    assert bc == H + bytes([
+        OP_CHAR, ord("a"),
+        OP_KEY, keymap.ENTER,
+        OP_CHAR, ord("b"),
+        OP_KEY, keymap.ENTER,
+        OP_CHAR, ord("c"),
+        OP_KEY, keymap.ENTER,
+        OP_CHAR, ord("d"),
+        OP_KEY, keymap.TAB,
+        OP_CHAR, ord("e"),
+        OP_END,
+    ])
+
+
+def test_text_block_literal_characters():
+    # Commands, comments, escapes, and variables are literal characters inside text block
+    text = "\\text{}\\enter \\#comment $var {braces} \\\\endtext\\endtext{}"
+    bc = compile_ok(text)
+    payload = b"\\enter \\#comment $var {braces} \\\\endtext"
+    expected = []
+    for b in payload:
+        expected.extend([OP_CHAR, b])
+    assert bc == H + bytes(expected + [OP_END])
+
+
+def test_text_block_adjacent_empty_braces_required():
+    assert "\\text requires {}" in compile_err("\\text foo")
+    assert "\\text requires {}" in compile_err("\\text{foo}")
+    assert "\\text requires {}" in compile_err("\\text {}")
+    assert "\\endtext requires {}" in compile_err("\\endtext foo")
+    assert "\\endtext requires {}" in compile_err("\\endtext{foo}")
+    assert "\\endtext requires {}" in compile_err("\\endtext {}")
+
+
+def test_text_block_mismatched_and_unterminated():
+    assert "endtext without text block" in compile_err("\\endtext{}")
+    assert "Unterminated text block" in compile_err("\\text{}hello")
+    assert "Unterminated text block" in compile_err("\\text{}hello\\endtext")
+
+
+def test_text_block_macro_substitution():
+    text = "\\def{gg}[1]{\\text{}#1\\endtext{}}\\gg{echo 'hi'}"
+    bc = compile_ok(text)
+    payload = b"echo 'hi'"
+    expected = []
+    for b in payload:
+        expected.extend([OP_CHAR, b])
+    assert bc == H + bytes(expected + [OP_END])
+
+
+def test_text_block_macro_substitution_with_terminator_in_arg():
+    # Literal \endtext{} in argument terminates the text block
+    text = "\\def{gg}[1]{\\text{}#1\\endtext{}}\\gg{first\\endtext{}second}"
+    err = compile_err(text)
+    assert "endtext without text block" in err
+
+
+def test_text_block_reserved_command_names():
+    assert "macro name conflicts with builtin: text" in compile_err("\\def{text}{a}")
+    assert "macro name conflicts with builtin: endtext" in compile_err("\\def{endtext}{a}")
+
+
+def test_empty_group_separator_in_macro_call():
+    text = "\\def{go}{\\enter}\\go{}\\a{}"
+    bc = compile_ok(text)
+    assert bc == H + bytes([OP_KEY, keymap.ENTER, OP_CHAR, ord("a"), OP_END])
+
+
+def test_text_block_invalid_char():
+    assert "Invalid char: 0x01" in compile_err("\\text{}\x01\\endtext{}")
+
+
+def test_spec_section_3_4_normative_examples():
+    # Example 1: Structured source
+    ex1 = (
+        "\\# Structured source\n"
+        "\\#!syntax: free\n"
+        "\\def{submit_form}[0]{\n"
+        "  \\kdown{ctrl}\n"
+        "  \\delay{50ms}\n"
+        "  \\kup{ctrl}\n"
+        "  \\enter          \\# Explicit Enter\n"
+        "}\n"
+    )
+    compile_ok(ex1)
+
+    # Example 2: Whitespace-bearing text in free mode
+    ex2 = (
+        "\\# Whitespace-bearing text in free mode\n"
+        "\\#!syntax: free\n"
+        '\\text{}echo "Hello World"\\endtext{}\n'
+        "\\enter\n"
+    )
+    compile_ok(ex2)
+
+    # Example 3: Default typewriter layout
+    ex3 = (
+        "\\# Default typewriter layout\n"
+        'echo "Hello MYCRO"\n'
+        "ls -la\n"
+    )
+    compile_ok(ex3)
