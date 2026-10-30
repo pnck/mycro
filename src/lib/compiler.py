@@ -16,7 +16,7 @@ from bytecode import (
     MAX_REGS, RECT_MAX_EDGE, REG_ERR, REG_SCRATCH, REG_TIMEOUT, REG_RET,
     CC_OPS, CONVERSE_CC, INVERT_CC,
     MAX_BYTECODE, MAX_RUNTIME_NEST, MAX_MACRO_EXPAND, MAX_PRED_NEST,
-    MAX_COMBO_KEYS, DEFAULT_CLICK_HOLD_MS, _PRINTABLE_LONE_KEYS,
+    MAX_COMBO_KEYS, MAX_SLOTS, DEFAULT_WAIT_TIMEOUT_MS, DEFAULT_CLICK_HOLD_MS, _PRINTABLE_LONE_KEYS,
     _is_alpha, _is_alnum,
     KEYS, MODS, MOUSE_BTNS,
     MacroError,
@@ -124,6 +124,7 @@ class Compiler:
         self._emit_newline = True
         self._emit_space = True
         self._first_executable_pos = 0
+        self._used_namespaces = set()
     def compile(self, text, config=None, click_hold_ms=None):
         """Compile macro text to bytecode. Returns (bytecode, error_msg).
 
@@ -156,6 +157,7 @@ class Compiler:
         self._emit_newline = True
         self._emit_space = True
         self._first_executable_pos = 0
+        self._used_namespaces.clear()
         if self.runtime is not None:
             self.runtime.clear_consts()  # const resources belong to one compilation
 
@@ -743,8 +745,14 @@ class Compiler:
             sig, sep, field = name.rpartition(".")
             if not sep or not sig or not field:
                 raise MacroError(f"Invalid slot reference: {name}", pos)
-            if self.runtime is None or not self.runtime.has_slot_ns(sig):
-                raise MacroError(f"Unknown signal: {sig}", pos)
+            ns = sig.split(".")[0]
+            if self.runtime is not None:
+                if (
+                    ns not in self._used_namespaces
+                    and not self.runtime.has_slot_ns(sig)
+                    and not self.runtime.has_signal(sig)
+                ):
+                    raise MacroError(f"unknown signal namespace: {ns}", pos)
             reg = self._alloc_temp(reserved, pos)
             self._emit(
                 OP_READSLOT, reg, self._str_idx(sig, pos), self._str_idx(field, pos)
@@ -1174,6 +1182,7 @@ class Compiler:
             raise MacroError("use requires a runtime registry", pos)
         if not self.runtime.has_namespace(ns):
             raise MacroError(f"Unknown namespace: {ns}", pos)
+        self._used_namespaces.add(ns)
 
     def _cmd_call(self, pos):
         r"""\call{ns.fn}{arg}... — invoke a runtime extension function."""
@@ -1277,36 +1286,118 @@ class Compiler:
                 f"{target}: arg must hold a {typ} handle (got {vt})", pos)
         return (TAG_REG, reg)
 
+    def _parse_wait_timeout(self, s, pos):
+        r"""Parse \wait[timeout]: DimLiteral | DecLiteral | ScalarRef."""
+        s = s.strip()
+        if not s:
+            raise MacroError("Empty wait timeout", pos)
+        if s.startswith("$"):
+            return (TAG_REG, self._parse_var_ref(s, pos))
+
+        neg = False
+        if s.startswith("-"):
+            neg = True
+            s = s[1:].strip()
+        elif s.startswith("+"):
+            s = s[1:].strip()
+
+        if s.endswith("ms"):
+            inner = s[:-2].strip()
+            if not inner.isdigit():
+                raise MacroError(f"Invalid wait timeout: {s}", pos)
+            ms = int(inner)
+        elif s.endswith("s"):
+            inner = s[:-1].strip()
+            if "." in inner:
+                int_part, dot, frac_part = inner.partition(".")
+                if not int_part.isdigit() or not frac_part.isdigit():
+                    raise MacroError(f"Invalid wait timeout: {s}", pos)
+                k = len(frac_part)
+                N = int(int_part) * (10 ** k) + int(frac_part)
+                ms = (2000 * N + (10 ** k)) // (2 * (10 ** k))
+            else:
+                if not inner.isdigit():
+                    raise MacroError(f"Invalid wait timeout: {s}", pos)
+                ms = int(inner) * 1000
+        elif "." in s:
+            try:
+                ms = int(float(s) * 1000)
+            except ValueError:
+                raise MacroError(f"Invalid wait timeout: {s}", pos)
+        elif s.startswith("0x") or s.startswith("0X"):
+            try:
+                ms = int(s[2:], 16)
+            except ValueError:
+                raise MacroError(f"Invalid wait timeout: {s}", pos)
+        elif s.isdigit():
+            ms = int(s)
+        else:
+            raise MacroError(f"Invalid wait timeout: {s}", pos)
+
+        if neg:
+            ms = -ms
+
+        if not (-2147483648 <= ms <= 2147483647):
+            raise MacroError("wait timeout out of i32 range", pos)
+        return (TAG_IMM, ms)
+
     def _cmd_wait(self, pos):
-        r"""\wait{signal}[{sec|$var}] — suspend until a runtime signal fires."""
+        r"""\wait[timeout]{ $slot.<sig>.<field> } — suspend until slot event arrives."""
+        self._skip_absorbed_whitespace()
+        timeout = None
+        if self._peek() == "[":
+            self._advance()  # skip [
+            start = self._pos
+            while self._peek() is not None and self._peek() != "]":
+                self._advance()
+            if self._peek() != "]":
+                raise MacroError("Unmatched [ in wait timeout", start)
+            t_str = self._text[start : self._pos].strip()
+            self._advance()  # skip ]
+            timeout = self._parse_wait_timeout(t_str, start)
+        else:
+            timeout = (TAG_IMM, DEFAULT_WAIT_TIMEOUT_MS)
+
         arg = self._read_braces()
         if arg is None:
-            raise MacroError("wait requires {signal}", self._pos)
-        sig = arg.strip().lower()
-        if self.runtime is None:
-            raise MacroError("wait requires a runtime registry", pos)
-        if not self.runtime.has_signal(sig):
-            raise MacroError(f"Unknown signal: {sig}", pos)
+            raise MacroError("wait requires { $slot.<sig>.<field> }", self._pos)
+        s = arg.strip()
+        if not s.startswith("$"):
+            raise MacroError("wait target must be a slot reference ($slot.<sig>.<field>)", pos)
 
-        t = self._read_braces()
-        if t is None:
-            timeout = (TAG_IMM, 0)  # 0 = wait forever
+        if s.startswith("${"):
+            end = s.find("}")
+            if end == -1:
+                raise MacroError("Unmatched ${ in slot reference", pos)
+            name = s[2:end].strip()
+            if s[end + 1 :].strip():
+                raise MacroError(f"Unexpected text after ${{{name}}}", pos)
         else:
-            ts = t.strip()
-            if ts.startswith("$"):
-                timeout = (TAG_REG, self._parse_var_ref(ts, pos))
-            else:
-                try:
-                    timeout = (TAG_IMM, max(0, min(4294967295, int(float(ts) * 1000))))
-                except ValueError:
-                    raise MacroError("Invalid wait timeout", pos)
+            name = s[1:].strip()
 
-        self._emit(OP_WAIT, self._str_idx(sig, pos))
-        if timeout[0] == TAG_REG:
-            self._emit(TAG_REG, timeout[1])
-        else:
-            self._emit(TAG_IMM)
-            self._emit_i32(timeout[1])
+        if name.startswith("slot."):
+            name = name[5:]
+
+        if "." not in name:
+            raise MacroError(f"wait target must be a slot reference ($slot.<sig>.<field>): {s}", pos)
+
+        sig, sep, field = name.rpartition(".")
+        if not sig or not field:
+            raise MacroError(f"Invalid slot reference: {s}", pos)
+
+        ns = sig.split(".")[0]
+        if self.runtime is not None:
+            if (
+                ns not in self._used_namespaces
+                and not self.runtime.has_slot_ns(sig)
+                and not self.runtime.has_signal(sig)
+            ):
+                raise MacroError(f"unknown signal namespace: {ns}", pos)
+
+        sig_idx = self._str_idx(sig, pos)
+        field_idx = self._str_idx(field, pos)
+        self._emit(OP_WAIT, sig_idx, field_idx)
+        self._emit_typed(timeout, 4)
 
     def _cmd_rep(self, pos):
         arg = self._read_braces()

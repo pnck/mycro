@@ -116,7 +116,8 @@ def _h_event_push(payload, ctx, _env):
             return ("field", "'fields' must map names to i32 values")
     if not ctx.runtime.has_signal(name):
         return ("unknown_signal", "no signal registered: {}".format(name))
-    ctx.runtime.fire_signal(name, fields)
+    if not ctx.runtime.fire_signal(name, fields):
+        return ("resource_exhausted", "slot capacity exhausted")
     return ("ok", {})
 
 

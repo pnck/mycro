@@ -203,8 +203,9 @@ class VM:
                 i += 4
             elif op == OP_WAIT:
                 sig = strs[bytecode[i + 1]]
-                i += 2
-                lines.append(f"{prefix}WAIT {sig} {fmt_arg(4)}ms")
+                field = strs[bytecode[i + 2]]
+                i += 3
+                lines.append(f"{prefix}WAIT $slot.{sig}.{field} {fmt_arg(4)}ms")
             elif op == OP_CALL_EXT:
                 ns = strs[bytecode[i + 1]]
                 fn = strs[bytecode[i + 2]]
@@ -466,10 +467,11 @@ class VM:
 
                 elif op == OP_WAIT:
                     sig = strs[read_u8()]
+                    field = strs[read_u8()]
                     timeout = read_arg(4)
                     if runtime is None:
                         raise RuntimeError("WAIT without runtime registry")
-                    ok = await runtime.wait_signal(sig, clamp(timeout, 0, 4294967295))
+                    ok = await runtime.wait_slot(sig, field, timeout)
                     runtime.reg_write(REG_TIMEOUT, None)
                     regs[REG_TIMEOUT] = 0 if ok else 1
 

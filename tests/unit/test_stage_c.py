@@ -203,29 +203,33 @@ def test_call_requires_runtime():
 # --- \wait emission ---
 
 def test_wait_forever():
-    bc = compile_ok("\\wait{go}")
+    bc = compile_ok("\\wait{$slot.go.val}")
     strs, code = header_strs(bc)
-    idx = strs.index("go")
-    assert bc[code:] == bytes([OP_WAIT, idx, TAG_IMM, 0, 0, 0, 0, OP_END])
+    sig_idx = strs.index("go")
+    field_idx = strs.index("val")
+    # omitted timeout lowers to DEFAULT_WAIT_TIMEOUT_MS = 2147483647 (0x7FFFFFFF)
+    assert bc[code:] == bytes([OP_WAIT, sig_idx, field_idx, TAG_IMM, 0xFF, 0xFF, 0xFF, 0x7F, OP_END])
 
 
 def test_wait_timeout_imm():
-    bc = compile_ok("\\wait{go}{2}")
+    bc = compile_ok("\\wait[2s]{$slot.go.val}")
     strs, code = header_strs(bc)
-    assert bc[code + 2 :] == bytes([TAG_IMM, 2000 & 0xFF, 2000 >> 8, 0, 0, OP_END])
+    assert bc[code + 3 :] == bytes([TAG_IMM, 2000 & 0xFF, 2000 >> 8, 0, 0, OP_END])
 
 
 def test_wait_timeout_var():
-    bc = compile_ok("\\set{t}{500}\\wait{go}{$t}")
+    bc = compile_ok("\\set{t}{500}\\wait[$t]{$slot.go.val}")
     strs, code = header_strs(bc)
     tail = bc[code:]
     at = tail.index(OP_WAIT)
     assert tail[at + 1] == strs.index("go")
-    assert tail[at + 2] == TAG_REG and tail[at + 3] == 0
+    assert tail[at + 2] == strs.index("val")
+    assert tail[at + 3] == TAG_REG and tail[at + 4] == 0
 
 
 def test_wait_unknown_signal():
-    assert "Unknown signal" in compile_err("\\wait{nope}")
+    assert "wait target must be a slot reference" in compile_err("\\wait{nope}")
+    assert "unknown signal namespace" in compile_err("\\wait{$slot.nope.val}").lower()
 
 
 # --- slots ---
@@ -245,7 +249,7 @@ def test_slot_readslot_emission():
 
 
 def test_slot_unknown_ns():
-    assert "Unknown signal" in compile_err("\\set{x}{0}\\add{x}{$nope.f}")
+    assert "unknown signal namespace" in compile_err("\\set{x}{0}\\add{x}{$nope.f}").lower()
 
 
 def test_typenum_slot():
@@ -308,13 +312,16 @@ def test_add_slot_target_rejected():
     assert "signal slot" in compile_err("\\set{x}{0}\\add{$go.f}{1}")
 
 
-def test_wait_ignores_stale_latch():
-    # A fire with no waiter must NOT wake a later \wait: waits observe the
-    # next fire only (slot values stay readable as last-published state)
+def test_wait_consumes_pending_latch():
+    # In v4, receptor slot has arrival latch pending=1 upon projection.
+    # A prior projection is consumed immediately by \wait ($timeout = 0).
     rt = make_runtime()
     rt.fire_signal("go", {"n": 1})
-    hid = run("\\wait{go}{0.05}\\typenum{$timeout}", rt=rt)  # must time out
-    assert ("kp", keymap.digit_keycode("1")) in hid.events
+    hid = run("\\wait[50ms]{$slot.go.n}\\typenum{$timeout}", rt=rt)
+    assert ("kp", keymap.digit_keycode("0")) in hid.events
+    # Subsequent wait on consumed latch will time out if no new fire arrives
+    hid2 = run("\\wait[10ms]{$slot.go.n}\\typenum{$timeout}", rt=rt)
+    assert ("kp", keymap.digit_keycode("1")) in hid2.events
 
 
 # --- runtime: ext calls ---
@@ -347,7 +354,7 @@ def test_slot_ref_dotted_signal_name():
 
 
 def test_slot_ref_dotted_signal_unknown_is_error():
-    assert "Unknown signal" in compile_err("\\set{r}{$net.nope.x}")
+    assert "unknown signal namespace" in compile_err("\\set{r}{$net.nope.x}").lower()
 
 
 def test_run_call_str_arg_and_handle_flow():
@@ -391,7 +398,7 @@ def test_run_wait_fired():
     rt = make_runtime()
     hid = MockHID()
     m = Macro(hid, rt)
-    bc, err = m.compile("\\wait{go}\\typenum{$timeout}")
+    bc, err = m.compile("\\wait{$slot.go.val}\\typenum{$timeout}")
     assert err is None
 
     async def scenario():
@@ -405,7 +412,7 @@ def test_run_wait_fired():
 
 
 def test_run_wait_timeout():
-    hid = run("\\wait{go}{0.05}\\typenum{$timeout}")
+    hid = run("\\wait[50ms]{$slot.go.val}\\typenum{$timeout}")
     assert ("kp", keymap.digit_keycode("1")) in hid.events  # timed out
 
 
@@ -413,7 +420,7 @@ def test_run_wait_then_slot():
     rt = make_runtime()
     hid = MockHID()
     m = Macro(hid, rt)
-    bc, err = m.compile("\\wait{go}\\typenum{$go.code}")
+    bc, err = m.compile("\\wait{$slot.go.code}\\typenum{$go.code}")
     assert err is None
 
     async def scenario():
@@ -435,7 +442,7 @@ def test_run_abort_during_wait():
     rt = make_runtime()
     hid = MockHID()
     m = Macro(hid, rt)
-    bc, err = m.compile("\\kdown{ctrl}\\wait{go}")
+    bc, err = m.compile("\\kdown{ctrl}\\wait{$slot.go.val}")
     assert err is None
 
     async def scenario():
@@ -455,13 +462,12 @@ def test_run_abort_during_wait():
 
 def test_disassemble_stage_c():
     m = Macro(MockHID(), make_runtime())
-    bc, err = m.compile("\\call{img.peek}{1,2}\\wait{go}{3}\\typenum{$go.code}")
-    # note: ext args are separate brace groups, not comma
-    bc, err = m.compile("\\call{img.peek}{1}{2}\\wait{go}{3}\\typenum{$go.code}")
+    # ext args are separate brace groups, wait uses v4 syntax
+    bc, err = m.compile("\\call{img.peek}{1}{2}\\wait[3s]{$slot.go.code}\\typenum{$go.code}")
     assert err is None
     out = m.disassemble(bc)
     assert "CALL img.peek(1, 2)" in out
-    assert "WAIT go 3000ms" in out
+    assert "WAIT $slot.go.code 3000ms" in out
     assert "READSLOT" in out and "go.code" in out
 
 

@@ -40,7 +40,7 @@ OP_BRA = 0x22       # cc, reg, typed(i32) rhs, u16 off — jump if cond FALSE
 OP_JMP = 0x23       # u16 off
 OP_SUB = 0x24       # reg, typed(i32)
 OP_READSLOT = 0x28  # reg, sig_str, field_str — read signal slot into register
-OP_WAIT = 0x29      # sig_str, typed(u32) timeout_ms (0 = forever)
+OP_WAIT = 0x29      # sig_str, field_str, typed(i32) timeout_ms
 OP_CALL_EXT = 0x2A  # ns_str, fn_str, argc, typed args...
 OP_TYPEREG = 0x2B   # reg — render register as decimal keystrokes (DSL \typenum)
 OP_END = 0xFF
@@ -70,6 +70,8 @@ MAX_RUNTIME_NEST = 8
 MAX_MACRO_EXPAND = 16
 MAX_PRED_NEST = 4
 MAX_COMBO_KEYS = 8
+MAX_SLOTS = 256
+DEFAULT_WAIT_TIMEOUT_MS = 2147483647
 DEFAULT_CLICK_HOLD_MS = 10
 
 # Printable lone keys lowering table

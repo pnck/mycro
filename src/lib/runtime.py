@@ -25,6 +25,7 @@ except AttributeError:  # very old asyncio
 # addresses; the contract is spec/vm.md Part I §2)
 REG_RET = 0xFF
 REG_TIMEOUT = 0xFE
+MAX_SLOTS = 256
 
 # --- static backing store (spec/vm.md Appendix A) ---
 # Profile constants, same standing as MAX_REGS: platform budgets, not
@@ -117,7 +118,8 @@ class Runtime:
     def __init__(self):
         self._ns = {}  # ns -> {fn_name: (arg_types, return_type, callable)}
         self._signals = {}  # name -> asyncio.Event
-        self._slots = {}  # name -> {field: int}
+        self._slots = {}  # (name, field) -> {"val": int, "pending": int}
+        self._waiters = {}  # (name, field) -> list of asyncio.Event
         # handle ownership (spec/vm.md Part II §4)
         self._handles = {}      # id -> {"kind": str, "data": any}
         self._handle_seq = 0
@@ -170,10 +172,39 @@ class Runtime:
         self._signals[name] = asyncio.Event()
 
     def fire_signal(self, name, fields=None):
-        """Publish slot fields and wake waiters (event sources call this)."""
-        if fields:
-            self._slots[name] = dict(fields)
-        self._signals[name].set()
+        """Publish slot fields and wake waiters per spec/runtime.md §1.1 #2.
+        Returns True on success, False if MAX_SLOTS capacity exhausted."""
+        if not fields:
+            key = (name, "val")
+            if key not in self._slots:
+                if len(self._slots) >= MAX_SLOTS:
+                    return False
+                self._slots[key] = {"val": 0, "pending": 1}
+            else:
+                self._slots[key]["pending"] = 1
+            for ev in list(self._waiters.get(key, [])):
+                ev.set()
+            if name in self._signals:
+                self._signals[name].set()
+            return True
+
+        new_count = sum(1 for k in fields if (name, k) not in self._slots)
+        if len(self._slots) + new_count > MAX_SLOTS:
+            return False
+
+        for k, v in fields.items():
+            key = (name, k)
+            if key not in self._slots:
+                self._slots[key] = {"val": v, "pending": 1}
+            else:
+                self._slots[key]["val"] = v
+                self._slots[key]["pending"] = 1
+            for ev in list(self._waiters.get(key, [])):
+                ev.set()
+
+        if name in self._signals:
+            self._signals[name].set()
+        return True
 
     # --- compiler queries ---
 
@@ -198,7 +229,53 @@ class Runtime:
 
     def read_slot(self, name, field):
         """Slot reads are 'last published' semantics; missing field -> 0."""
-        return self._slots.get(name, {}).get(field, 0)
+        slot = self._slots.get((name, field))
+        return slot["val"] if slot is not None else 0
+
+    def slot_pending(self, name, field):
+        """Arrival latch status (0 or 1)."""
+        slot = self._slots.get((name, field))
+        return slot["pending"] if slot is not None else 0
+
+    async def wait_slot(self, name, field, timeout_ms):
+        """Wait on slot receptor per spec/runtime.md §1.1 #3:
+        - If slot.pending == 1: consume immediately (pending=0), return True ($timeout=0).
+        - If slot.pending == 0 and timeout_ms <= 0: return False ($timeout=1).
+        - If slot.pending == 0 and timeout_ms > 0: suspend until projection or timeout.
+          Re-inspect slot.pending upon timeout/wake. Return True if arrived, False if timeout.
+        """
+        key = (name, field)
+        slot = self._slots.get(key)
+        if slot is None:
+            if len(self._slots) >= MAX_SLOTS:
+                return False
+            slot = {"val": 0, "pending": 0}
+            self._slots[key] = slot
+
+        if slot["pending"] == 1:
+            slot["pending"] = 0
+            return True
+
+        if timeout_ms <= 0:
+            return False
+
+        ev = asyncio.Event()
+        waiters = self._waiters.setdefault(key, [])
+        waiters.append(ev)
+        try:
+            await asyncio.wait_for(ev.wait(), timeout_ms / 1000.0)
+        except _TimeoutError:
+            pass
+        finally:
+            try:
+                waiters.remove(ev)
+            except ValueError:
+                pass
+
+        if slot["pending"] == 1:
+            slot["pending"] = 0
+            return True
+        return False
 
     def call(self, ns, fn, args):
         """Invoke an ext function; may return a value or a coroutine."""
@@ -265,11 +342,11 @@ class Runtime:
         return e["data"]
 
     async def wait_signal(self, name, timeout_ms):
-        """Wait for the NEXT fire of `name` after entry: a latch left by a
-        fire with no waiter is discarded, so stale events never wake a fresh
-        wait. Slot values remain readable as last-published state regardless.
-        Returns True if fired, False on timeout."""
-        ev = self._signals[name]
+        """Wait for the NEXT fire of `name` after entry (legacy wrapper)."""
+        ev = self._signals.get(name)
+        if ev is None:
+            ev = asyncio.Event()
+            self._signals[name] = ev
         ev.clear()
         if timeout_ms > 0:
             try:
