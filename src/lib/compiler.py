@@ -10,13 +10,15 @@ from bytecode import (
     MAGIC, VERSION,
     OP_CHAR, OP_KEY, OP_SLEEP, OP_MCLICK, OP_MMOVE, OP_PACE,
     OP_LOOP, OP_LOOP_END, OP_KEY_DOWN, OP_KEY_UP, OP_MDOWN, OP_MUP,
-    OP_SET, OP_ADD, OP_BRA, OP_JMP, OP_SUB, OP_READSLOT, OP_WAIT,
+    OP_SET, OP_ADD, OP_BRA, OP_JMP, OP_SUB, OP_GUARD_ENTER, OP_GUARD_EXIT,
+    OP_READSLOT, OP_WAIT,
     OP_CALL_EXT, OP_TYPEREG, OP_END,
     TAG_IMM, TAG_REG, TAG_STR,
     MAX_REGS, RECT_MAX_EDGE, REG_ERR, REG_SCRATCH, REG_TIMEOUT, REG_RET,
     CC_OPS, CONVERSE_CC, INVERT_CC,
-    MAX_BYTECODE, MAX_RUNTIME_NEST, MAX_MACRO_EXPAND, MAX_PRED_NEST,
+    MAX_BYTECODE, MAX_RUNTIME_NEST, MAX_MACRO_EXPAND, MAX_PRED_NEST, MAX_GUARD_NEST,
     MAX_COMBO_KEYS, MAX_SLOTS, DEFAULT_WAIT_TIMEOUT_MS, DEFAULT_CLICK_HOLD_MS, _PRINTABLE_LONE_KEYS,
+    GUARD_TAG_IMM, GUARD_TAG_REG, GUARD_TAG_SLOT,
     _is_alpha, _is_alnum,
     KEYS, MODS, MOUSE_BTNS,
     MacroError,
@@ -125,6 +127,7 @@ class Compiler:
         self._emit_space = True
         self._first_executable_pos = 0
         self._used_namespaces = set()
+        self._guard_depth = 0
     def compile(self, text, config=None, click_hold_ms=None):
         """Compile macro text to bytecode. Returns (bytecode, error_msg).
 
@@ -158,6 +161,7 @@ class Compiler:
         self._emit_space = True
         self._first_executable_pos = 0
         self._used_namespaces.clear()
+        self._guard_depth = 0
         if self.runtime is not None:
             self.runtime.clear_consts()  # const resources belong to one compilation
 
@@ -617,6 +621,30 @@ class Compiler:
             else:
                 false_label.mark(self)
         elif kind == "if_else":
+            end_label = cont[1]
+            self._emit(sub)
+            end_label.mark(self)
+        elif kind == "guarded_body":
+            patch_pos, base_point, on_abort_body = cont[1], cont[2], cont[3]
+            self._guard_depth -= 1
+            self._emit(sub)
+            self._emit(OP_GUARD_EXIT)
+            if on_abort_body is not None:
+                end_label = Label("guarded_end")
+                self._emit_jmp(end_label)
+                abort_target = len(self._bc)
+                abort_off = abort_target - base_point
+                if abort_off > 65535 or abort_off < 0:
+                    raise MacroError("Guard abort offset out of range", patch_pos)
+                self._patch_u16(patch_pos, abort_off)
+                self._nest_into(on_abort_body, "guarded on_abort", ("guarded_abort", end_label))
+            else:
+                abort_target = len(self._bc)
+                abort_off = abort_target - base_point
+                if abort_off > 65535 or abort_off < 0:
+                    raise MacroError("Guard abort offset out of range", patch_pos)
+                self._patch_u16(patch_pos, abort_off)
+        elif kind == "guarded_abort":
             end_label = cont[1]
             self._emit(sub)
             end_label.mark(self)
@@ -1144,6 +1172,201 @@ class Compiler:
 
     def _cmd_any(self, pos):
         raise MacroError(r"\any is only valid inside a predicate", pos)
+
+    def _cmd_guarded(self, pos):
+        r"""\guarded [ [throttle] ] { predicate } { body } [ { on_abort } ]"""
+        if self._guard_depth >= MAX_GUARD_NEST:
+            raise MacroError(f"guard nesting exceeds {MAX_GUARD_NEST} levels", pos)
+
+        self._skip_absorbed_whitespace()
+        has_throttle = 0
+        throttle_ms = 0
+        if self._peek() == "[":
+            self._advance()  # skip [
+            start = self._pos
+            while self._peek() is not None and self._peek() != "]":
+                self._advance()
+            if self._peek() != "]":
+                raise MacroError("Unmatched [ in guarded throttle", start)
+            t_str = self._text[start : self._pos].strip()
+            self._advance()  # skip ]
+            if t_str.startswith("$"):
+                raise MacroError("guarded throttle must be static literal", start)
+            if not t_str:
+                raise MacroError("Empty guarded throttle", start)
+            # Parse throttle duration
+            if t_str.endswith("ms"):
+                inner = t_str[:-2].strip()
+                if not inner.isdigit():
+                    raise MacroError(f"Invalid guarded throttle: {t_str}", start)
+                throttle_ms = int(inner)
+            elif t_str.endswith("s"):
+                inner = t_str[:-1].strip()
+                if "." in inner:
+                    int_part, dot, frac_part = inner.partition(".")
+                    if not int_part.isdigit() or not frac_part.isdigit():
+                        raise MacroError(f"Invalid guarded throttle: {t_str}", start)
+                    k = len(frac_part)
+                    N = int(int_part) * (10 ** k) + int(frac_part)
+                    throttle_ms = (2000 * N + (10 ** k)) // (2 * (10 ** k))
+                else:
+                    if not inner.isdigit():
+                        raise MacroError(f"Invalid guarded throttle: {t_str}", start)
+                    throttle_ms = int(inner) * 1000
+            elif t_str.isdigit():
+                throttle_ms = int(t_str)
+            else:
+                raise MacroError(f"Invalid guarded throttle: {t_str}", start)
+
+            if not 0 <= throttle_ms <= 65535:
+                raise MacroError(f"guarded throttle out of range [0, 65535]: {throttle_ms}", start)
+            has_throttle = 1
+
+        pred_str = self._read_braces()
+        if pred_str is None:
+            raise MacroError("guarded requires {predicate}", self._pos)
+        pred_str = pred_str.strip()
+        if not pred_str:
+            raise MacroError("empty guard predicate", pos)
+
+        # Parse guard predicate
+        logic_mode, triplets = self._parse_guard_predicate(pred_str, pos)
+
+        # Build descriptor bytes
+        desc_bytes = bytearray()
+        for cc, lhs_tag, lhs_bytes, rhs_tag, rhs_bytes in triplets:
+            spec = (cc & 7) | ((lhs_tag & 3) << 3) | ((rhs_tag & 3) << 5)
+            desc_bytes.append(spec)
+            desc_bytes.extend(lhs_bytes)
+            desc_bytes.extend(rhs_bytes)
+
+        triplet_cnt = len(triplets)
+        header = ((logic_mode & 1) << 7) | (((triplet_cnt - 1) & 7) << 4) | (has_throttle & 1)
+
+        then_body = self._read_braces()
+        if then_body is None:
+            raise MacroError("guarded requires {body}", self._pos)
+        on_abort_body = self._read_braces()  # optional
+
+        # Emit GUARD_ENTER instruction header
+        self._emit(OP_GUARD_ENTER)
+        patch_pos = len(self._bc)
+        self._emit_u16(0)  # placeholder for abort_off
+        self._emit(header)
+        if has_throttle:
+            self._emit_u16(throttle_ms)
+        self._emit(desc_bytes)
+        base_point = len(self._bc)
+
+        self._guard_depth += 1
+        cont = ("guarded_body", patch_pos, base_point, on_abort_body)
+        self._nest_into(then_body, "guarded body", cont)
+
+    def _parse_guard_predicate(self, s, pos):
+        s = s.strip()
+        if s.startswith(r"\all"):
+            logic_mode = 0
+            rest = s[4:].lstrip()
+            if not (rest.startswith("{") and rest.endswith("}")):
+                raise MacroError(r"\all requires { ... }", pos)
+            inner = rest[1:-1].strip()
+            raw_triplets = _split_compound_group(inner, pos)
+        elif s.startswith(r"\any"):
+            logic_mode = 1
+            rest = s[4:].lstrip()
+            if not (rest.startswith("{") and rest.endswith("}")):
+                raise MacroError(r"\any requires { ... }", pos)
+            inner = rest[1:-1].strip()
+            raw_triplets = _split_compound_group(inner, pos)
+        else:
+            logic_mode = 0
+            raw_triplets = [s]
+
+        if not raw_triplets or len(raw_triplets) > 8:
+            raise MacroError("guarded does not support nested predicate logic; max 8 flat triplets", pos)
+
+        # Check for nested \all or \any in any triplet string
+        for t in raw_triplets:
+            if r"\all" in t or r"\any" in t:
+                raise MacroError("guarded does not support nested predicate logic; max 8 flat triplets", pos)
+
+        parsed_triplets = []
+        for t in raw_triplets:
+            parsed_triplets.append(self._parse_guard_triplet(t, pos))
+        return logic_mode, parsed_triplets
+
+    def _parse_guard_triplet(self, s, pos):
+        s = s.strip()
+        if not s.startswith("{") or not s.endswith("}"):
+            raise MacroError("guard condition must be {lhs, op, rhs}", pos)
+        inner = s[1:-1].strip()
+        parts = _split_compound_group(inner, pos)
+        if len(parts) != 3:
+            raise MacroError("guard condition must be {lhs, op, rhs}", pos)
+        lhs_str, op_str, rhs_str = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        if lhs_str.startswith("{") and lhs_str.endswith("}"):
+            lhs_str = lhs_str[1:-1].strip()
+        if op_str.startswith("{") and op_str.endswith("}"):
+            op_str = op_str[1:-1].strip()
+        if rhs_str.startswith("{") and rhs_str.endswith("}"):
+            rhs_str = rhs_str[1:-1].strip()
+        if op_str not in CC_OPS:
+            raise MacroError(f"invalid comparison operator: {op_str}", pos)
+        cc = CC_OPS[op_str]
+        lhs_tag, lhs_bytes = self._parse_guard_operand(lhs_str, pos)
+        rhs_tag, rhs_bytes = self._parse_guard_operand(rhs_str, pos)
+        return (cc, lhs_tag, lhs_bytes, rhs_tag, rhs_bytes)
+
+    def _parse_guard_operand(self, s, pos):
+        s = s.strip()
+        if not s:
+            raise MacroError("empty guard operand", pos)
+
+        # Slot reference?
+        if s.startswith("${"):
+            end = s.find("}")
+            if end == -1:
+                raise MacroError("Unmatched ${", pos)
+            inner = s[2:end].strip()
+            if s[end + 1 :].strip():
+                raise MacroError(f"Unexpected text after ${{{inner}}}", pos)
+        elif s.startswith("$"):
+            inner = s[1:].strip()
+        else:
+            inner = None
+
+        if inner is not None:
+            if inner.startswith("slot."):
+                slot_name = inner[5:]
+            elif "." in inner:
+                slot_name = inner
+            else:
+                slot_name = None
+
+            if slot_name is not None:
+                sig, sep, field = slot_name.rpartition(".")
+                if not sep or not sig or not field:
+                    raise MacroError(f"Invalid slot reference: {s}", pos)
+                ns = sig.split(".")[0]
+                if self.runtime is not None:
+                    if (
+                        ns not in self._used_namespaces
+                        and not self.runtime.has_slot_ns(sig)
+                        and not self.runtime.has_signal(sig)
+                    ):
+                        raise MacroError(f"unknown signal namespace: {ns}", pos)
+                sig_idx = self._str_idx(sig, pos)
+                field_idx = self._str_idx(field, pos)
+                return (GUARD_TAG_SLOT, bytes([sig_idx, field_idx]))
+            else:
+                # Variable reference
+                reg = self._var_reg(inner, pos)
+                return (GUARD_TAG_REG, bytes([reg]))
+
+        # Immediate literal
+        val = self._parse_int_literal(s, pos)
+        val = val - 4294967296 if val > 2147483647 else val
+        return (GUARD_TAG_IMM, val.to_bytes(4, "little", signed=True))
 
     def _cmd_typenum(self, pos):
         r"""\typenum{$var} — render a numeric register as decimal keystrokes (text position)."""

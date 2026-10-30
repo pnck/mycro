@@ -249,6 +249,31 @@ class Runtime:
         slot = self._slots.get((name, field))
         return slot["pending"] if slot is not None else 0
 
+    def consume_slot_pending(self, name, field):
+        """Consume arrival latch if present. Returns True if latch was consumed."""
+        slot = self._slots.get((name, field))
+        if slot is not None and slot["pending"] == 1:
+            slot["pending"] = 0
+            return True
+        return False
+
+    def add_waiter(self, name, field, ev):
+        """Register an asyncio.Event waiter for slot projection."""
+        key = (name, field)
+        if key not in self._slots and len(self._slots) < MAX_SLOTS:
+            self._slots[key] = {"val": 0, "pending": 0}
+        self._waiters.setdefault(key, []).append(ev)
+
+    def remove_waiter(self, name, field, ev):
+        """Unregister an asyncio.Event waiter."""
+        key = (name, field)
+        waiters = self._waiters.get(key)
+        if waiters and ev in waiters:
+            try:
+                waiters.remove(ev)
+            except ValueError:
+                pass
+
     async def wait_slot(self, name, field, timeout_ms):
         """Wait on slot receptor per spec/runtime.md §1.1 #3:
         - If slot.pending == 1: consume immediately (pending=0), return True ($timeout=0).

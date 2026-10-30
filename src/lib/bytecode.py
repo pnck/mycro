@@ -39,6 +39,8 @@ OP_ADD = 0x21       # reg, typed(i32)
 OP_BRA = 0x22       # cc, reg, typed(i32) rhs, u16 off — jump if cond FALSE
 OP_JMP = 0x23       # u16 off
 OP_SUB = 0x24       # reg, typed(i32)
+OP_GUARD_ENTER = 0x25  # u16 abort_off, u8 header, [u16 throttle], pred_descriptor
+OP_GUARD_EXIT = 0x26   # pop active guard slot
 OP_READSLOT = 0x28  # reg, sig_str, field_str — read signal slot into register
 OP_WAIT = 0x29      # sig_str, field_str, typed(i32) timeout_ms
 OP_CALL_EXT = 0x2A  # ns_str, fn_str, argc, typed args...
@@ -69,10 +71,17 @@ MAX_BYTECODE = 4096
 MAX_RUNTIME_NEST = 8
 MAX_MACRO_EXPAND = 16
 MAX_PRED_NEST = 4
+MAX_GUARD_NEST = 4
 MAX_COMBO_KEYS = 8
 MAX_SLOTS = 256
+DELAY_SLICE_QUANTUM = 20
 DEFAULT_WAIT_TIMEOUT_MS = 2147483647
 DEFAULT_CLICK_HOLD_MS = 10
+
+# Guard operand tags (spec/vm.md §4.1)
+GUARD_TAG_IMM = 0
+GUARD_TAG_REG = 1
+GUARD_TAG_SLOT = 2
 
 # Standard error codes (spec/runtime.md §3.0)
 ERR_OK = 0
