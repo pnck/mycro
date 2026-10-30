@@ -941,22 +941,9 @@ class Compiler:
         v = self._parse_value(arg, pos)  # parse first: slot desugars emit READSLOT
         self._emit(OP_SET, reg)
         self._emit_typed(v, 4)
-        # type environment: copy the source's type (no computation);
-        # handle types MOVE — the source reverts to int, mirroring the
-        # runtime's ownership move (spec/vm.md Part II §2/§4)
+        # type environment: copy the source's type (shared references per spec/runtime.md §4 #3)
         if v[0] == TAG_REG:
-            t = self._reg_type(v[1])
-            if t in ("int", "color"):
-                self._types[name] = t
-            else:
-                self._types[name] = t
-                if v[1] == REG_RET:
-                    self._ret_type = "int"
-                else:
-                    for nm, r in self._vars.items():
-                        if r == v[1]:
-                            self._types[nm] = "int"
-                            break
+            self._types[name] = self._reg_type(v[1])
         else:
             self._types[name] = "int"
 

@@ -85,34 +85,37 @@ def test_overwrite_releases():
     seen = []
     rt.register_ns("probe", {"n": ([], "int",
                                    lambda: seen.append(len(rt._handles)) or 0)})
-    run("\\call{img.snap}{1,2,3,4}\\set{a}{$ret}\\set{a}{0}\\call{probe.n}", rt)
+    # When both $a and $ret no longer reference the handle, it is released
+    run("\\call{img.snap}{1,2,3,4}\\set{a}{$ret}\\call{img.use}{$a}\\set{a}{0}\\call{probe.n}", rt)
     assert seen == [0]
 
 
-def test_move_semantics_runtime():
+def test_shared_reference_runtime():
     rt = make_runtime()
     seen = []
     rt.register_ns("probe", {
         "n": ([], "int", lambda: seen.append(len(rt._handles)) or 0),
     })
-    # use{$b} after the move works; the id stays singular
+    # Under v4 shared references, both $a and $b reference the same handle
     run("\\call{img.snap}{1,2,3,4}\\set{a}{$ret}\\set{b}{$a}"
-        "\\call{img.use}{$b}\\call{probe.n}", rt)
+        "\\call{img.use}{$a}\\call{img.use}{$b}\\call{probe.n}", rt)
     assert seen == [1]
 
 
-def test_moved_source_is_dead_compile_time():
+def test_shared_source_alive_compile_time():
     rt = make_runtime()
-    _, err = Macro(MockHID(), rt).compile(
-        "\\call{img.snap}{1,2,3,4}\\set{a}{$ret}\\set{b}{$a}\\call{img.use}{$a}")
-    assert err and "must hold a snap handle" in err
+    # Source $a remains alive after copying to $b (spec/runtime.md §4 #3)
+    bc = compile_ok(
+        "\\call{img.snap}{1,2,3,4}\\set{a}{$ret}\\set{b}{$a}\\call{img.use}{$a}", rt)
+    assert bc is not None
 
 
-def test_stale_ret_is_dead_compile_time():
+def test_shared_ret_alive_compile_time():
     rt = make_runtime()
-    _, err = Macro(MockHID(), rt).compile(
-        "\\call{img.snap}{1,2,3,4}\\set{a}{$ret}\\call{img.use}{$ret}")
-    assert err and "must hold a snap handle" in err
+    # $ret remains alive after assignment to $a until overwritten (spec/runtime.md §4 #3)
+    bc = compile_ok(
+        "\\call{img.snap}{1,2,3,4}\\set{a}{$ret}\\call{img.use}{$ret}", rt)
+    assert bc is not None
 
 
 def test_non_handle_return_does_not_claim():

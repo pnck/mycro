@@ -13,6 +13,7 @@ from bytecode import (
     OP_READSLOT, OP_WAIT, OP_CALL_EXT, OP_END,
     TAG_IMM, TAG_REG, TAG_STR,
     REG_RET, REG_TIMEOUT, REG_ERR,
+    ERR_OK, ERR_HANDLE_MISUSE,
     CC_NAMES,
     read_header, keycode_name, mod_names,
 )
@@ -399,43 +400,71 @@ class VM:
                 elif op == OP_SET:
                     reg = read_u8()
                     val, src = read_argx(4)
+                    is_h = False
                     if runtime is not None:
-                        runtime.reg_write(reg, src)  # overwrite/move mediation
+                        if src is not None and runtime.is_handle(src):
+                            is_h = True
+                        runtime.reg_write(reg, val, src, is_h)
                     regs[reg] = val
 
                 elif op == OP_ADD:
                     reg = read_u8()
-                    val = read_arg(4)
-                    if runtime is not None:
-                        runtime.reg_write(reg, None)
-                    u = (regs[reg] + val) % 4294967296
-                    regs[reg] = u if u < 2147483648 else u - 4294967296
+                    val, src = read_argx(4)
+                    is_reg_h = runtime is not None and runtime.is_handle(reg)
+                    is_src_h = runtime is not None and src is not None and runtime.is_handle(src)
+                    if is_reg_h or is_src_h:
+                        if runtime is not None:
+                            runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
+                        regs[REG_ERR] = ERR_HANDLE_MISUSE
+                    else:
+                        u = (regs[reg] + val) % 4294967296
+                        wrapped = u if u < 2147483648 else u - 4294967296
+                        if runtime is not None:
+                            runtime.reg_write(reg, wrapped, None, False)
+                        regs[reg] = wrapped
 
                 elif op == OP_SUB:
                     reg = read_u8()
-                    val = read_arg(4)
-                    if runtime is not None:
-                        runtime.reg_write(reg, None)
-                    u = (regs[reg] - val) % 4294967296
-                    regs[reg] = u if u < 2147483648 else u - 4294967296
+                    val, src = read_argx(4)
+                    is_reg_h = runtime is not None and runtime.is_handle(reg)
+                    is_src_h = runtime is not None and src is not None and runtime.is_handle(src)
+                    if is_reg_h or is_src_h:
+                        if runtime is not None:
+                            runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
+                        regs[REG_ERR] = ERR_HANDLE_MISUSE
+                    else:
+                        u = (regs[reg] - val) % 4294967296
+                        wrapped = u if u < 2147483648 else u - 4294967296
+                        if runtime is not None:
+                            runtime.reg_write(reg, wrapped, None, False)
+                        regs[reg] = wrapped
 
                 elif op == OP_BRA:
                     cc = read_u8()
-                    a = regs[read_u8()]
-                    rhs = read_arg(4)
+                    reg_a = read_u8()
+                    rhs, src_rhs = read_argx(4)
                     off = read_u16()
-                    if cc == 0:
-                        cond = a == rhs
-                    elif cc == 1:
-                        cond = a != rhs
-                    elif cc == 2:
-                        cond = a < rhs
-                    elif cc == 3:
-                        cond = a <= rhs
-                    elif cc == 4:
-                        cond = a > rhs
+                    is_a_h = runtime is not None and runtime.is_handle(reg_a)
+                    is_rhs_h = runtime is not None and src_rhs is not None and runtime.is_handle(src_rhs)
+                    if is_a_h or is_rhs_h:
+                        if runtime is not None:
+                            runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
+                        regs[REG_ERR] = ERR_HANDLE_MISUSE
+                        cond = False
                     else:
-                        cond = a >= rhs
+                        a = regs[reg_a]
+                        if cc == 0:
+                            cond = a == rhs
+                        elif cc == 1:
+                            cond = a != rhs
+                        elif cc == 2:
+                            cond = a < rhs
+                        elif cc == 3:
+                            cond = a <= rhs
+                        elif cc == 4:
+                            cond = a > rhs
+                        else:
+                            cond = a >= rhs
                     if not cond:
                         ip += off
 
@@ -445,16 +474,21 @@ class VM:
 
                 elif op == OP_TYPEREG:
                     # Render register as decimal keystrokes (DSL \typenum);
-                    # the whole render is one pacing action
-                    for ch in str(regs[read_u8()]):
-                        codes = hid.char_keycodes(ch)
-                        if codes:
-                            for kc in codes:
-                                hid.key_press(kc)
-                            await sleep_ms(click_hold_ms)
-                            for kc in reversed(codes):
-                                hid.key_release(kc)
-                    await sleep_ms(delay_ms)
+                    # a handle operand renders empty output and sets $err = ERR_HANDLE_MISUSE
+                    reg = read_u8()
+                    if runtime is not None and runtime.is_handle(reg):
+                        runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
+                        regs[REG_ERR] = ERR_HANDLE_MISUSE
+                    else:
+                        for ch in str(regs[reg]):
+                            codes = hid.char_keycodes(ch)
+                            if codes:
+                                for kc in codes:
+                                    hid.key_press(kc)
+                                await sleep_ms(click_hold_ms)
+                                for kc in reversed(codes):
+                                    hid.key_release(kc)
+                        await sleep_ms(delay_ms)
 
                 elif op == OP_READSLOT:
                     reg = read_u8()
@@ -462,8 +496,9 @@ class VM:
                     field = strs[read_u8()]
                     if runtime is None:
                         raise RuntimeError("READSLOT without runtime registry")
-                    runtime.reg_write(reg, None)
-                    regs[reg] = runtime.read_slot(sig, field)
+                    val = runtime.read_slot(sig, field)
+                    runtime.reg_write(reg, val, None, False)
+                    regs[reg] = val
 
                 elif op == OP_WAIT:
                     sig = strs[read_u8()]
@@ -472,8 +507,9 @@ class VM:
                     if runtime is None:
                         raise RuntimeError("WAIT without runtime registry")
                     ok = await runtime.wait_slot(sig, field, timeout)
-                    runtime.reg_write(REG_TIMEOUT, None)
-                    regs[REG_TIMEOUT] = 0 if ok else 1
+                    status = 0 if ok else 1
+                    runtime.reg_write(REG_TIMEOUT, status, None, False)
+                    regs[REG_TIMEOUT] = status
 
                 elif op == OP_CALL_EXT:
                     ns = strs[read_u8()]
@@ -490,19 +526,34 @@ class VM:
                             args.append(strs[read_u8()])
                     if runtime is None:
                         raise RuntimeError("CALL_EXT without runtime registry")
+                    sig_entry = runtime._ns.get(ns, {}).get(fn)
+                    ret_type = sig_entry[1] if sig_entry else "int"
+
                     r = runtime.call(ns, fn, args)
                     if hasattr(r, "send"):  # coroutine: await it
                         r = await r
-                    if r is None:
-                        value = 0
+
+                    if isinstance(r, tuple):
+                        ret_val, err_val = r
+                    else:
+                        ret_val = r
+                        err_val = 0
+
+                    if err_val != 0 or ret_val is None:
+                        ret_val = 0
+                        is_handle = False
                     else:
                         try:
-                            value = int(r)
+                            ret_val = int(ret_val)
                         except (TypeError, ValueError):
-                            value = 0
-                    runtime.reg_write(REG_RET, None)
-                    regs[REG_RET] = value
-                    runtime.claim(REG_RET, value)  # fresh handle ownership
+                            ret_val = 0
+                        is_handle = (ret_type not in ("int", "color", "void") and ret_val > 0)
+
+                    runtime.reg_write(REG_ERR, err_val, None, False)
+                    regs[REG_ERR] = err_val
+                    runtime.reg_write(REG_RET, ret_val, None, is_handle)
+                    regs[REG_RET] = ret_val
+                    runtime.claim(REG_RET, ret_val)
 
                 else:
                     raise RuntimeError(f"Unknown opcode 0x{op:02X}")

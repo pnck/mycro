@@ -25,7 +25,19 @@ except AttributeError:  # very old asyncio
 # addresses; the contract is spec/vm.md Part I §2)
 REG_RET = 0xFF
 REG_TIMEOUT = 0xFE
+REG_ERR = 0xFD
 MAX_SLOTS = 256
+
+# Standard error codes (spec/runtime.md §3.0)
+ERR_OK = 0
+ERR_GENERIC = 1
+ERR_INVALID_ARG = 2
+ERR_NO_PROVIDER = 3
+ERR_OUT_OF_BOUNDS = 4
+ERR_HANDLE_INVALID = 5
+ERR_RESOURCE_EXHAUSTED = 6
+ERR_TIMEOUT = 7
+ERR_HANDLE_MISUSE = 8
 
 # --- static backing store (spec/vm.md Appendix A) ---
 # Profile constants, same standing as MAX_REGS: platform budgets, not
@@ -303,16 +315,32 @@ class Runtime:
                 self._fresh = None
                 self._release(orphan)
 
-    def reg_write(self, dst, src=None):
-        """Mediate a register write: overwrite releases; a register
-        source MOVES ownership to dst (spec/vm.md Part II §4)."""
-        old = self._reg_handles.pop(dst, None)
-        if old is not None:
-            self._release(old)
-        if src is not None:
-            h = self._reg_handles.pop(src, None)
-            if h is not None:
-                self._reg_handles[dst] = h
+    def is_handle(self, reg):
+        """Check if register holds a typed handle reference."""
+        return reg in self._reg_handles
+
+    def get_handle(self, reg):
+        """Get the handle ID held by register, or None."""
+        return self._reg_handles.get(reg)
+
+    def reg_write(self, dst, value=0, src=None, handle=False):
+        """Mediate a register write per spec/vm.md §7:
+        1. Detach destination's old typed reference and remember displaced handle.
+        2. Install value with type selected by handle. For SET reg<-reg, source
+           remains a shared reference. Self-assignment reinstalls the detached reference.
+        3. Scan all registers for remaining references to displaced handle.
+           Release displaced handle when zero references remain.
+        """
+        old_hid = self._reg_handles.pop(dst, None)
+        if handle:
+            if src is not None and src == dst and old_hid is not None:
+                self._reg_handles[dst] = old_hid
+            elif src is not None and src in self._reg_handles:
+                self._reg_handles[dst] = self._reg_handles[src]
+            else:
+                self._reg_handles[dst] = value
+        if old_hid is not None and old_hid not in self._reg_handles.values():
+            self._release(old_hid)
 
     def _release(self, hid):
         e = self._handles.pop(hid, None)  # may be deferred/async in ports
@@ -323,13 +351,15 @@ class Runtime:
             if isinstance(d, dict) and d.get("_arena") is not None:
                 d["_arena"].free(d["_slot"])
 
-    def release_all(self):
-        """Execution bracket: start and every exit path."""
+    def release_handles(self):
+        """Execution bracket: start and every exit path (spec/runtime.md §4 #6)."""
         for hid in list(self._handles):
             self._release(hid)
         self._handles.clear()
         self._reg_handles.clear()
         self._fresh = None
+
+    release_all = release_handles
 
     def handle_data(self, value, kind):
         """Resolve a handle value to its data; None when invalid: unknown
