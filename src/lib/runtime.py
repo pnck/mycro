@@ -143,6 +143,19 @@ class Runtime:
         # compile-time constant resources (spec/vm.md Part II §5):
         # \rect literals land here, NOT in the bytecode; reset per compile
         self._consts = []       # [{"kind": str, "data": any}]
+        # Built-in compiler intrinsic sys.const (spec/dsl.md §6.4, spec/runtime.md §5)
+        self.register_ns("sys", {
+            "const": (["int"], "snap", self._builtin_sys_const),
+        })
+
+    def _builtin_sys_const(self, cid):
+        entry = self.const_entry(cid)
+        if entry is None:
+            return 0, ERR_INVALID_ARG
+        hid = self.new_handle(entry["kind"], entry["data"])
+        if hid <= 0:
+            return 0, ERR_RESOURCE_EXHAUSTED
+        return hid, ERR_OK
 
     def clear_consts(self):
         self._consts.clear()
@@ -324,6 +337,8 @@ class Runtime:
     def new_handle(self, kind, data):
         """Create a resource handle. The fn returns the id; the VM's
         write of that value to a register claims ownership for it."""
+        if self._handle_seq >= 2147483647:
+            return 0
         self._handle_seq += 1
         self._handles[self._handle_seq] = {"kind": kind, "data": data}
         self._fresh = self._handle_seq

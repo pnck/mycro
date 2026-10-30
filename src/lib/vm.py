@@ -839,6 +839,7 @@ class VM:
                 hid.mouse_release(BTN_ALL)
             raise
         finally:
+            self.last_regs = list(regs)
             guard_slots = [None] * MAX_GUARD_NEST
             guard_depth = 0
             if runtime is not None:

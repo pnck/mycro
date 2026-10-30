@@ -514,10 +514,10 @@ class Compiler:
             handler(pos)
             return
 
-        if name_lower == "rect":
+        if name_lower in ("rect", "pixelrect", "rgb"):
             raise MacroError(
-                "\\rect{...} is a value-position literal (valid inside "
-                "\\set{h}{...} or a handle argument)", pos)
+                f"\\{name_lower}{{...}} is a value-position literal (valid inside "
+                "\\set{...} or an argument)", pos)
 
         # User-defined macro: \name{arg}... (compile-time expansion)
         if name_lower in self._defs:
@@ -735,12 +735,14 @@ class Compiler:
         return v
 
     def _parse_value(self, s, pos, reserved=()):
-        """Value-position segment: int literal or $var/${var}.
+        """Value-position segment: int literal, $var/${var}, or \rgb{r,g,b}.
         Returns (TAG_IMM, v) or (TAG_REG, reg). `reserved` holds registers
         already consumed by sibling operands of the same instruction."""
         s = s.strip()
         if s.startswith("$"):
             return (TAG_REG, self._parse_var_ref(s, pos, reserved))
+        if self._is_rgb(s):
+            return (TAG_IMM, self._parse_rgb_literal(s, pos))
         return (TAG_IMM, self._parse_int_literal(s, pos))
 
     def _parse_var_ref(self, s, pos, reserved=()):
@@ -798,7 +800,7 @@ class Compiler:
         for r in range(MAX_REGS):
             if r not in blocked:
                 return r
-        raise MacroError("no free register for slot operand", pos)
+        raise MacroError("no free register for value operand", pos)
 
     def _alloc_var(self, name, pos):
         """Resolve a variable name for assignment, allocating a register if new."""
@@ -884,73 +886,150 @@ class Compiler:
         self._emit(OP_PACE)
         self._emit_typed(v, 2)
 
-    def _parse_rect_literal(self, t, pos):
-        r"""Parse \rect{\row{0xRRGGBB,...},...} -> (w, h, rgb bytes).
+    def _is_constructor(self, s):
+        s = s.strip()
+        return s.startswith(r"\pixelrect") or s.startswith(r"\rect")
 
-        Compile-time pixel constant: the data goes to the middleware's
-        const store, never into the bytecode (spec/dsl.md §3)."""
-        i = t.find("{")
-        if i < 0 or not t.endswith("}"):
-            raise MacroError("rect requires {\\row{...},...}", pos)
+    def _is_rgb(self, s):
+        return s.strip().startswith(r"\rgb")
+
+    def _parse_rgb_literal(self, s, pos):
+        r"""Parse \rgb{r,g,b} -> packed 24-bit integer ((r << 16) | (g << 8) | b)."""
+        s = s.strip()
+        if not s.startswith(r"\rgb"):
+            raise MacroError(r"expected \rgb{r,g,b}", pos)
+        rest = s[4:].strip()
+        if not (rest.startswith("{") and rest.endswith("}")):
+            raise MacroError(r"\rgb requires {r, g, b}", pos)
+        inner = rest[1:-1].strip()
+        parts = _split_compound_group(inner, pos)
+        if len(parts) != 3:
+            raise MacroError(r"\rgb requires {r, g, b}", pos)
+        r = self._parse_int_literal(parts[0], pos)
+        g = self._parse_int_literal(parts[1], pos)
+        b = self._parse_int_literal(parts[2], pos)
+        if not (0 <= r <= 255 and 0 <= g <= 255 and 0 <= b <= 255):
+            raise MacroError("rgb component out of range [0, 255]", pos)
+        return (r << 16) | (g << 8) | b
+
+    def _parse_pixel_color(self, s, pos):
+        s = s.strip()
+        if self._is_rgb(s):
+            val = self._parse_rgb_literal(s, pos)
+        else:
+            val = self._parse_int_literal(s, pos)
+        if not 0 <= val <= 0xFFFFFF:
+            raise MacroError("rect: color out of 0xRRGGBB range", pos)
+        return val
+
+    def _parse_pixelrect(self, t, pos):
+        r"""Parse \pixelrect{\row{...}, ...} or \rect{\row{...}, ...} -> (w, h, rgb bytes)."""
+        t = t.strip()
+        if t.startswith(r"\pixelrect"):
+            name = "pixelrect"
+            rest = t[len(r"\pixelrect") :].strip()
+        elif t.startswith(r"\rect"):
+            name = "rect"
+            rest = t[len(r"\rect") :].strip()
+        else:
+            raise MacroError(r"expected \pixelrect or \rect", pos)
+
+        if not (rest.startswith("{") and rest.endswith("}")):
+            raise MacroError(f"{name} requires {{\\row{{...}}, ...}}", pos)
+
+        inner = rest[1:-1].strip()
+        if not inner:
+            raise MacroError(f"{name}: empty literal", pos)
+
+        # Extract rows
+        i = 0
+        n = len(inner)
+        rows_tokens = []
+        while i < n:
+            while i < n and inner[i] in " \t\r\n,":
+                i += 1
+            if i >= n:
+                break
+            if not inner[i:].startswith(r"\row"):
+                raise MacroError(f"{name}: rows must be \\row{{...}}", pos)
+            i += 4  # skip \row
+            while i < n and inner[i] in " \t\r\n":
+                i += 1
+            if i >= n or inner[i] != "{":
+                raise MacroError(f"{name}: rows must be \\row{{...}}", pos)
+            start = i + 1
+            depth = 1
+            i += 1
+            while i < n and depth > 0:
+                if inner[i] == "{":
+                    depth += 1
+                elif inner[i] == "}":
+                    depth -= 1
+                i += 1
+            if depth != 0:
+                raise MacroError("Unmatched { in row", pos)
+            row_content = inner[start : i - 1].strip()
+            rows_tokens.append(row_content)
+
+        if not rows_tokens:
+            raise MacroError(f"{name}: empty literal", pos)
+
         rows = []
-        for part in t[i + 1 : -1].split("\\row"):
-            part = part.strip()
-            if not part:
-                continue
-            part = part.rstrip(",").strip()
-            if not part.startswith("{") or not part.endswith("}"):
-                raise MacroError(r"rect: rows must be \row{...}", pos)
-            row = []
-            for tok in part[1:-1].split(","):
-                tok = tok.strip()
-                if not tok:
-                    continue
-                v = self._parse_int_literal(tok, pos)
-                if not 0 <= v <= 0xFFFFFF:
-                    raise MacroError("rect: color out of 0xRRGGBB range", pos)
-                row.append(v)
+        for r_tok in rows_tokens:
+            pixels_str = _split_compound_group(r_tok, pos)
+            if not pixels_str:
+                raise MacroError(f"{name}: empty literal", pos)
+            row = [self._parse_pixel_color(p, pos) for p in pixels_str]
             rows.append(row)
-        if not rows or not rows[0]:
-            raise MacroError("rect: empty literal", pos)
+
         w = len(rows[0])
         h = len(rows)
+        if w == 0:
+            raise MacroError(f"{name}: empty literal", pos)
         for r in rows:
             if len(r) != w:
-                raise MacroError("rect: ragged rows", pos)
+                raise MacroError(f"{name}: ragged rows", pos)
         if w > RECT_MAX_EDGE or h > RECT_MAX_EDGE:
-            raise MacroError(f"rect: edge capped at {RECT_MAX_EDGE}", pos)
+            raise MacroError(f"{name}: edge capped at {RECT_MAX_EDGE}", pos)
+
         data = bytearray()
         for r in rows:
-            for v in r:
-                data += bytes((v >> 16, (v >> 8) & 0xFF, v & 0xFF))
+            for color in r:
+                data.extend([(color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF])
         return w, h, bytes(data)
 
-    def _try_rect_literal(self, s, pos, reserved=()):
-        r"""If s is a \rect{...} literal: register its pixels in the
-        middleware const store and emit CALL_EXT sys.const <cid> + SET into
-        a temp register (the ownership then flows through the normal
-        claim/move machinery). Returns (TAG_REG, reg) or None."""
-        t = s.strip()
-        if not t.startswith("\\rect"):
-            return None
+    def _materialize_constructor(self, s, pos, skip_label, reserved=()):
+        r"""Compile-time constructor materialization.
+        Emits:
+            CALL_EXT sys.const, TAG_IMM cid
+            BRA $err, =, 0, off -> skip_label
+            SET scratch, TAG_REG $ret
+        Returns (TAG_REG, scratch)."""
         if self.runtime is None:
-            raise MacroError("rect literal requires a runtime registry", pos)
-        w, h, data = self._parse_rect_literal(t, pos)
+            name = "pixelrect" if "\\pixelrect" in s else "rect"
+            raise MacroError(f"{name} literal requires a runtime registry", pos)
+        w, h, data = self._parse_pixelrect(s, pos)
         try:
             cid = self.runtime.add_const("snap", {"w": w, "h": h, "rgb": data})
         except ValueError as e:
-            raise MacroError("rect: {}".format(e), pos)
-        reg = self._alloc_temp(reserved, pos)
-        self._emit(OP_CALL_EXT, self._str_idx("sys", pos),
-                   self._str_idx("const", pos), 1)
+            raise MacroError(f"rect: {e}", pos)
+
+        scratch = self._alloc_temp(reserved, pos)
+        self._emit(
+            OP_CALL_EXT,
+            self._str_idx("sys", pos),
+            self._str_idx("const", pos),
+            1,
+        )
         self._emit(TAG_IMM)
         self._emit_i32(cid)
-        self._emit(OP_SET, reg)
+        self._emit_bra(0, REG_ERR, (TAG_IMM, 0), skip_label)
+        self._emit(OP_SET, scratch)
         self._emit(TAG_REG, REG_RET)
-        return TAG_REG, reg
+        return (TAG_REG, scratch)
 
     def _cmd_set(self, pos):
-        r"""\set{x}{i32|$var} — assign an i32 variable."""
+        r"""\set{x}{i32|$var|constructor} — assign a variable."""
         name = self._read_braces()
         if name is None:
             raise MacroError("set requires {name}", self._pos)
@@ -959,24 +1038,31 @@ class Compiler:
         arg = self._read_braces()
         if arg is None:
             raise MacroError("set requires {value}", self._pos)
-        rect = self._try_rect_literal(arg, pos)
-        if rect is not None:
-            # \set{h}{\rect{...}}: emissions already precede; just land it
+        s = arg.strip()
+        if self._is_constructor(s):
+            skip_label = Label("consumer_skip")
+            _, scratch = self._materialize_constructor(s, pos, skip_label, reserved=(reg,))
             self._emit(OP_SET, reg)
-            self._emit(TAG_REG, rect[1])
+            self._emit(TAG_REG, scratch)
+            skip_label.mark(self)
             self._types[name] = "snap"
             return
-        v = self._parse_value(arg, pos)  # parse first: slot desugars emit READSLOT
+        if self._is_rgb(s):
+            val = self._parse_rgb_literal(s, pos)
+            self._emit(OP_SET, reg)
+            self._emit_typed((TAG_IMM, val), 4)
+            self._types[name] = "int"
+            return
+        v = self._parse_value(arg, pos, reserved=(reg,))
         self._emit(OP_SET, reg)
         self._emit_typed(v, 4)
-        # type environment: copy the source's type (shared references per spec/runtime.md §4 #3)
         if v[0] == TAG_REG:
             self._types[name] = self._reg_type(v[1])
         else:
             self._types[name] = "int"
 
     def _cmd_add(self, pos):
-        r"""\add{x}{i32|$var} — add to an existing variable."""
+        r"""\add{x}{i32|$var|constructor} — add to an existing variable."""
         name = self._read_braces()
         if name is None:
             raise MacroError("add requires {name}", self._pos)
@@ -992,12 +1078,20 @@ class Compiler:
         arg = self._read_braces()
         if arg is None:
             raise MacroError("add requires {value}", self._pos)
-        v = self._parse_value(arg, pos)  # parse first: slot desugars emit READSLOT
+        s = arg.strip()
+        if self._is_constructor(s):
+            skip_label = Label("consumer_skip")
+            _, scratch = self._materialize_constructor(s, pos, skip_label, reserved=(reg,))
+            self._emit(OP_ADD, reg)
+            self._emit(TAG_REG, scratch)
+            skip_label.mark(self)
+            return
+        v = self._parse_value(arg, pos, reserved=(reg,))
         self._emit(OP_ADD, reg)
         self._emit_typed(v, 4)
 
     def _cmd_sub(self, pos):
-        r"""\sub{x}{i32|$var} — subtract from an existing variable."""
+        r"""\sub{x}{i32|$var|constructor} — subtract from an existing variable."""
         name = self._read_braces()
         if name is None:
             raise MacroError("sub requires {name}", self._pos)
@@ -1013,7 +1107,15 @@ class Compiler:
         arg = self._read_braces()
         if arg is None:
             raise MacroError("sub requires {value}", self._pos)
-        v = self._parse_value(arg, pos)  # parse first: slot desugars emit READSLOT
+        s = arg.strip()
+        if self._is_constructor(s):
+            skip_label = Label("consumer_skip")
+            _, scratch = self._materialize_constructor(s, pos, skip_label, reserved=(reg,))
+            self._emit(OP_SUB, reg)
+            self._emit(TAG_REG, scratch)
+            skip_label.mark(self)
+            return
+        v = self._parse_value(arg, pos, reserved=(reg,))
         self._emit(OP_SUB, reg)
         self._emit_typed(v, 4)
 
@@ -1032,9 +1134,16 @@ class Compiler:
 
     def _emit_triplet(self, node, true_target, false_target):
         # Step 1: Ephemeral Value Pre-Loading in source order (§5.4 #1)
-        lhs_val = self._parse_value(node.lhs_str, node.pos)
+        if self._is_constructor(node.lhs_str):
+            lhs_val = self._materialize_constructor(node.lhs_str, node.pos, false_target, reserved=())
+        else:
+            lhs_val = self._parse_value(node.lhs_str, node.pos)
+
         rhs_reserved = (lhs_val[1],) if lhs_val[0] == TAG_REG else ()
-        rhs_val = self._parse_value(node.rhs_str, node.pos, reserved=rhs_reserved)
+        if self._is_constructor(node.rhs_str):
+            rhs_val = self._materialize_constructor(node.rhs_str, node.pos, false_target, reserved=rhs_reserved)
+        else:
+            rhs_val = self._parse_value(node.rhs_str, node.pos, reserved=rhs_reserved)
         cc = node.cc
 
         # Check handle types if known at compile time
@@ -1322,6 +1431,13 @@ class Compiler:
         if not s:
             raise MacroError("empty guard operand", pos)
 
+        if self._is_constructor(s):
+            raise MacroError("guards do not support constructors", pos)
+        if self._is_rgb(s):
+            val = self._parse_rgb_literal(s, pos)
+            val = val - 4294967296 if val > 2147483647 else val
+            return (GUARD_TAG_IMM, val.to_bytes(4, "little", signed=True))
+
         # Slot reference?
         if s.startswith("${"):
             end = s.find("}")
@@ -1400,6 +1516,8 @@ class Compiler:
         if target is None:
             raise MacroError("call requires {ns.fn}", self._pos)
         target = target.strip().lower()
+        if target == "sys.const":
+            raise MacroError("sys.const is reserved for compiler lowering", pos)
         parts = target.split(".")
         if len(parts) != 2 or not all(parts):
             raise MacroError(f"call target must be ns.fn: {target}", pos)
@@ -1411,6 +1529,7 @@ class Compiler:
             raise MacroError(f"Unknown ext function: {target}", pos)
         ret_type = self.runtime.get_return_type(ns, fn)
 
+        consumer_skip = Label("consumer_skip")
         args = []
         for typ in sig:
             a = self._read_braces()
@@ -1419,7 +1538,7 @@ class Compiler:
             # reserve the registers of already-parsed args so slot desugars
             # for later args cannot clobber them
             reserved = tuple(v for tag, v in args if tag == TAG_REG)
-            parsed = self._parse_ext_arg(a, typ, target, pos, reserved)
+            parsed = self._parse_ext_arg(a, typ, target, pos, reserved, consumer_skip)
             if isinstance(parsed, list):  # point/rect expand to N operands
                 args.extend(parsed)
             else:
@@ -1436,6 +1555,7 @@ class Compiler:
                 self._emit(TAG_REG, v)
             else:
                 self._emit(TAG_STR, v)
+        consumer_skip.mark(self)
         self._ret_type = ret_type  # $ret's type flows from the call site
 
     @staticmethod
@@ -1453,11 +1573,19 @@ class Compiler:
                 i += 1
         return "".join(out)
 
-    def _parse_ext_arg(self, a, typ, target, pos, reserved=()):
+    def _parse_ext_arg(self, a, typ, target, pos, reserved=(), consumer_skip=None):
         r"""Compile one ext arg per its signature type. point/rect return a
         LIST of typed operands (compound value in one brace group, e.g.
         {x,y} / {x,y,w,h} — the \move{dx,dy} idiom); all other types
         return a single (tag, value) pair."""
+        s = a.strip()
+        if self._is_constructor(s):
+            if typ != "snap":
+                raise MacroError(f"{target}: pixelrect literal is a snap handle", pos)
+            if consumer_skip is None:
+                consumer_skip = Label("consumer_skip")
+            return self._materialize_constructor(s, pos, consumer_skip, reserved)
+
         if typ in ("point", "rect"):
             n = 2 if typ == "point" else 4
             parts = [p.strip() for p in a.split(",")]
@@ -1473,20 +1601,13 @@ class Compiler:
                 out.append((t, v))
             return out
         if typ == "str":
-            s = self._unescape_str(a.strip())
-            if s.startswith("$"):
+            s_unesc = self._unescape_str(s)
+            if s_unesc.startswith("$"):
                 raise MacroError(f"{target}: str args are literal (no string variables)", pos)
-            return (TAG_STR, self._str_idx(s, pos))
+            return (TAG_STR, self._str_idx(s_unesc, pos))
         if typ in ("int", "color"):
             return self._parse_value(a, pos, reserved)
-        # handle types (snap, tpl, ...): a \rect{...} literal desugars to a
-        # fresh const handle, or a variable whose recorded type matches —
-        # compile-time environment check (spec/vm.md)
-        s = a.strip()
-        if s.startswith("\\rect"):
-            if typ != "snap":
-                raise MacroError(f"{target}: \\rect literal is a snap handle", pos)
-            return self._try_rect_literal(s, pos, reserved)
+        # handle types (snap, tpl, ...):
         if not s.startswith("$"):
             raise MacroError(f"{target}: {typ} arg must be a variable ($handle)", pos)
         reg = self._parse_var_ref(s, pos, reserved)
