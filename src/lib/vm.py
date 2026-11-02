@@ -8,7 +8,7 @@ import keymap
 from keymap import BTN_ALL
 from bytecode import (
     VERSION,
-    OP_CHAR, OP_KEY, OP_COMBO, OP_SLEEP, OP_MCLICK, OP_MMOVE, OP_PACE,
+    OP_CHAR, OP_KEY, OP_COMBO, OP_SLEEP, OP_MCLICK, OP_MMOVE, OP_PACE, OP_CONSUMER_KEY,
     OP_LOOP, OP_LOOP_END, OP_KEY_DOWN, OP_KEY_UP, OP_MDOWN, OP_MUP,
     OP_SET, OP_ADD, OP_SUB, OP_BRA, OP_JMP, OP_GUARD_ENTER, OP_GUARD_EXIT, OP_TYPEREG,
     OP_READSLOT, OP_WAIT, OP_CALL_EXT, OP_END,
@@ -17,7 +17,7 @@ from bytecode import (
     ERR_OK, ERR_HANDLE_MISUSE,
     MAX_GUARD_NEST, DELAY_SLICE_QUANTUM,
     GUARD_TAG_IMM, GUARD_TAG_REG, GUARD_TAG_SLOT,
-    CC_NAMES,
+    CC_NAMES, CONSUMER_NAMES,
     read_header, keycode_name, mod_names,
 )
 
@@ -115,6 +115,25 @@ class VM:
                 return names.get(b, str(b))
             return f"INVALID_TAG_{tag}"
 
+        def fmt_consumer_arg():
+            nonlocal i
+            tag = bytecode[i]
+            i += 1
+            if tag == TAG_REG:
+                r = f"$r{bytecode[i]}"
+                i += 1
+                return r
+            if tag == TAG_IMM:
+                u = (
+                    bytecode[i]
+                    | (bytecode[i + 1] << 8)
+                    | (bytecode[i + 2] << 16)
+                    | (bytecode[i + 3] << 24)
+                )
+                i += 4
+                return CONSUMER_NAMES.get(u, f"0x{u:04X}")
+            return f"INVALID_TAG_{tag}"
+
         while i < len(bytecode):
             op = bytecode[i]
             prefix = "  " * indent
@@ -142,6 +161,10 @@ class VM:
             elif op == OP_PACE:
                 i += 1
                 lines.append(f"{prefix}PACE {fmt_arg(2)}ms")
+            elif op == OP_CONSUMER_KEY:
+                i += 1
+                usage_str = fmt_consumer_arg()
+                lines.append(f"{prefix}CONSUMER {usage_str}")
             elif op == OP_MCLICK:
                 i += 1
                 btn = fmt_btn_arg()
@@ -371,6 +394,7 @@ class VM:
                 if hasattr(hid, "consumer_release") and active_consumer_usage is not None:
                     hid.consumer_release(active_consumer_usage)
                     active_consumer_usage = None
+                    self.active_consumer_usage = None
             target_loop_depth = guard_slots[level][3]
             del loop_stack[target_loop_depth:]
             abort_ip = guard_slots[level][2]
@@ -488,6 +512,28 @@ class VM:
                         # Set inter-action delay for following ops (DSL \pace)
                         delay_ms = clamp(read_arg(), 0, 65535)
 
+                    elif op == OP_CONSUMER_KEY:
+                        usage, src_u = read_argx(2)
+                        is_h = runtime is not None and src_u is not None and runtime.is_handle(src_u)
+                        if is_h:
+                            if runtime is not None:
+                                runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
+                            regs[REG_ERR] = ERR_HANDLE_MISUSE
+                        else:
+                            usage = clamp(usage, 0, 65535)
+                            if hid is not None and hasattr(hid, "consumer_press"):
+                                hid.consumer_press(usage)
+                                active_consumer_usage = usage
+                                self.active_consumer_usage = usage
+                                await sleep_ms(click_hold_ms)
+                                if hasattr(hid, "consumer_release"):
+                                    hid.consumer_release(usage)
+                                active_consumer_usage = None
+                                self.active_consumer_usage = None
+                            else:
+                                await sleep_ms(click_hold_ms)
+                            await sleep_ms(delay_ms)
+
                     elif op == OP_MCLICK:
                         btn = read_arg() & 0xFF
                         count = clamp(read_arg(), 0, 65535)
@@ -526,21 +572,44 @@ class VM:
                                 delay_ms = saved_delay
 
                     elif op == OP_KEY_DOWN:
-                        hid.key_press(read_arg() & 0xFF)
+                        key, src_k = read_argx(1)
+                        if runtime is not None and src_k is not None and runtime.is_handle(src_k):
+                            runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
+                            regs[REG_ERR] = ERR_HANDLE_MISUSE
+                        else:
+                            hid.key_press(key & 0xFF)
+                            await sleep_ms(delay_ms)
 
                     elif op == OP_KEY_UP:
-                        key = read_arg() & 0xFF
-                        if key == 0:
-                            hid.keys_release_all()
+                        key, src_k = read_argx(1)
+                        if runtime is not None and src_k is not None and runtime.is_handle(src_k):
+                            runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
+                            regs[REG_ERR] = ERR_HANDLE_MISUSE
                         else:
-                            hid.key_release(key)
+                            key = key & 0xFF
+                            if key == 0:
+                                hid.keys_release_all()
+                            else:
+                                hid.key_release(key)
+                            await sleep_ms(delay_ms)
 
                     elif op == OP_MDOWN:
-                        hid.mouse_press(read_arg() & 0xFF)
+                        btn, src_b = read_argx(1)
+                        if runtime is not None and src_b is not None and runtime.is_handle(src_b):
+                            runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
+                            regs[REG_ERR] = ERR_HANDLE_MISUSE
+                        else:
+                            hid.mouse_press(btn & 0xFF)
+                            await sleep_ms(delay_ms)
 
                     elif op == OP_MUP:
-                        btn = read_arg() & 0xFF
-                        hid.mouse_release(btn)
+                        btn, src_b = read_argx(1)
+                        if runtime is not None and src_b is not None and runtime.is_handle(src_b):
+                            runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
+                            regs[REG_ERR] = ERR_HANDLE_MISUSE
+                        else:
+                            hid.mouse_release(btn & 0xFF)
+                            await sleep_ms(delay_ms)
 
                     elif op == OP_SET:
                         reg = read_u8()
@@ -690,7 +759,7 @@ class VM:
                                     await sleep_ms(click_hold_ms)
                                     for kc in reversed(codes):
                                         hid.key_release(kc)
-                            await sleep_ms(delay_ms)
+                                    await sleep_ms(delay_ms)
 
                     elif op == OP_READSLOT:
                         reg = read_u8()
@@ -833,13 +902,21 @@ class VM:
 
             return True
         except BaseException:
-            # B2: on error, exception, or cancellation/abort, emergency-release all keys/buttons
+            # B2: on error, exception, or cancellation/abort, emergency-release all keys/buttons/consumer
             if hid is not None:
                 hid.keys_release_all()
                 hid.mouse_release(BTN_ALL)
+                if hasattr(hid, "consumer_release") and active_consumer_usage is not None:
+                    hid.consumer_release(active_consumer_usage)
+                    active_consumer_usage = None
+                    self.active_consumer_usage = None
             raise
         finally:
             self.last_regs = list(regs)
+            if hid is not None and hasattr(hid, "consumer_release") and active_consumer_usage is not None:
+                hid.consumer_release(active_consumer_usage)
+                active_consumer_usage = None
+                self.active_consumer_usage = None
             guard_slots = [None] * MAX_GUARD_NEST
             guard_depth = 0
             if runtime is not None:

@@ -28,6 +28,7 @@ OP_SLEEP = 0x04     # typed(u16) — one-shot sleep (DSL \delay)
 OP_MCLICK = 0x05    # typed(u8) btn, typed(u16) count
 OP_MMOVE = 0x06     # typed(i16) dx, typed(i16) dy
 OP_PACE = 0x07      # typed(u16) — set inter-action delay (DSL \pace)
+OP_CONSUMER_KEY = 0x08  # typed(u16) usage_id — Consumer Control pulse
 OP_LOOP = 0x10      # typed(u8) count, u16 len (body bytes incl. LOOP_END)
 OP_LOOP_END = 0x11
 OP_KEY_DOWN = 0x12  # typed(u8) keycode
@@ -215,6 +216,68 @@ MOUSE_BTNS = {
 }
 
 BTN_NAMES = {1: "L", 2: "R", 4: "M", 8: "B", 16: "F"}
+
+
+# Consumer Control Usages (USB HID Usage Tables Page 0x0C, spec/dsl.md §5.2)
+CONSUMER_PLAY_PAUSE = 0x00CD
+CONSUMER_NEXT_TRACK = 0x00B5
+CONSUMER_PREV_TRACK = 0x00B6
+CONSUMER_STOP = 0x00B7
+CONSUMER_PLAY = 0x00B0
+CONSUMER_PAUSE = 0x00B1
+CONSUMER_VOLUME_INCREMENT = 0x00E9
+CONSUMER_VOLUME_DECREMENT = 0x00EA
+CONSUMER_MUTE = 0x00E2
+CONSUMER_BRIGHTNESS_INCREMENT = 0x006F
+CONSUMER_BRIGHTNESS_DECREMENT = 0x0070
+CONSUMER_SYSTEM_SLEEP = 0x0032
+
+CONSUMER_COMMANDS = {
+    "media_playpause": CONSUMER_PLAY_PAUSE,
+    "playpause": CONSUMER_PLAY_PAUSE,
+    "play_pause": CONSUMER_PLAY_PAUSE,
+    "media_next": CONSUMER_NEXT_TRACK,
+    "next_track": CONSUMER_NEXT_TRACK,
+    "media_prev": CONSUMER_PREV_TRACK,
+    "prev_track": CONSUMER_PREV_TRACK,
+    "media_stop": CONSUMER_STOP,
+    "stop_track": CONSUMER_STOP,
+    "media_play": CONSUMER_PLAY,
+    "play": CONSUMER_PLAY,
+    "media_pause": CONSUMER_PAUSE,
+    "pause_track": CONSUMER_PAUSE,
+    "volup": CONSUMER_VOLUME_INCREMENT,
+    "media_volup": CONSUMER_VOLUME_INCREMENT,
+    "volume_up": CONSUMER_VOLUME_INCREMENT,
+    "voldn": CONSUMER_VOLUME_DECREMENT,
+    "media_voldn": CONSUMER_VOLUME_DECREMENT,
+    "volume_down": CONSUMER_VOLUME_DECREMENT,
+    "mute": CONSUMER_MUTE,
+    "media_mute": CONSUMER_MUTE,
+    "volume_mute": CONSUMER_MUTE,
+    "brightup": CONSUMER_BRIGHTNESS_INCREMENT,
+    "brightness_up": CONSUMER_BRIGHTNESS_INCREMENT,
+    "brightdn": CONSUMER_BRIGHTNESS_DECREMENT,
+    "brightness_down": CONSUMER_BRIGHTNESS_DECREMENT,
+    "sys_sleep": CONSUMER_SYSTEM_SLEEP,
+    "system_sleep": CONSUMER_SYSTEM_SLEEP,
+    "host_sleep": CONSUMER_SYSTEM_SLEEP,
+}
+
+CONSUMER_NAMES = {
+    CONSUMER_PLAY_PAUSE: "PLAY_PAUSE",
+    CONSUMER_NEXT_TRACK: "NEXT_TRACK",
+    CONSUMER_PREV_TRACK: "PREV_TRACK",
+    CONSUMER_STOP: "STOP",
+    CONSUMER_PLAY: "PLAY",
+    CONSUMER_PAUSE: "PAUSE",
+    CONSUMER_VOLUME_INCREMENT: "VOLUME_UP",
+    CONSUMER_VOLUME_DECREMENT: "VOLUME_DOWN",
+    CONSUMER_MUTE: "MUTE",
+    CONSUMER_BRIGHTNESS_INCREMENT: "BRIGHTNESS_UP",
+    CONSUMER_BRIGHTNESS_DECREMENT: "BRIGHTNESS_DOWN",
+    CONSUMER_SYSTEM_SLEEP: "SYSTEM_SLEEP",
+}
 
 
 def keycode_name(code):

@@ -4,6 +4,11 @@ import usb_hid
 from adafruit_hid.keyboard import Keyboard
 from adafruit_hid.keyboard_layout_us import KeyboardLayoutUS
 from adafruit_hid.mouse import Mouse
+try:
+    from adafruit_hid.consumer_control import ConsumerControl
+    _has_consumer = True
+except ImportError:
+    _has_consumer = False
 
 
 class AdafruitHIDProvider:
@@ -13,6 +18,10 @@ class AdafruitHIDProvider:
         self.keyboard = Keyboard(usb_hid.devices)
         self.layout = KeyboardLayoutUS(self.keyboard)
         self.mouse = Mouse(usb_hid.devices)
+        if _has_consumer:
+            self.consumer = ConsumerControl(usb_hid.devices)
+        else:
+            self.consumer = None
 
     def key_press(self, keycode):
         self.keyboard.press(keycode)
@@ -39,3 +48,11 @@ class AdafruitHIDProvider:
     def mouse_move(self, dx, dy):
         # adafruit_hid chunks >±127 into multiple HID reports internally
         self.mouse.move(x=dx, y=dy)
+
+    def consumer_press(self, usage_id):
+        if self.consumer:
+            self.consumer.press(usage_id)
+
+    def consumer_release(self, usage_id=None):
+        if self.consumer:
+            self.consumer.release()

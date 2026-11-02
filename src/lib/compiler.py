@@ -8,7 +8,7 @@ from keymap import (
 )
 from bytecode import (
     MAGIC, VERSION,
-    OP_CHAR, OP_KEY, OP_SLEEP, OP_MCLICK, OP_MMOVE, OP_PACE,
+    OP_CHAR, OP_KEY, OP_SLEEP, OP_MCLICK, OP_MMOVE, OP_PACE, OP_CONSUMER_KEY,
     OP_LOOP, OP_LOOP_END, OP_KEY_DOWN, OP_KEY_UP, OP_MDOWN, OP_MUP,
     OP_SET, OP_ADD, OP_BRA, OP_JMP, OP_SUB, OP_GUARD_ENTER, OP_GUARD_EXIT,
     OP_READSLOT, OP_WAIT,
@@ -20,7 +20,7 @@ from bytecode import (
     MAX_COMBO_KEYS, MAX_SLOTS, DEFAULT_WAIT_TIMEOUT_MS, DEFAULT_CLICK_HOLD_MS, _PRINTABLE_LONE_KEYS,
     GUARD_TAG_IMM, GUARD_TAG_REG, GUARD_TAG_SLOT,
     _is_alpha, _is_alnum,
-    KEYS, MODS, MOUSE_BTNS,
+    KEYS, MODS, MOUSE_BTNS, CONSUMER_COMMANDS,
     MacroError,
 )
 
@@ -519,6 +519,12 @@ class Compiler:
                 f"\\{name_lower}{{...}} is a value-position literal (valid inside "
                 "\\set{...} or an argument)", pos)
 
+        # Consumer Control commands: \mute, \volup, \media_next, etc. (spec/dsl.md §5.2)
+        if name_lower in CONSUMER_COMMANDS:
+            self._emit(OP_CONSUMER_KEY)
+            self._emit_typed((TAG_IMM, CONSUMER_COMMANDS[name_lower]), 2)
+            return
+
         # User-defined macro: \name{arg}... (compile-time expansion)
         if name_lower in self._defs:
             self._expand_macro(name_lower, pos)
@@ -550,6 +556,7 @@ class Compiler:
             or name in self.KEYS
             or name in self.MODS
             or name in _PRINTABLE_LONE_KEYS
+            or name in CONSUMER_COMMANDS
         ):
             raise MacroError(f"macro name conflicts with builtin: {name}", pos)
 

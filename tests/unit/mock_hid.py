@@ -47,6 +47,13 @@ class MockHID:
     def mouse_move(self, dx, dy):
         self.events.append(("mm", dx, dy))
 
+    # --- consumer control ---
+    def consumer_press(self, usage_id):
+        self.events.append(("cp", usage_id))
+
+    def consumer_release(self, usage_id=None):
+        self.events.append(("cr", usage_id))
+
     # --- helpers for assertions ---
     def clear(self):
         self.events.clear()
