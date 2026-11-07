@@ -20,7 +20,7 @@
 
 ### 1.1 Streaming Compilation
 
-The compiler is a single-pass streaming finite-state machine with direct bytecode emission. The input cursor moves forward, with bounded rescanning through the macro expansion stack. Parser control state uses bounded stacks governed by the profile nesting limits. Source text, macro definitions, output and string tables use storage proportional to input or output size. Output is bounded by `MAX_BYTECODE = 65535` bytes.
+The compiler is a single-pass streaming finite-state machine with direct bytecode emission. The input cursor moves forward, with bounded rescanning through the macro expansion stack. Parser control state uses bounded stacks governed by the profile nesting limits. Source text, macro definitions, output and string tables use storage proportional to input or output size. The opcode segment is bounded by `MAX_CODE_BYTES = 65535` bytes.
 
 ### 1.2 Execution Model
 
@@ -482,7 +482,7 @@ A Handle reaching a scalar-only typed operand produces one uniform runtime fault
 - Identifiers match `[a-zA-Z][a-zA-Z0-9_]*`. Name positions exclude `$`.
 - Undefined variables, unknown keys, unknown mouse buttons, unknown namespaces, unknown static signals and unknown signal namespaces are compile errors.
 - `net.send` labels are nonempty, optionally dotted identifiers.
-- Bytecode is at most `MAX_BYTECODE = 65535` bytes; the string table has at most 255 entries of at most 255 UTF-8 bytes each.
+- The opcode segment is at most `MAX_CODE_BYTES = 65535` bytes, including its terminal `END`; the string table independently permits at most 255 entries of at most 255 UTF-8 bytes each.
 - Compound groups reject empty elements and trailing commas.
 - `sys.const` is reserved for compiler lowering.
 

@@ -47,7 +47,7 @@ The table defines the DSL/VM-visible resource capacities, operand limits, and ti
 | `MAX_POINTS` | `256` | Points per request | Maximum point count in one `img.frame` `points` selector, bounding its JSON response within the frame cap. |
 | `RECT_MAX_EDGE` | `128` | Pixels | Maximum width or height of a `\pixelrect` matrix ($128^2 \times 3 = 48\text{ KiB}$). |
 | `SNAP_SLOT_BYTES` | `49152` | Bytes ($48\text{ KiB}$) | Capacity of a snapshot buffer slot ($128 \times 128 \times 3$ bytes RGB24). |
-| `MAX_BYTECODE` | `65535` | Bytes ($64\text{ KiB} - 1$) | Maximum bytecode-stream length per container (`u16` addressing horizon). |
+| `MAX_CODE_BYTES` | `65535` | Bytes ($64\text{ KiB} - 1$) | Maximum opcode-segment length, including its terminal `END`; uses the `u16` code-relative addressing horizon. |
 | `MAX_STRINGS` | `255` | Pool Entries | Maximum shared string-table entries (`u8` index). |
 | `MAX_STRING_BYTES` | `255` | Bytes per Entry | Maximum UTF-8 byte length of a string-table entry (`u8 len`); longer entries are compile-time errors. |
 | `DELAY_SLICE_QUANTUM` | `20` | Milliseconds | Base guard-inspection slice for sleeps, waits, pacing, and internal click holds. |
@@ -59,7 +59,7 @@ The table defines the DSL/VM-visible resource capacities, operand limits, and ti
 
 The MYCRO VM is a linear bytecode register machine. Each task has:
 - `regs[]`: `MAX_REGS = 32` general registers plus special status registers ([§2](#2-register-file)).
-- `ip`: Instruction pointer.
+- `ip`: Opcode-segment-relative instruction pointer; the first opcode has address `0`.
 - `loop_stack`: A pre-allocated array of `MAX_RUNTIME_NEST = 8` frames, each holding `(remaining_count: u8, loop_body_pc: u16)`.
 - `str_table`: Read-only string pool loaded from the container header.
 - `guard_slots` / `guard_depth`: A pre-allocated array of `MAX_GUARD_NEST = 4` entries and its active-depth cursor ([§6](#6-flat-iterative-guard-model)).
@@ -90,17 +90,25 @@ The MYCRO VM is a linear bytecode register machine. Each task has:
 
 ## 3. Bytecode Container Format (v4)
 
-All multi-byte integer fields in the container are little-endian; signed fields use two's-complement encoding.
+All multi-byte integer fields are little-endian; signed fields use two's-complement encoding.
+
+A complete program comprises a version marker, a string table, and an opcode segment. This diagram defines logical fields and decoding order; storage adjacency and physical placement are implementation choices.
 
 ```
-u8 VERSION (0xA6)
-u8 str_count, followed by str_count entries of [ u8 len + UTF-8 string bytes ]  -- Shared String Table
-opcode bytecode instruction stream through EOF
+Program:
+  u8 VERSION (0xA6)
+  StringTable:
+    u8 str_count
+    str_count entries of [ u8 len + UTF-8 string bytes ]
+  OpcodeSegment:
+    contiguous opcode-and-operand bytes ending with END
 ```
 
-`0xA6` is the v4 generation marker. It follows the preceding `0xA5` marker, has the high bit set, and is invalid as standalone UTF-8 or ASCII DSL source. The complete octet forms one opaque generation code and is compared as a whole. It occurs only at container offset `0`, where the VM consumes it before reading the string table. The value is reserved from opcode assignments. Version checks use exact marker equality; its numeric value is a generation identifier independent of the v4 ordinal.
+`0xA6` is the v4 generation marker. It follows the preceding `0xA5` marker, has the high bit set, and is invalid as standalone UTF-8 or ASCII DSL source. The complete octet forms one opaque generation code and is compared as a whole. It occurs only in the program's `VERSION` field, which the VM consumes before reading the string table. The value is reserved from opcode assignments. Version checks use exact marker equality; its numeric value is a generation identifier independent of the v4 ordinal.
 
-Execution and disassembly accept `VERSION = 0xA6`; every other value is rejected. A well-formed instruction stream ends with `END`. Reaching end-of-stream first follows the abnormal-termination path ([§1.3](#13-peripheral-safety-invariants)).
+Execution and disassembly accept `VERSION = 0xA6`; every other value is rejected. A well-formed opcode segment ends with `END`. Reaching the segment boundary first follows the abnormal-termination path ([§1.3](#13-peripheral-safety-invariants)).
+
+The opcode segment has logical address `0` at its first opcode. `ip`, branch bases and targets, `loop_body_pc`, and `abort_ip` all use this code-relative address system. Its length includes every opcode, operand and the terminal `END`, and is bounded by `MAX_CODE_BYTES = 65535`. Code capacity and string-table capacity are independent; the string table follows `MAX_STRINGS` and `MAX_STRING_BYTES`.
 
 The compiler interns string-table entries in order of first use and deduplicates them by exact content.
 
@@ -126,7 +134,7 @@ A Value position accepts physical Immediate and Register operands. For `$slot.<s
 
 ## 4. Opcode Set (v4)
 
-Instruction decoding starts at the first byte after the string table. `0xA6` is assigned exclusively to container metadata at offset `0`; encountering it in an instruction-stream opcode position triggers container rejection.
+Instruction decoding starts at logical address `0` of the opcode segment. `0xA6` is assigned exclusively to the program's `VERSION` field; encountering it in an opcode position triggers program rejection.
 
 | Opcode | Mnemonic | Operands | Operational Semantics |
 |---|---|---|---|
@@ -344,7 +352,7 @@ The registered `CALL_EXT` return signature determines Handle installation in `$r
 | **v1** (gist era) | Unformatted bytecode. Immediate-only operands; fused sleep/pace. |
 | **v2** | Versioned container header (`VERSION`). `SLEEP` and `PACE` split. |
 | **v3** | Container marker `0xA5`; typed operands (`TAG_IMM=0`, `TAG_REG=1`, `TAG_STR=2`); 32-register file; `SET`/`ADD`/`BRA`/`JMP`/`TYPEREG`; string table + `READSLOT`/`WAIT`/`CALL_EXT`; register-write mediation. |
-| **v4** | Container marker `VERSION = 0xA6`; `$err` at `0xFD`; `TAG_STR` narrowed to `TAG_NAME`; `COMBO` becomes a three-byte NOP; `SUB`, `GUARD_ENTER`, and `GUARD_EXIT` added; signed `i32` wraparound arithmetic; converse operand normalization and recursive native-`BRA` predicate lowering; uniform runtime Handle faults and typed register-write mediation; flat guards with immediate entry evaluation, suspension slicing, wait guard ordering, and loop rollback; exact `LOOP` base semantics and unsigned forward offsets; `WAIT` gains explicit `(sig_str_idx, field_str_idx)` operands and signed `i32` timeout polling; automatic peripheral-action pacing; Consumer Control press/hold/release with active-usage cleanup; lone printable keys lower to `CHAR`; built-in physical operands use uniform clamping while `CALL_EXT` preserves scalar `i32` values; runtime `\pixelrect` materialization through `sys.const`; `MAX_COMBO_KEYS = 8` and `MAX_SLOTS = 256`. |
+| **v4** | Container marker `VERSION = 0xA6`; `$err` at `0xFD`; `TAG_STR` narrowed to `TAG_NAME`; `COMBO` becomes a three-byte NOP; `SUB`, `GUARD_ENTER`, and `GUARD_EXIT` added; signed `i32` wraparound arithmetic; converse operand normalization and recursive native-`BRA` predicate lowering; uniform runtime Handle faults and typed register-write mediation; flat guards with immediate entry evaluation, suspension slicing, wait guard ordering, and loop rollback; exact `LOOP` base semantics and unsigned forward offsets; opcode-segment-relative addressing and independent `MAX_CODE_BYTES` capacity; `WAIT` gains explicit `(sig_str_idx, field_str_idx)` operands and signed `i32` timeout polling; automatic peripheral-action pacing; Consumer Control press/hold/release with active-usage cleanup; lone printable keys lower to `CHAR`; built-in physical operands use uniform clamping while `CALL_EXT` preserves scalar `i32` values; runtime `\pixelrect` materialization through `sys.const`; `MAX_COMBO_KEYS = 8` and `MAX_SLOTS = 256`. |
 
 Compatibility applies exclusively to frozen v4 artifacts.
 
