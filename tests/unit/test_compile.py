@@ -297,7 +297,10 @@ def test_lone_printable_keys():
 
 
 def test_bytecode_limit():
-    err = compile_err("a" * 10000)
+    # Opcode segment is bounded by MAX_CODE_BYTES = 65535 (spec/dsl.md §1.1)
+    bc = compile_ok("a" * 10000)  # ~20KB, within 65535
+    assert bc is not None
+    err = compile_err("a" * 33000)  # ~66KB, exceeds MAX_CODE_BYTES
     assert "limit" in err
 
 

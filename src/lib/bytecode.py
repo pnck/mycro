@@ -67,8 +67,11 @@ CC_NAMES = ["=", "!=", "<", "<=", ">", ">="]
 CONVERSE_CC = {0: 0, 1: 1, 2: 4, 3: 5, 4: 2, 5: 3}
 INVERT_CC = {0: 1, 1: 0, 2: 5, 3: 4, 4: 3, 5: 2}
 
-# Limits and configuration
-MAX_BYTECODE = 4096
+# Limits and configuration (spec/vm.md §1)
+MAX_CODE_BYTES = 65535      # maximum opcode-segment length including terminal END
+MAX_BYTECODE = MAX_CODE_BYTES  # backward-compatible alias
+MAX_STRINGS = 255           # maximum shared string-table entries
+MAX_STRING_BYTES = 255      # maximum UTF-8 byte length of a string-table entry
 MAX_RUNTIME_NEST = 8
 MAX_MACRO_EXPAND = 16
 MAX_PRED_NEST = 4

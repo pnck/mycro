@@ -19,7 +19,8 @@ from bytecode import (
     TAG_IMM, TAG_REG, TAG_STR,
     MAX_REGS, RECT_MAX_EDGE, REG_ERR, REG_SCRATCH, REG_TIMEOUT, REG_RET,
     CC_OPS, CC_NAMES, CONVERSE_CC, INVERT_CC,
-    MAX_BYTECODE, MAX_RUNTIME_NEST, MAX_MACRO_EXPAND, MAX_PRED_NEST, MAX_GUARD_NEST,
+    MAX_CODE_BYTES, MAX_BYTECODE, MAX_STRINGS, MAX_STRING_BYTES,
+    MAX_RUNTIME_NEST, MAX_MACRO_EXPAND, MAX_PRED_NEST, MAX_GUARD_NEST,
     MAX_COMBO_KEYS, MAX_SLOTS, DELAY_SLICE_QUANTUM, DEFAULT_WAIT_TIMEOUT_MS, DEFAULT_CLICK_HOLD_MS, _PRINTABLE_LONE_KEYS,
     GUARD_TAG_IMM, GUARD_TAG_REG, GUARD_TAG_SLOT,
     ERR_OK, ERR_GENERIC, ERR_INVALID_ARG, ERR_NO_PROVIDER, ERR_OUT_OF_BOUNDS,
@@ -71,3 +72,8 @@ class Macro:
     def disassemble(self, bytecode):
         """Disassemble bytecode to human-readable format."""
         return self.vm.disassemble(bytecode)
+
+    @property
+    def last_regs(self):
+        """Latest VM register state after execution."""
+        return self.vm.last_regs

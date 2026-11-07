@@ -506,11 +506,21 @@ class VM:
 
                     elif op == OP_SLEEP:
                         # One-shot sleep (DSL \delay)
-                        await sleep_ms(clamp(read_arg(), 0, 65535))
+                        ms, src_ms = read_argx(2)
+                        if runtime is not None and src_ms is not None and runtime.is_handle(src_ms):
+                            runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
+                            regs[REG_ERR] = ERR_HANDLE_MISUSE
+                        else:
+                            await sleep_ms(clamp(ms, 0, 65535))
 
                     elif op == OP_PACE:
                         # Set inter-action delay for following ops (DSL \pace)
-                        delay_ms = clamp(read_arg(), 0, 65535)
+                        p, src_p = read_argx(2)
+                        if runtime is not None and src_p is not None and runtime.is_handle(src_p):
+                            runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
+                            regs[REG_ERR] = ERR_HANDLE_MISUSE
+                        else:
+                            delay_ms = clamp(p, 0, 65535)
 
                     elif op == OP_CONSUMER_KEY:
                         usage, src_u = read_argx(2)
@@ -535,31 +545,55 @@ class VM:
                             await sleep_ms(delay_ms)
 
                     elif op == OP_MCLICK:
-                        btn = read_arg() & 0xFF
-                        count = clamp(read_arg(), 0, 65535)
-                        for i in range(count):
-                            hid.mouse_press(btn)
-                            await sleep_ms(click_hold_ms)
-                            hid.mouse_release(btn)
-                            if i < count - 1:
-                                await sleep_ms(delay_ms)
-                        await sleep_ms(delay_ms)
+                        btn, src_b = read_argx(4)
+                        count, src_c = read_argx(4)
+                        is_b_h = runtime is not None and src_b is not None and runtime.is_handle(src_b)
+                        is_c_h = runtime is not None and src_c is not None and runtime.is_handle(src_c)
+                        if is_b_h or is_c_h:
+                            if runtime is not None:
+                                runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
+                            regs[REG_ERR] = ERR_HANDLE_MISUSE
+                        else:
+                            btn = btn & 0xFF
+                            count = clamp(count, 0, 65535)
+                            for i in range(count):
+                                hid.mouse_press(btn)
+                                await sleep_ms(click_hold_ms)
+                                hid.mouse_release(btn)
+                                if i < count - 1:
+                                    await sleep_ms(delay_ms)
+                            await sleep_ms(delay_ms)
 
                     elif op == OP_MMOVE:
-                        dx = clamp(read_arg(signed=True), -32767, 32767)
-                        dy = clamp(read_arg(signed=True), -32767, 32767)
-                        hid.mouse_move(dx, dy)
-                        await sleep_ms(delay_ms)
+                        dx, src_x = read_argx(4, signed=True)
+                        dy, src_y = read_argx(4, signed=True)
+                        is_x_h = runtime is not None and src_x is not None and runtime.is_handle(src_x)
+                        is_y_h = runtime is not None and src_y is not None and runtime.is_handle(src_y)
+                        if is_x_h or is_y_h:
+                            if runtime is not None:
+                                runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
+                            regs[REG_ERR] = ERR_HANDLE_MISUSE
+                        else:
+                            dx = clamp(dx, -32767, 32767)
+                            dy = clamp(dy, -32767, 32767)
+                            hid.mouse_move(dx, dy)
+                            await sleep_ms(delay_ms)
 
                     elif op == OP_LOOP:
-                        count = clamp(read_arg(), 0, 255)
+                        count, src_c = read_argx(1)
                         body_len = read_u16()
                         if ip + body_len > n:
                             raise RuntimeError("LOOP body overruns bytecode")
-                        if count == 0:
+                        if runtime is not None and src_c is not None and runtime.is_handle(src_c):
+                            runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
+                            regs[REG_ERR] = ERR_HANDLE_MISUSE
                             ip += body_len  # skip body entirely
-                        elif count > 1:
-                            loop_stack.append((ip, count - 1, delay_ms))
+                        else:
+                            count = clamp(count, 0, 255)
+                            if count == 0:
+                                ip += body_len  # skip body entirely
+                            elif count > 1:
+                                loop_stack.append((ip, count - 1, delay_ms))
 
                     elif op == OP_LOOP_END:
                         if loop_stack:
@@ -774,11 +808,14 @@ class VM:
                     elif op == OP_WAIT:
                         sig = strs[read_u8()]
                         field = strs[read_u8()]
-                        timeout = read_arg(4)
+                        timeout, src_t = read_argx(4)
                         if runtime is None:
                             raise RuntimeError("WAIT without runtime registry")
 
-                        if guard_depth == 0:
+                        if src_t is not None and runtime.is_handle(src_t):
+                            runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
+                            regs[REG_ERR] = ERR_HANDLE_MISUSE
+                        elif guard_depth == 0:
                             ok = await runtime.wait_slot(sig, field, timeout)
                             status = 0 if ok else 1
                             runtime.reg_write(REG_TIMEOUT, status, None, False)

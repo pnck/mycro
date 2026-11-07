@@ -16,7 +16,8 @@ from bytecode import (
     TAG_IMM, TAG_REG, TAG_STR,
     MAX_REGS, RECT_MAX_EDGE, REG_ERR, REG_SCRATCH, REG_TIMEOUT, REG_RET,
     CC_OPS, CONVERSE_CC, INVERT_CC,
-    MAX_BYTECODE, MAX_RUNTIME_NEST, MAX_MACRO_EXPAND, MAX_PRED_NEST, MAX_GUARD_NEST,
+    MAX_CODE_BYTES, MAX_BYTECODE, MAX_STRINGS, MAX_STRING_BYTES,
+    MAX_RUNTIME_NEST, MAX_MACRO_EXPAND, MAX_PRED_NEST, MAX_GUARD_NEST,
     MAX_COMBO_KEYS, MAX_SLOTS, DEFAULT_WAIT_TIMEOUT_MS, DEFAULT_CLICK_HOLD_MS, _PRINTABLE_LONE_KEYS,
     GUARD_TAG_IMM, GUARD_TAG_REG, GUARD_TAG_SLOT,
     _is_alpha, _is_alnum,
@@ -231,7 +232,7 @@ class Compiler:
         raise MacroError(f"Unknown key: {token}", pos)
 
     def _emit(self, *args):
-        if len(self._bc) >= MAX_BYTECODE - 10:
+        if len(self._bc) - 2 >= MAX_CODE_BYTES - 10:
             raise MacroError("Bytecode limit exceeded", self._pos)
         for b in args:
             if isinstance(b, int):
@@ -411,17 +412,25 @@ class Compiler:
         self._advance()  # skip {
         start = self._pos
         depth = 1
+        last_open_is_ref = False
+        prev = ""
         while self._pos < self._len and depth > 0:
             ch = self._advance()
             nxt = self._peek()
             if ch == "\\" and nxt is not None and nxt in "{}\\":
                 self._advance()  # escaped char: skip, don't count
+                prev = nxt
                 continue
             if ch == "{":
                 depth += 1
+                last_open_is_ref = (prev == "$")
             elif ch == "}":
                 depth -= 1
+                last_open_is_ref = False
+            prev = ch
         if depth != 0:
+            if last_open_is_ref:
+                raise MacroError("Unmatched ${", start - 1)
             raise MacroError("Unmatched {", start - 1)
         return self._text[start : self._pos - 1]
 
@@ -748,7 +757,9 @@ class Compiler:
             end = s.find("}")
             if end == -1:
                 raise MacroError("Unmatched ${", pos)
-            name = s[2:end]
+            name = s[2:end].strip()
+            if not name:
+                raise MacroError("Empty reference", pos)
             if s[end + 1 :].strip():
                 raise MacroError(f"Unexpected text after ${{{name}}}", pos)
         else:
@@ -797,7 +808,7 @@ class Compiler:
         for r in range(MAX_REGS):
             if r not in blocked:
                 return r
-        raise MacroError("no free register for value operand", pos)
+        raise MacroError("no free register for slot operand", pos)
 
     def _validate_var_name(self, name, pos):
         """Validate variable name for assignment without allocating."""
@@ -1238,6 +1249,8 @@ class Compiler:
 
     def _cmd_guarded(self, pos):
         r"""\guarded [ [throttle] ] { predicate } { body } [ { on_abort } ]"""
+        if self._runtime_depth >= MAX_RUNTIME_NEST:
+            raise MacroError(f"guard nesting exceeds {MAX_RUNTIME_NEST} levels", pos)
         if self._guard_depth >= MAX_GUARD_NEST:
             raise MacroError(f"guard nesting exceeds {MAX_GUARD_NEST} levels", pos)
 
