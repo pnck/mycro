@@ -189,7 +189,7 @@ class TestRgbLiteral:
 
 
 class TestPixelRectParsing:
-    """Grammar, edge limits, and error diagnostics for \\pixelrect and \\rect."""
+    """Grammar, edge limits, and error diagnostics for \\pixelrect statements (spec/dsl.md §6.4)."""
 
     def test_pixelrect_dimensions_and_bytes(self):
         rt = make_test_runtime()
@@ -199,10 +199,9 @@ class TestPixelRectParsing:
         src = (
             r"\#!syntax: free" "\n"
             r"\use{img}" "\n"
-            r"\call{img.diff}"
-            r"{\pixelrect{\row{0xFF0000, 0x00FF00}, \row{\rgb{0,0,255}, 16777215}}}"
-            r"{\pixelrect{\row{0, 0}, \row{0, 0}}}"
-            r"{0}"
+            r"\pixelrect{p1}{\row{0xFF0000, 0x00FF00}, \row{\rgb{0,0,255}, 16777215}}" "\n"
+            r"\pixelrect{p2}{\row{0, 0}, \row{0, 0}}" "\n"
+            r"\call{img.diff}{$p1}{$p2}{0}" "\n"
         )
         bc, err = m.compile(src)
         assert err is None
@@ -217,36 +216,20 @@ class TestPixelRectParsing:
         ])
         assert entry0["data"]["rgb"] == expected_bytes
 
-    def test_rect_alias_compatibility(self):
-        rt = make_test_runtime()
-        m = Macro(MockHID(), rt)
-        src = (
-            r"\#!syntax: free" "\n"
-            r"\use{img}" "\n"
-            r"\call{img.diff}"
-            r"{\rect{\row{0x123456}}}"
-            r"{\rect{\row{0x123456}}}"
-            r"{0}"
-        )
-        bc, err = m.compile(src)
-        assert err is None
-        entry = rt.const_entry(0)
-        assert entry["data"]["rgb"] == bytes([0x12, 0x34, 0x56])
-
     def test_ragged_rows_rejected(self):
         rt = make_test_runtime()
         m = Macro(MockHID(), rt)
-        src = r"\set{h}{\pixelrect{\row{1, 2}, \row{3}}}"
+        src = r"\pixelrect{h}{\row{1, 2}, \row{3}}"
         _, err = m.compile(src)
-        assert err is not None and "ragged rows" in err
+        assert err is not None and "unequal length" in err
 
     def test_empty_literal_rejected(self):
         rt = make_test_runtime()
         m = Macro(MockHID(), rt)
-        _, err = m.compile(r"\set{h}{\pixelrect{}}")
+        _, err = m.compile(r"\pixelrect{h}{}")
         assert err is not None and "empty literal" in err
 
-        _, err = m.compile(r"\set{h}{\pixelrect{\row{}}}")
+        _, err = m.compile(r"\pixelrect{h}{\row{}}")
         assert err is not None and "empty literal" in err
 
     def test_edge_limits(self):
@@ -255,45 +238,61 @@ class TestPixelRectParsing:
 
         # 128 elements is allowed
         row_128 = ",".join(["0"] * 128)
-        src_128 = f"\\set{{h}}{{\\pixelrect{{\\row{{{row_128}}}}}}}"
+        src_128 = f"\\pixelrect{{h}}{{\\row{{{row_128}}}}}"
         bc, err = m.compile(src_128)
         assert err is None
 
         # 129 elements exceeds RECT_MAX_EDGE
         row_129 = ",".join(["0"] * 129)
-        src_129 = f"\\set{{h}}{{\\pixelrect{{\\row{{{row_129}}}}}}}"
+        src_129 = f"\\pixelrect{{h}}{{\\row{{{row_129}}}}}"
         _, err = m.compile(src_129)
         assert err is not None and "edge capped at 128" in err
 
     def test_color_out_of_range(self):
         rt = make_test_runtime()
         m = Macro(MockHID(), rt)
-        src = r"\set{h}{\pixelrect{\row{0x1000000}}}"
+        src = r"\pixelrect{h}{\row{0x1000000}}"
         _, err = m.compile(src)
-        assert err is not None and "out of 0xRRGGBB range" in err
+        assert err is not None and "0xRRGGBB range" in err
 
 
 class TestDisallowedConstructorPositions:
-    """Constructors cannot be used at top level, in guards, or as non-snap args."""
+    """\\pixelrect belongs to statement grammar; value-position usage is rejected (spec/dsl.md §6.4)."""
 
-    def test_top_level_rejected(self):
+    def test_value_position_rejected(self):
         rt = make_test_runtime()
         m = Macro(MockHID(), rt)
-        _, err = m.compile(r"\pixelrect{\row{0}}")
-        assert err is not None and "value-position literal" in err
 
-        _, err = m.compile(r"\rect{\row{0}}")
-        assert err is not None and "value-position literal" in err
+        # In \set:
+        _, err = m.compile(r"\set{h}{\pixelrect{\row{0}}}")
+        assert err is not None and "pixelrect requires destination statement" in err
 
-        _, err = m.compile(r"\rgb{0,0,0}")
-        assert err is not None and "value-position literal" in err
+        # In \call:
+        _, err = m.compile(r"\use{img}\call{img.diff}{\pixelrect{\row{0}}}{$p2}{0}")
+        assert err is not None and "pixelrect requires destination statement" in err
 
-    def test_guard_predicate_rejected(self):
+        # In \if predicate:
+        _, err = m.compile(r"\if{{\pixelrect{\row{0}}, =, 0}}{\set{x}{1}}")
+        assert err is not None and "pixelrect requires destination statement" in err
+
+        # In \guarded predicate:
+        _, err = m.compile(r"\guarded{{\pixelrect{\row{0}}, =, 0}}{\set{x}{1}}")
+        assert err is not None and "pixelrect requires destination statement" in err
+
+        # In \add:
+        _, err = m.compile(r"\set{x}{0}\add{x}{\pixelrect{\row{0}}}")
+        assert err is not None and "pixelrect requires destination statement" in err
+
+        # In \sub:
+        _, err = m.compile(r"\set{x}{0}\sub{x}{\pixelrect{\row{0}}}")
+        assert err is not None and "pixelrect requires destination statement" in err
+
+    def test_set_declaration_order(self):
+        r"""Declaration follows evaluation of source value (\set{x}{$x} sees x as undefined)."""
         rt = make_test_runtime()
         m = Macro(MockHID(), rt)
-        src = r"\guarded{{\pixelrect{\row{0}}, =, 0}}{\set{x}{1}}"
-        _, err = m.compile(src)
-        assert err is not None and "guards do not support constructors" in err
+        _, err = m.compile(r"\set{x}{$x}")
+        assert err is not None and "Undefined variable: x" in err
 
     def test_sys_const_direct_call_reserved(self):
         rt = make_test_runtime()
@@ -302,94 +301,59 @@ class TestDisallowedConstructorPositions:
         _, err = m.compile(src)
         assert err is not None and "sys.const is reserved for compiler lowering" in err
 
-    def test_constructor_as_non_snap_arg_rejected(self):
-        rt = make_test_runtime()
-        rt.register_ns("test", {
-            "intfn": (["int"], "int", lambda x: (x, ERR_OK)),
-        })
-        m = Macro(MockHID(), rt)
-        src = r"\call{test.intfn}{\pixelrect{\row{0}}}"
-        _, err = m.compile(src)
-        assert err is not None and "pixelrect literal is a snap handle" in err
 
+class TestPixelRectLoweringAndExecution:
+    """Lowering pattern, execution, and error handling for \\pixelrect."""
 
-class TestSpecVectors:
-    """Acceptance tests matching normative vectors in tests/spec/vectors.json."""
-
-    def test_vector_compile_pixelrect_scratch_exhausted(self):
-        """Vector compile.pixelrect_scratch_exhausted:
-        All 32 registers bound to user variables leaves no scratch for constructor."""
-        rt = make_test_runtime()
-        m = Macro(MockHID(), rt)
-        lines = [r"\#!syntax: free", r"\use{img}"]
-        for i in range(32):
-            lines.append(f"\\set{{v{i}}}{{0}}")
-        lines.append(r"\call{img.diff}{\pixelrect{\row{0}}}{$v0}{0}")
-        src = "\n".join(lines) + "\n"
-
-        _, err = m.compile(src)
-        assert err is not None
-        assert "no free register for value operand" in err
-
-    def test_vector_compile_pixelrect_dual_constructors_symbolic(self):
-        """Vector compile.pixelrect_dual_constructors_symbolic:
-        Consecutive scratch registers r0, r1 with shared consumer_skip."""
+    def test_pixelrect_statement_lowering_and_disassembly(self):
+        """spec/dsl.md §6.4 lowering pattern:
+        CALL_EXT sys.const, TAG_IMM cid
+        BRA $err, =, 0, off -> pixelrect_done
+        SET destination, TAG_REG $ret
+        pixelrect_done:
+        """
         rt = make_test_runtime()
         m = Macro(MockHID(), rt)
         src = (
             r"\#!syntax: free" "\n"
             r"\use{img}" "\n"
-            r"\call{img.diff}"
-            r"{\pixelrect{\row{\rgb{255,0,0},0x00FF00}}}"
-            r"{\pixelrect{\row{0x0000FF,0xFFFFFF}}}"
-            r"{0}" "\n"
+            r"\pixelrect{expected}{\row{\rgb{255,0,0}, 0x00FF00}}" "\n"
+            r"\call{img.snap}{0, 0, 2, 1}" "\n"
+            r"\set{actual}{$ret}" "\n"
+            r"\call{img.diff}{$expected}{$actual}{0}" "\n"
         )
         bc, err = m.compile(src)
         assert err is None
 
-        # Verify const store entries
-        e0 = rt.const_entry(0)
-        assert e0["data"]["rgb"].hex() == "ff000000ff00"
-        e1 = rt.const_entry(1)
-        assert e1["data"]["rgb"].hex() == "0000ffffffff"
-
-        # Disassemble to inspect symbolic structure
         dis = m.disassemble(bc)
         assert "CALL sys.const(0)" in dis
-        assert "CALL sys.const(1)" in dis
+        assert "BRA $err = 0" in dis
         assert "SET $r0, $ret" in dis
+        assert "CALL img.snap(0, 0, 2, 1)" in dis
         assert "SET $r1, $ret" in dis
         assert "CALL img.diff($r0, $r1, 0)" in dis
 
-    def test_vector_vm_pixelrect_dual_constructors_success(self):
-        """Vector vm.pixelrect_dual_constructors_success:
-        Constructors materialize handles 1 and 2, img.diff returns 2, handles released at exit."""
+    def test_pixelrect_execution_and_reuse(self):
         rt = make_test_runtime()
         m = Macro(MockHID(), rt)
         src = (
             r"\#!syntax: free" "\n"
             r"\use{img}" "\n"
-            r"\call{img.diff}"
-            r"{\pixelrect{\row{\rgb{255,0,0},0x00FF00}}}"
-            r"{\pixelrect{\row{0x0000FF,0xFFFFFF}}}"
-            r"{0}" "\n"
+            r"\pixelrect{h}{\row{0xFF0000}}" "\n"
+            r"\call{img.diff}{$h}{$h}{0}" "\n"
+            r"\set{diff}{$ret}" "\n"
         )
         bc, err = m.compile(src)
         assert err is None
         regs = run_macro(m, bc)
-        assert regs["$ret"] == 2
+        assert regs["diff"] == 0
         assert regs["$err"] == 0
-        assert rt._handles == {}
-        assert rt._handle_seq == 2
+        assert rt._handles == {}  # released at exit
 
-    def test_vector_vm_pixelrect_materialization_failure_skips_remaining(self):
-        """Vector vm.pixelrect_materialization_failure_skips_remaining:
-        First constructor failure skips remaining constructor and consumer call."""
+    def test_pixelrect_materialization_failure(self):
         rt = make_test_runtime()
-        calls = []
 
         def _failing_sys_const(cid):
-            calls.append(cid)
             return 0, ERR_RESOURCE_EXHAUSTED
 
         rt.register_ns("sys", {
@@ -399,27 +363,50 @@ class TestSpecVectors:
         m = Macro(MockHID(), rt)
         src = (
             r"\#!syntax: free" "\n"
-            r"\use{img}" "\n"
-            r"\call{img.diff}{\pixelrect{\row{0}}}{\pixelrect{\row{1}}}{0}" "\n"
+            r"\pixelrect{h}{\row{0xFF0000}}" "\n"
         )
         bc, err = m.compile(src)
         assert err is None
         regs = run_macro(m, bc)
-
-        # Only first constructor was called
-        assert calls == [0]
-        assert regs["$ret"] == 0
+        # Materialization failure skips SET destination, preserves $err from sys.const
+        assert regs["h"] == 0
         assert regs["$err"] == ERR_RESOURCE_EXHAUSTED
 
-    def test_vector_vm_handle_id_exhaustion(self):
-        """Vector vm.handle_id_exhaustion:
-        After allocating INT32_MAX, subsequent handle allocation returns ERR_RESOURCE_EXHAUSTED."""
+    def test_handle_in_predicate_evaluates_false_and_err_handle_misuse(self):
+        """Handle variable compared in predicate evaluates to FALSE and sets $err = ERR_HANDLE_MISUSE."""
         rt = make_test_runtime()
-        # Set handle counter near INT32_MAX
+        m = Macro(MockHID(), rt)
+        src = (
+            r"\pixelrect{h}{\row{0}}"
+            r"\if{{$h, =, 0}}"
+            r"{\set{out}{1}}"
+            r"{\set{out}{2}}"
+        )
+        bc, err = m.compile(src)
+        assert err is None
+        regs = run_macro(m, bc)
+        assert regs["out"] == 2
+        assert regs["$err"] == ERR_HANDLE_MISUSE
+
+    def test_handle_in_arithmetic_leaves_dst_unchanged_and_sets_err_handle_misuse(self):
+        """Handle in arithmetic destination or source operand triggers runtime fault."""
+        rt = make_test_runtime()
+        m = Macro(MockHID(), rt)
+        src = (
+            r"\pixelrect{h}{\row{0}}"
+            r"\add{h}{1}"
+        )
+        bc, err = m.compile(src)
+        assert err is None
+        regs = run_macro(m, bc)
+        assert regs["$err"] == ERR_HANDLE_MISUSE
+
+    def test_handle_id_exhaustion_at_int32_max(self):
+        """Handle counter reaching INT32_MAX returns ERR_RESOURCE_EXHAUSTED."""
+        rt = make_test_runtime()
         rt._handle_seq = 2147483646
 
         m = Macro(MockHID(), rt)
-        # First call allocates 2147483647 (INT32_MAX)
         src1 = r"\#!syntax: free" "\n" r"\use{img}" "\n" r"\call{img.snap}{0,0,1,1}" "\n"
         bc1, err1 = m.compile(src1)
         assert err1 is None
@@ -427,7 +414,6 @@ class TestSpecVectors:
         assert regs1["$ret"] == 2147483647
         assert regs1["$err"] == 0
 
-        # Second call exhausts handle IDs
         src2 = r"\#!syntax: free" "\n" r"\use{img}" "\n" r"\call{img.snap}{0,0,1,1}" "\n"
         bc2, err2 = m.compile(src2)
         assert err2 is None
@@ -435,39 +421,3 @@ class TestSpecVectors:
         assert regs2["$ret"] == 0
         assert regs2["$err"] == ERR_RESOURCE_EXHAUSTED
         assert rt._handle_seq == 2147483647
-
-
-class TestConstructorIntegration:
-    """Integration behaviors in variables and predicates."""
-
-    def test_constructor_in_set_and_reuse(self):
-        rt = make_test_runtime()
-        m = Macro(MockHID(), rt)
-        src = (
-            r"\#!syntax: free" "\n"
-            r"\use{img}" "\n"
-            r"\set{h}{\pixelrect{\row{0xFF0000}}}" "\n"
-            r"\call{img.diff}{$h}{$h}{0}" "\n"
-            r"\set{diff}{$ret}" "\n"
-        )
-        bc, err = m.compile(src)
-        assert err is None
-        regs = run_macro(m, bc)
-        assert regs["diff"] == 0
-        assert regs["$err"] == 0
-
-    def test_constructor_in_predicate_handle_fault(self):
-        """Evaluating a constructor in a predicate then comparing as scalar causes ERR_HANDLE_MISUSE."""
-        rt = make_test_runtime()
-        m = Macro(MockHID(), rt)
-        src = (
-            r"\if{{\pixelrect{\row{0}}, =, 0}}"
-            r"{\set{out}{1}}"
-            r"{\set{out}{2}}"
-        )
-        bc, err = m.compile(src)
-        assert err is None
-        regs = run_macro(m, bc)
-        # Handle fault: condition is false ($err = ERR_HANDLE_MISUSE)
-        assert regs["out"] == 2
-        assert regs["$err"] == ERR_HANDLE_MISUSE

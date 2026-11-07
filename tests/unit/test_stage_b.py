@@ -15,7 +15,7 @@ from macro import (
 )
 from mock_hid import MockHID
 
-H = bytes([MAGIC, VERSION, 0])
+H = bytes([VERSION, 0])
 
 
 def compile_ok(text):
@@ -62,7 +62,7 @@ def test_set_negative_layout():
 
 def test_set_from_var():
     bc = compile_ok("\\set{x}{1}\\set{y}{$x}")
-    assert bc[3:] == bytes([
+    assert bc[len(H):] == bytes([
         OP_SET, 0, TAG_IMM, 1, 0, 0, 0,
         OP_SET, 1, TAG_REG, 0,
         OP_END,
@@ -71,17 +71,17 @@ def test_set_from_var():
 
 def test_add_emission():
     bc = compile_ok("\\set{x}{1}\\add{x}{-3}")
-    assert bc[3 + 7 :] == bytes([OP_ADD, 0, TAG_IMM, 0xFD, 0xFF, 0xFF, 0xFF, OP_END])
+    assert bc[len(H) + 7 :] == bytes([OP_ADD, 0, TAG_IMM, 0xFD, 0xFF, 0xFF, 0xFF, OP_END])
 
 
 def test_sub_emission():
     bc = compile_ok("\\set{x}{1}\\sub{x}{3}")
-    assert bc[3 + 7 :] == bytes([OP_SUB, 0, TAG_IMM, 3, 0, 0, 0, OP_END])
+    assert bc[len(H) + 7 :] == bytes([OP_SUB, 0, TAG_IMM, 3, 0, 0, 0, OP_END])
 
 
 def test_sub_from_var():
     bc = compile_ok("\\set{x}{10}\\set{y}{4}\\sub{x}{$y}")
-    assert bc[3 + 7 * 2 :] == bytes([OP_SUB, 0, TAG_REG, 1, OP_END])
+    assert bc[len(H) + 7 * 2 :] == bytes([OP_SUB, 0, TAG_REG, 1, OP_END])
 
 
 def test_reg_err_and_special_reservations():
@@ -102,7 +102,7 @@ def test_read_err_register():
 
 def test_reg_allocation_order():
     bc = compile_ok("\\set{a}{1}\\set{b}{2}\\set{c}{3}")
-    regs = [bc[i] for i in (4, 11, 18)]  # each SET is 7 bytes; reg operand at +1
+    regs = [bc[len(H) + 1 + 7 * i] for i in (0, 1, 2)]  # each SET is 7 bytes; reg operand at +1
     assert regs == [0, 1, 2]
 
 
@@ -110,22 +110,22 @@ def test_reg_allocation_order():
 
 def test_typed_move():
     bc = compile_ok("\\set{x}{100}\\move{$x,$x}")
-    assert bc[3 + 7 :] == bytes([OP_MMOVE, TAG_REG, 0, TAG_REG, 0, OP_END])
+    assert bc[len(H) + 7 :] == bytes([OP_MMOVE, TAG_REG, 0, TAG_REG, 0, OP_END])
 
 
 def test_typed_delay():
     bc = compile_ok("\\set{t}{50}\\delay{$t}")
-    assert bc[3 + 7 :] == bytes([OP_SLEEP, TAG_REG, 0, OP_END])
+    assert bc[len(H) + 7 :] == bytes([OP_SLEEP, TAG_REG, 0, OP_END])
 
 
 def test_imm_delay_stays_imm():
     bc = compile_ok("\\delay{0.5}")
-    assert bc[3:] == bytes([OP_SLEEP, TAG_IMM, 500 & 0xFF, 500 >> 8, 0, 0, OP_END])
+    assert bc[len(H):] == bytes([OP_SLEEP, TAG_IMM, 500 & 0xFF, 500 >> 8, 0, 0, OP_END])
 
 
 def test_typed_rep_count():
     bc = compile_ok("\\set{n}{3}\\rep{$n}{a}")
-    assert bc[3 + 7 :] == bytes([
+    assert bc[len(H) + 7 :] == bytes([
         OP_LOOP, TAG_REG, 0, 3, 0,
         OP_CHAR, ord("a"), OP_LOOP_END,
         OP_END,
@@ -134,7 +134,7 @@ def test_typed_rep_count():
 
 def test_typed_click():
     bc = compile_ok("\\set{n}{3}\\click{L,$n}")
-    assert bc[3 + 7 :] == bytes([
+    assert bc[len(H) + 7 :] == bytes([
         OP_MCLICK, TAG_IMM, keymap.BTN_LEFT, 0, 0, 0, TAG_REG, 0, OP_END,
     ])
 
@@ -153,19 +153,19 @@ def test_mouse_btn_name_position():
 
 def test_kup_imm_still_works():
     bc = compile_ok("\\kup{}")
-    assert bc[3:] == bytes([OP_KEY_UP, TAG_IMM, 0, 0, 0, 0, OP_END])
+    assert bc[len(H):] == bytes([OP_KEY_UP, TAG_IMM, 0, 0, 0, 0, OP_END])
 
 
 def test_braced_var_form():
     bc = compile_ok("\\set{n1}{7}\\move{${n1},0}")
-    assert bc[3 + 7 :] == bytes([OP_MMOVE, TAG_REG, 0, TAG_IMM, 0, 0, 0, 0, OP_END])
+    assert bc[len(H) + 7 :] == bytes([OP_MMOVE, TAG_REG, 0, TAG_IMM, 0, 0, 0, 0, OP_END])
 
 
 # --- \if emission (backpatched offsets) ---
 
 def test_if_no_else_layout():
     bc = compile_ok("\\set{x}{1}\\if{ {$x, =, 1} }{a}")
-    bra = 3 + 7  # after header + SET
+    bra = len(H) + 7  # after header + SET
     assert bc[bra : bra + 8] == bytes([OP_BRA, 0, 0, TAG_IMM, 1, 0, 0, 0])
     bra_off = bc[bra + 8] | (bc[bra + 9] << 8)
     jmp_at = bra + 10
@@ -180,7 +180,7 @@ def test_if_no_else_layout():
 
 def test_if_else_layout():
     bc = compile_ok("\\set{x}{1}\\if{ {$x, =, 1} }{a}{b}")
-    bra = 3 + 7
+    bra = len(H) + 7
     bra_off = bc[bra + 8] | (bc[bra + 9] << 8)
     jmp_at = bra + 10
     then_start = jmp_at + 3
@@ -202,12 +202,12 @@ def test_if_all_ops_compile():
 
 def test_typenum_emission():
     bc = compile_ok("\\set{x}{1}\\typenum{$x}")
-    assert bc[3 + 7 :] == bytes([OP_TYPEREG, 0, OP_END])
+    assert bc[len(H) + 7 :] == bytes([OP_TYPEREG, 0, OP_END])
 
 
 def test_typenum_special_regs():
-    assert compile_ok("\\typenum{$ret}")[3:] == bytes([OP_TYPEREG, REG_RET, OP_END])
-    assert compile_ok("\\typenum{$timeout}")[3:] == bytes([OP_TYPEREG, REG_TIMEOUT, OP_END])
+    assert compile_ok("\\typenum{$ret}")[len(H):] == bytes([OP_TYPEREG, REG_RET, OP_END])
+    assert compile_ok("\\typenum{$timeout}")[len(H):] == bytes([OP_TYPEREG, REG_TIMEOUT, OP_END])
 
 
 def test_val_obsolete_and_typenum_requires_var():

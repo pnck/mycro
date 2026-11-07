@@ -159,8 +159,8 @@ def test_converse_mapping_byte_inspection():
     ]
     for op, orig_cc, expected_cc in pairs:
         bc = compile_ok(f"\\set{{x}}{{10}}\\if{{ {{5, {op}, $x}} }}{{a}}")
-        # In bytecode: header (3B) + SET (7B) = index 10 is BRA
-        bra_idx = 10
+        # In bytecode: header (2B) + SET (7B) = index 9 is BRA
+        bra_idx = 9
         assert bc[bra_idx] == OP_BRA
         assert bc[bra_idx + 1] == expected_cc, f"Expected converse CC {expected_cc} for op {op}, got {bc[bra_idx+1]}"
         assert bc[bra_idx + 2] == 0  # reg $x
@@ -209,8 +209,8 @@ def test_static_constant_folding():
 def test_register_vs_register_comparison():
     """Register vs register comparison encodes both registers."""
     bc = compile_ok("\\set{a}{10}\\set{b}{20}\\if{ {$a, <, $b} }{y}{z}")
-    # SET a: 7B, SET b: 7B -> bra at index 17
-    bra_idx = 17
+    # SET a: 7B, SET b: 7B -> bra at index 16
+    bra_idx = 16
     assert bc[bra_idx] == OP_BRA
     assert bc[bra_idx + 1] == 2  # CC: <
     assert bc[bra_idx + 2] == 0  # reg a

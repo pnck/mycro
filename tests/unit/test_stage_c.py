@@ -41,10 +41,10 @@ def compile_err(text, rt=None):
 
 
 def header_strs(bc):
-    """Parse the v3 header: returns (strings, code_start)."""
-    assert bc[0] == MAGIC and bc[1] == VERSION
-    n = bc[2]
-    i = 3
+    """Parse the header: returns (strings, code_start)."""
+    assert bc[0] == VERSION
+    n = bc[1]
+    i = 2
     strs = []
     for _ in range(n):
         ln = bc[i]
@@ -99,15 +99,16 @@ def test_handle_type_environment():
 
 
 def test_add_rejects_handle():
-    assert "cannot modify a tpl handle" in compile_err(
-        "\\call{img.load}{name}\\set{h}{$ret}\\add{h}{1}")
+    # In v4 (§6.2), handle in arithmetic compiles ok; at runtime leaves dst unchanged and sets $err=ERR_HANDLE_MISUSE
+    bc = compile_ok("\\call{img.load}{name}\\set{h}{$ret}\\add{h}{1}")
+    assert bc is not None
 
 
 def test_if_rejects_handle():
-    assert "cannot compare a tpl handle" in compile_err(
-        "\\call{img.load}{name}\\set{h}{$ret}\\if{ {$h, =, 1} }{a}")
-    assert "cannot compare a tpl handle" in compile_err(
-        "\\call{img.load}{name}\\set{h}{$ret}\\set{x}{1}\\if{ {$x, =, $h} }{a}")
+    # In v4 (§6.7, §8.1), handle in predicate compiles ok; at runtime evaluates false and sets $err=ERR_HANDLE_MISUSE
+    bc1 = compile_ok("\\call{img.load}{name}\\set{h}{$ret}\\if{ {$h, =, 1} }{a}")
+    bc2 = compile_ok("\\call{img.load}{name}\\set{h}{$ret}\\set{x}{1}\\if{ {$x, =, $h} }{a}")
+    assert bc1 is not None and bc2 is not None
 
 
 def test_if_ret_exemption():

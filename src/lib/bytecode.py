@@ -16,9 +16,9 @@ from keymap import (
     BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_BACK, BTN_FORWARD, BTN_ALL,
 )
 
-# Container magic and version
-MAGIC = 0xA6
-VERSION = 4
+# Container version marker (spec/vm.md §3)
+VERSION = 0xA6
+MAGIC = VERSION  # backward-compatible alias
 
 # Opcodes
 OP_CHAR = 0x01      # <ascii>
@@ -310,12 +310,12 @@ def mod_names(mask):
 
 def read_header(bc):
     """Validate header and return (strings, code_start_offset)."""
-    if len(bc) < 3 or bc[0] != MAGIC or bc[1] != VERSION:
+    if len(bc) < 2 or bc[0] != VERSION:
         raise ValueError(
-            f"Bytecode version mismatch (want magic=0x{MAGIC:02X} v{VERSION})"
+            f"Bytecode version mismatch (want version=0x{VERSION:02X})"
         )
-    n = bc[2]
-    i = 3
+    n = bc[1]
+    i = 2
     strs = []
     for _ in range(n):
         ln = bc[i]

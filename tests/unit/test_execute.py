@@ -199,7 +199,7 @@ def test_loop_count_zero_skips_body():
     hid = MockHID()
     m = Macro(hid)
     body = bytes([OP_CHAR, ord("x")])
-    bc = bytes([MAGIC, VERSION, 0, OP_LOOP, 0, 0, 0, 0, 0, len(body) + 1, 0]) + body + bytes([
+    bc = bytes([VERSION, 0, OP_LOOP, 0, 0, 0, 0, 0, len(body) + 1, 0]) + body + bytes([
         OP_LOOP_END, OP_CHAR, ord("y"), OP_END,
     ])
     asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
@@ -214,7 +214,7 @@ def test_combo_opcode_deprecated_nop():
     hid = MockHID()
     m = Macro(hid)
     # OP_COMBO with dummy mods=0x01, key=0x04 should be a 3-byte NOP in v4
-    bc = bytes([MAGIC, VERSION, 0, 0x03, 0x01, 0x04, OP_CHAR, ord("a"), OP_END])
+    bc = bytes([VERSION, 0, 0x03, 0x01, 0x04, OP_CHAR, ord("a"), OP_END])
     asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
     # OP_COMBO did not press ctrl, only OP_CHAR pressed and released 'a'
     assert ("kp", keymap.CONTROL) not in hid.events
@@ -268,7 +268,7 @@ def test_unknown_opcode_raises_and_cleans_up():
     hid = MockHID()
     m = Macro(hid)
     try:
-        asyncio.run(m.execute(bytes([MAGIC, VERSION, 0, 0x77]), default_delay_ms=0, click_hold_ms=0))
+        asyncio.run(m.execute(bytes([VERSION, 0, 0x77]), default_delay_ms=0, click_hold_ms=0))
         raised = False
     except RuntimeError as e:
         raised = "opcode" in str(e)
@@ -290,9 +290,9 @@ def test_execute_rejects_bad_header():
     hid = MockHID()
     m = Macro(hid)
     with pytest.raises(ValueError, match="Bytecode version mismatch"):
-        asyncio.run(m.execute(bytes([0xA5, 0x03, 0, OP_END])))
+        asyncio.run(m.execute(bytes([0xA5, 0, OP_END])))
     with pytest.raises(ValueError, match="Bytecode version mismatch"):
-        asyncio.run(m.execute(bytes([0x99, VERSION, 0, OP_END])))
+        asyncio.run(m.execute(bytes([0x99, 0, OP_END])))
 
 
 def test_execute_text_block_in_free_mode():
@@ -315,7 +315,7 @@ def test_vm_class_direct_usage():
     from vm import VM
     hid = MockHID()
     vm = VM(hid)
-    bc = bytes([MAGIC, VERSION, 0, OP_CHAR, ord("z"), OP_END])
+    bc = bytes([VERSION, 0, OP_CHAR, ord("z"), OP_END])
     asyncio.run(vm.execute(bc, default_delay_ms=0, click_hold_ms=0))
     assert ("kp", keymap.letter_keycode("z")) in hid.events
     dis = vm.disassemble(bc)

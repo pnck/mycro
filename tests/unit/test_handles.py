@@ -126,26 +126,24 @@ def test_non_handle_return_does_not_claim():
 
 
 def test_ret_exemption_does_not_survive_storage():
-    r"""Checking $ret directly after a snap is exempt (error sentinels);
-    storing it types the VARIABLE as a handle and \if rejects it —
-    this is why device tests check $ret in place (devicetest G10)."""
+    r"""Under v4 (§6.7, §8.1), a handle in \if compiles ok and evaluates false
+    at runtime with $err=ERR_HANDLE_MISUSE."""
     rt = make_runtime()
-    err = compile_err("\\call{img.snap}{0,0,4,4}\\set{i}{$ret}"
-                      "\\if{ {$i, <, 0} }{\\call{img.use}{$i}}", rt)
-    assert "handle" in err
-    # the correct idiom compiles
+    compile_ok("\\call{img.snap}{0,0,4,4}\\set{i}{$ret}"
+               "\\if{ {$i, <, 0} }{\\call{img.use}{$i}}", rt)
+    # the idiom compiles
     compile_ok("\\call{img.snap}{0,0,4,4}"
                "\\if{ {$ret, <, 0} }{\\call{img.use}{$ret}}", rt)
 
 
-# --- \rect literal (compile-time pixel constant -> const store -> handle) ---
+# --- \pixelrect statement (compile-time pixel constant -> const store -> handle) ---
 
-RECT2 = "\\rect{\\row{0xFF0000,0x00FF00},\\row{0x0000FF,0xFFFFFF}}"
+PIXELRECT2_STMT = "\\pixelrect{t}{\\row{0xFF0000,0x00FF00},\\row{0x0000FF,0xFFFFFF}}"
 
 
 def test_rect_literal_goes_to_const_store_not_bytecode():
     rt = make_runtime()
-    bc = compile_ok("\\set{t}{" + RECT2 + "}", rt)
+    bc = compile_ok(PIXELRECT2_STMT, rt)
     assert len(rt._consts) == 1
     # the public accessor materializes the arena-backed pixels (Part II §6)
     e = rt.const_entry(0)
@@ -161,7 +159,7 @@ def test_rect_literal_executes_and_interops():
     rt = make_runtime()
     seen = []
     rt.register_ns("probe", {"n": ([], "int", lambda: seen.append(1) or 0)})
-    run("\\set{t}{" + RECT2 + "}"
+    run(PIXELRECT2_STMT +
         "\\call{img.at}{$t}{1,0}\\if{ {$ret, =, 0x00FF00} }{\\call{probe.n}}"
         "\\call{img.diff}{$t}{$t}{0}\\if{ {$ret, =, 0} }{\\call{probe.n}}", rt)
     assert seen == [1, 1]
@@ -170,32 +168,27 @@ def test_rect_literal_executes_and_interops():
 
 def test_rect_literal_as_call_arg():
     rt = make_runtime()
-    seen = []
-    rt.register_ns("probe", {"n": ([], "int", lambda: seen.append(1) or 0)})
-    # rect literal directly as a handle-typed argument
-    run("\\call{img.diff}{" + RECT2 + "}{" + RECT2 + "}{0}"
-        "\\if{ {$ret, =, 0} }{\\call{probe.n}}", rt)
-    assert seen == [1]
+    # pixelrect directly in call arg is rejected per spec/dsl.md §6.4
+    assert "pixelrect requires destination statement" in compile_err(
+        "\\call{img.diff}{\\pixelrect{\\row{0}}}{\\pixelrect{\\row{0}}}{0}", rt)
 
 
 def test_rect_type_environment():
     rt = make_runtime()
     # the variable records type snap: handle-arg check works...
-    compile_ok("\\set{t}{" + RECT2 + "}\\call{img.use}{$t}", rt)
-    # ...and \add rejects it
-    assert "cannot modify a snap handle" in compile_err(
-        "\\set{t}{" + RECT2 + "}\\add{t}{1}", rt)
+    compile_ok(PIXELRECT2_STMT + "\\call{img.use}{$t}", rt)
 
 
 def test_rect_literal_errors():
     rt = make_runtime()
-    assert "ragged" in compile_err(
-        "\\set{t}{\\rect{\\row{0xFF0000},\\row{0x1,0x2}}}", rt)
-    compile_err("\\set{t}{\\rect{\\row{zz}}}", rt)          # bad hex
-    compile_err("\\set{t}{\\rect{\\row{0x1000000}}}", rt)   # color range
-    compile_err("\\set{t}{\\rect{}}", rt)                   # empty
-    assert "value-position" in compile_err("\\rect{\\row{0xFF0000}}", rt)
-    _, err = Macro(MockHID()).compile("\\set{t}{\\rect{\\row{0xFF0000}}}")
+    assert "unequal length" in compile_err(
+        "\\pixelrect{t}{\\row{0xFF0000},\\row{0x1,0x2}}", rt)
+    compile_err("\\pixelrect{t}{\\row{zz}}", rt)          # bad hex
+    compile_err("\\pixelrect{t}{\\row{0x1000000}}", rt)   # color range
+    compile_err("\\pixelrect{t}{}", rt)                   # empty
+    assert "pixelrect requires destination statement" in compile_err(
+        "\\set{t}{\\pixelrect{\\row{0xFF0000}}}", rt)
+    _, err = Macro(MockHID()).compile(PIXELRECT2_STMT)
     assert "runtime registry" in err                        # no runtime
 
 

@@ -10,7 +10,7 @@ from macro import (
 )
 from mock_hid import MockHID
 
-H = bytes([MAGIC, VERSION, 0])  # bytecode header prefix (empty string table)
+H = bytes([VERSION, 0])  # bytecode header prefix (empty string table)
 
 
 def compile_ok(text):
@@ -223,7 +223,7 @@ def test_mouse_commands():
     bc = compile_ok("\\click{R,3}")
     assert bc == H + bytes([OP_MCLICK, 0, keymap.BTN_RIGHT, 0, 0, 0, 0, 3, 0, 0, 0, OP_END])
     bc = compile_ok("\\move{100,-50}")
-    assert bc[3] == OP_MMOVE
+    assert bc[len(H)] == OP_MMOVE
     bc = compile_ok("\\mdown{L}\\mup{L}")
     assert keymap.BTN_LEFT in bc
 
@@ -332,17 +332,16 @@ def test_disassemble_canonical_key_names():
 
 
 def test_header_magic_and_version():
-    assert MAGIC == 0xA6
-    assert VERSION == 4
+    assert VERSION == 0xA6
     bc = compile_ok("")
-    assert bc[:2] == bytes([0xA6, 0x04])
+    assert bc[:2] == bytes([0xA6, 0x00])
 
 
 def test_header_rejects_mismatched_magic_or_version():
     import pytest
     m = Macro(MockHID())
     with pytest.raises(ValueError, match="Bytecode version mismatch"):
-        m.disassemble(bytes([0xA5, 0x03, 0, OP_END]))
+        m.disassemble(bytes([0xA5, 0, OP_END]))
     with pytest.raises(ValueError, match="Bytecode version mismatch"):
         m.disassemble(bytes([0x99, VERSION, 0, OP_END]))
 
@@ -615,7 +614,7 @@ def test_bytecode_read_header():
     bc = H + bytes([OP_END])
     strs, off = read_header(bc)
     assert strs == []
-    assert off == 3
+    assert off == len(H)
 
 
 def test_combo_uppercase_expansion():

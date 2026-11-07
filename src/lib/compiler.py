@@ -167,15 +167,15 @@ class Compiler:
 
         try:
             self._parse_preamble()
-            self._emit(MAGIC, VERSION, 0)  # header placeholder, rebuilt below
+            self._emit(VERSION, 0)  # header placeholder, rebuilt below
             self._parse()
             self._emit(OP_END)
             # Rebuild the header with the collected string table
-            hdr = bytearray([MAGIC, VERSION, len(self._strs)])
+            hdr = bytearray([VERSION, len(self._strs)])
             for s in self._strs:
                 hdr.append(len(s.encode("utf-8")))
                 hdr.extend(s.encode("utf-8"))
-            return bytes(hdr + self._bc[3:]), None
+            return bytes(hdr + self._bc[2:]), None
         except MacroError as e:
             # Rebuild the "In <context>: ..." chain from the nest stack,
             # innermost first — same message shape the recursive compiler made.
@@ -187,19 +187,7 @@ class Compiler:
     @staticmethod
     def _read_header(bc):
         """Validate header and return (strings, code_start_offset)."""
-        if len(bc) < 3 or bc[0] != MAGIC or bc[1] != VERSION:
-            raise ValueError(
-                f"Bytecode version mismatch (want magic=0x{MAGIC:02X} v{VERSION})"
-            )
-        n = bc[2]
-        i = 3
-        strs = []
-        for _ in range(n):
-            ln = bc[i]
-            i += 1
-            strs.append(bytes(bc[i : i + ln]).decode("utf-8"))
-            i += ln
-        return strs, i
+        return read_header(bc)
 
     def _char_keycode(self, ch):
         if len(ch) != 1:
@@ -514,10 +502,9 @@ class Compiler:
             handler(pos)
             return
 
-        if name_lower in ("rect", "pixelrect", "rgb"):
+        if name_lower == "rgb":
             raise MacroError(
-                f"\\{name_lower}{{...}} is a value-position literal (valid inside "
-                "\\set{...} or an argument)", pos)
+                r"\rgb{...} is a value-position literal (valid inside \set{...} or an argument)", pos)
 
         # Consumer Control commands: \mute, \volup, \media_next, etc. (spec/dsl.md §5.2)
         if name_lower in CONSUMER_COMMANDS:
@@ -557,6 +544,7 @@ class Compiler:
             or name in self.MODS
             or name in _PRINTABLE_LONE_KEYS
             or name in CONSUMER_COMMANDS
+            or name in ("rgb", "all", "any")
         ):
             raise MacroError(f"macro name conflicts with builtin: {name}", pos)
 
@@ -750,6 +738,8 @@ class Compiler:
             return (TAG_REG, self._parse_var_ref(s, pos, reserved))
         if self._is_rgb(s):
             return (TAG_IMM, self._parse_rgb_literal(s, pos))
+        if self._is_constructor(s):
+            raise MacroError("pixelrect requires destination statement", pos)
         return (TAG_IMM, self._parse_int_literal(s, pos))
 
     def _parse_var_ref(self, s, pos, reserved=()):
@@ -809,8 +799,8 @@ class Compiler:
                 return r
         raise MacroError("no free register for value operand", pos)
 
-    def _alloc_var(self, name, pos):
-        """Resolve a variable name for assignment, allocating a register if new."""
+    def _validate_var_name(self, name, pos):
+        """Validate variable name for assignment without allocating."""
         if name in ("ret", "timeout", "err"):
             raise MacroError(f"Reserved variable name: {name}", pos)
         if name == "slot":
@@ -823,9 +813,13 @@ class Compiler:
             or not all(_is_alnum(c) or c == "_" for c in name)
         ):
             raise MacroError(f"Invalid variable name: {name}", pos)
+        if name not in self._vars and len(self._vars) >= MAX_REGS:
+            raise MacroError(f"Too many variables (max {MAX_REGS})", pos)
+
+    def _alloc_var(self, name, pos):
+        """Resolve a variable name for assignment, allocating a register if new."""
+        self._validate_var_name(name, pos)
         if name not in self._vars:
-            if len(self._vars) >= MAX_REGS:
-                raise MacroError(f"Too many variables (max {MAX_REGS})", pos)
             self._vars[name] = len(self._vars)
             self._types[name] = "int"
         return self._vars[name]
@@ -929,24 +923,11 @@ class Compiler:
             raise MacroError("rect: color out of 0xRRGGBB range", pos)
         return val
 
-    def _parse_pixelrect(self, t, pos):
-        r"""Parse \pixelrect{\row{...}, ...} or \rect{\row{...}, ...} -> (w, h, rgb bytes)."""
-        t = t.strip()
-        if t.startswith(r"\pixelrect"):
-            name = "pixelrect"
-            rest = t[len(r"\pixelrect") :].strip()
-        elif t.startswith(r"\rect"):
-            name = "rect"
-            rest = t[len(r"\rect") :].strip()
-        else:
-            raise MacroError(r"expected \pixelrect or \rect", pos)
-
-        if not (rest.startswith("{") and rest.endswith("}")):
-            raise MacroError(f"{name} requires {{\\row{{...}}, ...}}", pos)
-
-        inner = rest[1:-1].strip()
+    def _parse_pixel_rows(self, inner, pos):
+        r"""Parse PixelRows: Row ("," Row)* where Row is \row{PixelColor, ...} -> (w, h, rgb_bytes)."""
+        inner = inner.strip()
         if not inner:
-            raise MacroError(f"{name}: empty literal", pos)
+            raise MacroError("pixelrect: empty literal", pos)
 
         # Extract rows
         i = 0
@@ -958,12 +939,12 @@ class Compiler:
             if i >= n:
                 break
             if not inner[i:].startswith(r"\row"):
-                raise MacroError(f"{name}: rows must be \\row{{...}}", pos)
+                raise MacroError("pixelrect: rows must be \\row{...}", pos)
             i += 4  # skip \row
             while i < n and inner[i] in " \t\r\n":
                 i += 1
             if i >= n or inner[i] != "{":
-                raise MacroError(f"{name}: rows must be \\row{{...}}", pos)
+                raise MacroError("pixelrect: rows must be \\row{...}", pos)
             start = i + 1
             depth = 1
             i += 1
@@ -979,25 +960,25 @@ class Compiler:
             rows_tokens.append(row_content)
 
         if not rows_tokens:
-            raise MacroError(f"{name}: empty literal", pos)
+            raise MacroError("pixelrect: empty literal", pos)
 
         rows = []
         for r_tok in rows_tokens:
             pixels_str = _split_compound_group(r_tok, pos)
             if not pixels_str:
-                raise MacroError(f"{name}: empty literal", pos)
+                raise MacroError("pixelrect: empty literal", pos)
             row = [self._parse_pixel_color(p, pos) for p in pixels_str]
             rows.append(row)
 
         w = len(rows[0])
         h = len(rows)
         if w == 0:
-            raise MacroError(f"{name}: empty literal", pos)
+            raise MacroError("pixelrect: empty literal", pos)
         for r in rows:
             if len(r) != w:
-                raise MacroError(f"{name}: ragged rows", pos)
+                raise MacroError("pixelrect: matrix rows have unequal length", pos)
         if w > RECT_MAX_EDGE or h > RECT_MAX_EDGE:
-            raise MacroError(f"{name}: edge capped at {RECT_MAX_EDGE}", pos)
+            raise MacroError(f"pixelrect: edge capped at {RECT_MAX_EDGE}", pos)
 
         data = bytearray()
         for r in rows:
@@ -1005,62 +986,64 @@ class Compiler:
                 data.extend([(color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF])
         return w, h, bytes(data)
 
-    def _materialize_constructor(self, s, pos, skip_label, reserved=()):
-        r"""Compile-time constructor materialization.
-        Emits:
-            CALL_EXT sys.const, TAG_IMM cid
-            BRA $err, =, 0, off -> skip_label
-            SET scratch, TAG_REG $ret
-        Returns (TAG_REG, scratch)."""
+    def _cmd_pixelrect(self, pos):
+        r"""\pixelrect{name}{rows} — destination-bound pixel resource statement (spec/dsl.md §6.4)."""
+        self._skip_absorbed_whitespace()
+        name = self._read_braces()
+        if name is None:
+            raise MacroError("pixelrect requires {name}", pos)
+        name = name.strip().lower()
+        self._validate_var_name(name, pos)
+
+        self._skip_absorbed_whitespace()
+        rows_str = self._read_braces()
+        if rows_str is None:
+            raise MacroError("pixelrect requires {rows}", pos)
+
+        w, h, data = self._parse_pixel_rows(rows_str, pos)
+
         if self.runtime is None:
-            name = "pixelrect" if "\\pixelrect" in s else "rect"
-            raise MacroError(f"{name} literal requires a runtime registry", pos)
-        w, h, data = self._parse_pixelrect(s, pos)
+            raise MacroError("pixelrect statement requires a runtime registry", pos)
         try:
             cid = self.runtime.add_const("snap", {"w": w, "h": h, "rgb": data})
         except ValueError as e:
-            raise MacroError(f"rect: {e}", pos)
+            raise MacroError(f"pixelrect: {e}", pos)
 
-        scratch = self._alloc_temp(reserved, pos)
-        self._emit(
-            OP_CALL_EXT,
-            self._str_idx("sys", pos),
-            self._str_idx("const", pos),
-            1,
-        )
-        self._emit(TAG_IMM)
-        self._emit_i32(cid)
-        self._emit_bra(0, REG_ERR, (TAG_IMM, 0), skip_label)
-        self._emit(OP_SET, scratch)
+        dst_reg = self._alloc_var(name, pos)
+        self._types[name] = "snap"
+
+        sys_idx = self._str_idx("sys", pos)
+        const_idx = self._str_idx("const", pos)
+        self._emit(OP_CALL_EXT, sys_idx, const_idx, 1)
+        self._emit_typed((TAG_IMM, cid), 4)
+
+        done_label = Label("pixelrect_done")
+        self._emit_bra(CC_OPS["="], REG_ERR, (TAG_IMM, 0), done_label)
+
+        self._emit(OP_SET, dst_reg)
         self._emit(TAG_REG, REG_RET)
-        return (TAG_REG, scratch)
+
+        done_label.mark(self)
 
     def _cmd_set(self, pos):
-        r"""\set{x}{i32|$var|constructor} — assign a variable."""
+        r"""\set{x}{val} — assign a variable (spec/dsl.md §6.1)."""
         name = self._read_braces()
         if name is None:
             raise MacroError("set requires {name}", self._pos)
         name = name.strip().lower()
-        reg = self._alloc_var(name, pos)
+        self._validate_var_name(name, pos)
+
         arg = self._read_braces()
         if arg is None:
             raise MacroError("set requires {value}", self._pos)
         s = arg.strip()
         if self._is_constructor(s):
-            skip_label = Label("consumer_skip")
-            _, scratch = self._materialize_constructor(s, pos, skip_label, reserved=(reg,))
-            self._emit(OP_SET, reg)
-            self._emit(TAG_REG, scratch)
-            skip_label.mark(self)
-            self._types[name] = "snap"
-            return
-        if self._is_rgb(s):
-            val = self._parse_rgb_literal(s, pos)
-            self._emit(OP_SET, reg)
-            self._emit_typed((TAG_IMM, val), 4)
-            self._types[name] = "int"
-            return
-        v = self._parse_value(arg, pos, reserved=(reg,))
+            raise MacroError("pixelrect requires destination statement", pos)
+
+        # Parse value BEFORE declaring name, so \set{x}{$x} sees x as undefined!
+        v = self._parse_value(arg, pos)
+
+        reg = self._alloc_var(name, pos)
         self._emit(OP_SET, reg)
         self._emit_typed(v, 4)
         if v[0] == TAG_REG:
@@ -1069,59 +1052,47 @@ class Compiler:
             self._types[name] = "int"
 
     def _cmd_add(self, pos):
-        r"""\add{x}{i32|$var|constructor} — add to an existing variable."""
+        r"""\add{x}{val} — add to an existing variable."""
         name = self._read_braces()
         if name is None:
             raise MacroError("add requires {name}", self._pos)
         name = name.strip().lower()
         if "." in name:
             raise MacroError("add: cannot modify a signal slot", pos)
-        reg = self._var_reg(name, pos)
-        if reg >= REG_SCRATCH:
+        if name in ("ret", "timeout", "err"):
             raise MacroError("add: cannot modify a special register", pos)
-        if self._reg_type(reg) != "int":
-            raise MacroError(
-                f"add: cannot modify a {self._reg_type(reg)} handle", pos)
+        if name not in self._vars:
+            raise MacroError(f"Undefined variable: {name}", pos)
+        reg = self._vars[name]
         arg = self._read_braces()
         if arg is None:
             raise MacroError("add requires {value}", self._pos)
         s = arg.strip()
         if self._is_constructor(s):
-            skip_label = Label("consumer_skip")
-            _, scratch = self._materialize_constructor(s, pos, skip_label, reserved=(reg,))
-            self._emit(OP_ADD, reg)
-            self._emit(TAG_REG, scratch)
-            skip_label.mark(self)
-            return
+            raise MacroError("pixelrect requires destination statement", pos)
         v = self._parse_value(arg, pos, reserved=(reg,))
         self._emit(OP_ADD, reg)
         self._emit_typed(v, 4)
 
     def _cmd_sub(self, pos):
-        r"""\sub{x}{i32|$var|constructor} — subtract from an existing variable."""
+        r"""\sub{x}{val} — subtract from an existing variable."""
         name = self._read_braces()
         if name is None:
             raise MacroError("sub requires {name}", self._pos)
         name = name.strip().lower()
         if "." in name:
             raise MacroError("sub: cannot modify a signal slot", pos)
-        reg = self._var_reg(name, pos)
-        if reg >= REG_SCRATCH:
+        if name in ("ret", "timeout", "err"):
             raise MacroError("sub: cannot modify a special register", pos)
-        if self._reg_type(reg) != "int":
-            raise MacroError(
-                f"sub: cannot modify a {self._reg_type(reg)} handle", pos)
+        if name not in self._vars:
+            raise MacroError(f"Undefined variable: {name}", pos)
+        reg = self._vars[name]
         arg = self._read_braces()
         if arg is None:
             raise MacroError("sub requires {value}", self._pos)
         s = arg.strip()
         if self._is_constructor(s):
-            skip_label = Label("consumer_skip")
-            _, scratch = self._materialize_constructor(s, pos, skip_label, reserved=(reg,))
-            self._emit(OP_SUB, reg)
-            self._emit(TAG_REG, scratch)
-            skip_label.mark(self)
-            return
+            raise MacroError("pixelrect requires destination statement", pos)
         v = self._parse_value(arg, pos, reserved=(reg,))
         self._emit(OP_SUB, reg)
         self._emit_typed(v, 4)
@@ -1140,36 +1111,11 @@ class Compiler:
         target_label.add_fixup(patch_pos, self)
 
     def _emit_triplet(self, node, true_target, false_target):
-        # Step 1: Ephemeral Value Pre-Loading in source order (§5.4 #1)
-        if self._is_constructor(node.lhs_str):
-            lhs_val = self._materialize_constructor(node.lhs_str, node.pos, false_target, reserved=())
-        else:
-            lhs_val = self._parse_value(node.lhs_str, node.pos)
-
+        # Step 1: Ephemeral Slot Pre-Loading in source order (§5.4 #1)
+        lhs_val = self._parse_value(node.lhs_str, node.pos)
         rhs_reserved = (lhs_val[1],) if lhs_val[0] == TAG_REG else ()
-        if self._is_constructor(node.rhs_str):
-            rhs_val = self._materialize_constructor(node.rhs_str, node.pos, false_target, reserved=rhs_reserved)
-        else:
-            rhs_val = self._parse_value(node.rhs_str, node.pos, reserved=rhs_reserved)
+        rhs_val = self._parse_value(node.rhs_str, node.pos, reserved=rhs_reserved)
         cc = node.cc
-
-        # Check handle types if known at compile time
-        if (
-            lhs_val[0] == TAG_REG
-            and lhs_val[1] != REG_RET
-            and self._reg_type(lhs_val[1]) not in ("int", "color")
-        ):
-            raise MacroError(
-                f"if: cannot compare a {self._reg_type(lhs_val[1])} handle", node.pos
-            )
-        if (
-            rhs_val[0] == TAG_REG
-            and rhs_val[1] != REG_RET
-            and self._reg_type(rhs_val[1]) not in ("int", "color")
-        ):
-            raise MacroError(
-                f"if: cannot compare a {self._reg_type(rhs_val[1])} handle", node.pos
-            )
 
         # Step 2: Immediate/Register Swapping (§5.3 Converse Operator Mapping)
         if lhs_val[0] == TAG_IMM and rhs_val[0] == TAG_REG:
@@ -1199,6 +1145,7 @@ class Compiler:
             return
 
         # Step 4: Emit native BRA + JMP (§5.2 #1)
+        # Handle fault at runtime: OP_BRA evaluates to FALSE and sets $err = ERR_HANDLE_MISUSE
         self._emit_bra(cc, lhs_val[1], rhs_val, false_target)
         self._emit_jmp(true_target)
 
@@ -1439,7 +1386,7 @@ class Compiler:
             raise MacroError("empty guard operand", pos)
 
         if self._is_constructor(s):
-            raise MacroError("guards do not support constructors", pos)
+            raise MacroError("pixelrect requires destination statement", pos)
         if self._is_rgb(s):
             val = self._parse_rgb_literal(s, pos)
             val = val - 4294967296 if val > 2147483647 else val
@@ -1587,11 +1534,7 @@ class Compiler:
         return a single (tag, value) pair."""
         s = a.strip()
         if self._is_constructor(s):
-            if typ != "snap":
-                raise MacroError(f"{target}: pixelrect literal is a snap handle", pos)
-            if consumer_skip is None:
-                consumer_skip = Label("consumer_skip")
-            return self._materialize_constructor(s, pos, consumer_skip, reserved)
+            raise MacroError("pixelrect requires destination statement", pos)
 
         if typ in ("point", "rect"):
             n = 2 if typ == "point" else 4

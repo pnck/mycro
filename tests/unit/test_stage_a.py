@@ -8,7 +8,7 @@ import keymap
 from macro import Macro, MAGIC, VERSION, OP_END, MAX_MACRO_EXPAND, MAX_RUNTIME_NEST
 from mock_hid import MockHID
 
-H = bytes([MAGIC, VERSION])
+H = bytes([VERSION])
 
 
 def compile_ok(text):

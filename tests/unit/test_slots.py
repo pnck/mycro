@@ -42,8 +42,8 @@ def compile_err(text, rt=None):
 
 
 def header_strs(bc):
-    n = bc[2]
-    i = 3
+    n = bc[1]
+    i = 2
     strs = []
     for _ in range(n):
         ln = bc[i]
