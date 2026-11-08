@@ -16,6 +16,7 @@ from bytecode import (
     REG_RET, REG_TIMEOUT, REG_ERR,
     ERR_OK, ERR_HANDLE_MISUSE,
     MAX_GUARD_NEST, DELAY_SLICE_QUANTUM,
+    DEFAULT_PACE_MS, MAX_CODE_BYTES,
     GUARD_TAG_IMM, GUARD_TAG_REG, GUARD_TAG_SLOT,
     CC_NAMES, CONSUMER_NAMES,
     read_header, keycode_name, mod_names,
@@ -41,8 +42,11 @@ class VM:
     def disassemble(self, bytecode):
         """Disassemble bytecode to human-readable format."""
         strs, i = self._read_header(bytecode)
+        if len(bytecode) - i > MAX_CODE_BYTES:
+            raise ValueError(f"Bytecode code segment exceeds {MAX_CODE_BYTES} bytes")
         lines = [f"; bytecode v{VERSION}, {len(bytecode)}B, {len(strs)} str(s)"]
         indent = 0
+        saw_end = False
 
         def fmt_reg(r):
             if r == REG_RET:
@@ -72,7 +76,7 @@ class VM:
                 if signed and v > 2147483647:
                     v -= 4294967296
                 return str(v)
-            return f"INVALID_TAG_{tag}"
+            raise ValueError(f"Invalid operand tag: {tag}")
 
         def fmt_key_arg():
             nonlocal i
@@ -93,7 +97,7 @@ class VM:
                 if kc == 0:
                     return "ALL"
                 return keycode_name(kc)
-            return f"INVALID_TAG_{tag}"
+            raise ValueError(f"Invalid operand tag: {tag}")
 
         def fmt_btn_arg():
             nonlocal i
@@ -113,7 +117,7 @@ class VM:
                 i += 4
                 names = {1: "LEFT", 2: "RIGHT", 4: "MIDDLE", 8: "BACK", 16: "FORWARD", 0x1F: "ALL"}
                 return names.get(b, str(b))
-            return f"INVALID_TAG_{tag}"
+            raise ValueError(f"Invalid operand tag: {tag}")
 
         def fmt_consumer_arg():
             nonlocal i
@@ -132,7 +136,7 @@ class VM:
                 )
                 i += 4
                 return CONSUMER_NAMES.get(u, f"0x{u:04X}")
-            return f"INVALID_TAG_{tag}"
+            raise ValueError(f"Invalid operand tag: {tag}")
 
         while i < len(bytecode):
             op = bytecode[i]
@@ -286,20 +290,25 @@ class VM:
                     elif tag == TAG_REG:
                         args.append(f"$r{bytecode[i]}")
                         i += 1
-                    else:
+                    elif tag == TAG_STR:
                         args.append(repr(strs[bytecode[i]]))
                         i += 1
+                    else:
+                        raise ValueError(f"Invalid operand tag: {tag}")
                 lines.append(f"{prefix}CALL {ns}.{fn}({', '.join(args)})")
             elif op == OP_END:
                 lines.append(f"{prefix}END")
+                saw_end = True
                 break
             else:
                 lines.append(f"{prefix}UNKNOWN 0x{op:02X}")
                 i += 1
 
+        if not saw_end:
+            raise ValueError("Bytecode missing terminal END")
         return "\n".join(lines)
 
-    async def execute(self, bytecode, default_delay_ms=50, click_hold_ms=10):
+    async def execute(self, bytecode, default_delay_ms=DEFAULT_PACE_MS, click_hold_ms=10):
         """Execute compiled bytecode.
 
         On exception or cancellation/abort, emergency-releases all keys and
@@ -309,8 +318,11 @@ class VM:
         bc = bytecode
         n = len(bc)
         strs, ip = self._read_header(bc)
+        if n - ip > MAX_CODE_BYTES:
+            raise ValueError(f"Bytecode code segment exceeds {MAX_CODE_BYTES} bytes")
         delay_ms = default_delay_ms
-        loop_stack = []  # [(ip_start, remaining, saved_delay)]
+        loop_stack = []  # [(loop_body_ip, remaining_count)]
+        ended = False
         regs = [0] * 256
         guard_slots = [None] * MAX_GUARD_NEST
         guard_depth = 0
@@ -410,7 +422,7 @@ class VM:
                 slot = guard_slots[i]
                 throttle_ms = slot[0]
                 last_check_ms = slot[1]
-                if throttle_ms == 0 or (now - last_check_ms) >= (throttle_ms - 1):
+                if throttle_ms == 0 or (now - last_check_ms) >= throttle_ms:
                     slot[1] = now
                     if not eval_guard_pred(slot[4]):
                         abort_guard(i)
@@ -479,6 +491,7 @@ class VM:
                     op = read_u8()
 
                     if op == OP_END:
+                        ended = True
                         break
 
                     elif op == OP_CHAR:
@@ -555,7 +568,7 @@ class VM:
                             regs[REG_ERR] = ERR_HANDLE_MISUSE
                         else:
                             btn = btn & 0xFF
-                            count = clamp(count, 0, 65535)
+                            count = clamp(count, 1, 65535)
                             for i in range(count):
                                 hid.mouse_press(btn)
                                 await sleep_ms(click_hold_ms)
@@ -574,8 +587,8 @@ class VM:
                                 runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
                             regs[REG_ERR] = ERR_HANDLE_MISUSE
                         else:
-                            dx = clamp(dx, -32767, 32767)
-                            dy = clamp(dy, -32767, 32767)
+                            dx = clamp(dx, -32768, 32767)
+                            dy = clamp(dy, -32768, 32767)
                             hid.mouse_move(dx, dy)
                             await sleep_ms(delay_ms)
 
@@ -592,18 +605,18 @@ class VM:
                             count = clamp(count, 0, 255)
                             if count == 0:
                                 ip += body_len  # skip body entirely
-                            elif count > 1:
-                                loop_stack.append((ip, count - 1, delay_ms))
+                            else:
+                                loop_stack.append((ip, count))
 
                     elif op == OP_LOOP_END:
                         if loop_stack:
-                            start, remaining, saved_delay = loop_stack[-1]
+                            start, remaining = loop_stack[-1]
+                            remaining -= 1
                             if remaining > 0:
-                                loop_stack[-1] = (start, remaining - 1, saved_delay)
+                                loop_stack[-1] = (start, remaining)
                                 ip = start
                             else:
                                 loop_stack.pop()
-                                delay_ms = saved_delay
 
                     elif op == OP_KEY_DOWN:
                         key, src_k = read_argx(1)
@@ -611,7 +624,11 @@ class VM:
                             runtime.reg_write(REG_ERR, ERR_HANDLE_MISUSE, None, False)
                             regs[REG_ERR] = ERR_HANDLE_MISUSE
                         else:
-                            hid.key_press(key & 0xFF)
+                            key = key & 0xFF
+                            if key == 0:
+                                hid.keys_release_all()
+                            else:
+                                hid.key_press(key)
                             await sleep_ms(delay_ms)
 
                     elif op == OP_KEY_UP:
@@ -855,7 +872,7 @@ class VM:
                                             slot = guard_slots[i]
                                             throttle_ms = slot[0]
                                             last_check_ms = slot[1]
-                                            if throttle_ms == 0 or (now - last_check_ms) >= (throttle_ms - 1):
+                                            if throttle_ms == 0 or (now - last_check_ms) >= throttle_ms:
                                                 slot[1] = now
                                                 if not eval_guard_pred(slot[4]):
                                                     runtime.remove_waiter(sig, field, ev)
@@ -888,20 +905,27 @@ class VM:
                         fn = strs[read_u8()]
                         argc = read_u8()
                         args = []
+                        arg_handles = []
                         for _ in range(argc):
                             tag = read_u8()
                             if tag == TAG_IMM:
                                 args.append(read_i32())
+                                arg_handles.append(False)
                             elif tag == TAG_REG:
-                                args.append(regs[read_u8()])
-                            else:
+                                src = read_u8()
+                                args.append(regs[src])
+                                arg_handles.append(runtime is not None and runtime.is_handle(src))
+                            elif tag == TAG_STR:
                                 args.append(strs[read_u8()])
+                                arg_handles.append(False)
+                            else:
+                                raise RuntimeError(f"Invalid operand tag: {tag}")
                         if runtime is None:
                             raise RuntimeError("CALL_EXT without runtime registry")
                         sig_entry = runtime._ns.get(ns, {}).get(fn)
                         ret_type = sig_entry[1] if sig_entry else "int"
 
-                        r = runtime.call(ns, fn, args)
+                        r = runtime.call(ns, fn, args, arg_handles)
                         if hasattr(r, "send"):  # coroutine: await it
                             r = await r
 
@@ -937,6 +961,8 @@ class VM:
                 except _GuardAbort:
                     continue
 
+            if not ended:
+                raise RuntimeError("Execution reached bytecode boundary without terminal END")
             return True
         except BaseException:
             # B2: on error, exception, or cancellation/abort, emergency-release all keys/buttons/consumer

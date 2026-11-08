@@ -288,8 +288,8 @@
 			<summary><h5>Control Commands</h5></summary>
 			<table>
 				<tr><th>Command</th><th>Description</th></tr>
-				<tr><td><code>\delay{0.5}</code></td><td>Sleep once (seconds)</td></tr>
-				<tr><td><code>\pace{0.05}</code></td><td>Set delay after every following action</td></tr>
+				<tr><td><code>\delay{0.5s}</code></td><td>Sleep once</td></tr>
+				<tr><td><code>\pace{0.05s}</code></td><td>Set delay after every following action</td></tr>
 				<tr><td><code>\rep{5}{abc}</code></td><td>Repeat "abc" 5 times</td></tr>
 				<tr><td><code>\kdown{ctrl}</code></td><td>Press and hold Ctrl</td></tr>
 				<tr><td><code>\kup{ctrl}</code></td><td>Release Ctrl</td></tr>
@@ -369,9 +369,9 @@
 			<table>
 				<tr><th>Macro</th><th>Description</th></tr>
 				<tr><td><code>Hello World\enter</code></td><td>Type text and press Enter</td></tr>
-				<tr><td><code>\ctrl+c\delay{0.2}\rep{3}{\ctrl+v}</code></td><td>Copy, wait, paste 3 times</td></tr>
-				<tr><td><code>\win+r\delay{0.3}notepad\enter</code></td><td>Open Notepad (Windows)</td></tr>
-				<tr><td><code>\cmd+space\delay{0.2}terminal\enter</code></td><td>Open Terminal (macOS)</td></tr>
+				<tr><td><code>\ctrl+c\delay{0.2s}\rep{3}{\ctrl+v}</code></td><td>Copy, wait, paste 3 times</td></tr>
+				<tr><td><code>\win+r\delay{0.3s}notepad\enter</code></td><td>Open Notepad (Windows)</td></tr>
+				<tr><td><code>\cmd+space\delay{0.2s}terminal\enter</code></td><td>Open Terminal (macOS)</td></tr>
 				<tr><td><code>\mdown{L}\move{100,0}\mup{L}</code></td><td>Drag mouse right 100px</td></tr>
 				<tr><td><code>\kdown{ctrl}ccc\kup{}</code></td><td>Hold Ctrl, type "ccc", release</td></tr>
 				<tr><td><code>\def{cp}[1]{\ctrl+#1}\cp{c}\cp{v}</code></td><td>Define & use a macro (v3)</td></tr>

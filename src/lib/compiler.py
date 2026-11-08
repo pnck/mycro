@@ -232,7 +232,10 @@ class Compiler:
         raise MacroError(f"Unknown key: {token}", pos)
 
     def _emit(self, *args):
-        if len(self._bc) - 2 >= MAX_CODE_BYTES - 10:
+        size = 0
+        for b in args:
+            size += 1 if isinstance(b, int) else len(b)
+        if len(self._bc) - 2 + size > MAX_CODE_BYTES:
             raise MacroError("Bytecode limit exceeded", self._pos)
         for b in args:
             if isinstance(b, int):
@@ -720,23 +723,49 @@ class Compiler:
     # --- value-position parsing (R1/R2/R3): int literals, $var, ${var} ---
 
     def _parse_int_literal(self, s, pos):
-        """i32 literal: decimal or 0x hex, optional leading '-'."""
+        """Fold a NumericLiteral to i32 without binary floating point."""
         s = s.strip()
         neg = s.startswith("-")
-        if neg:
+        if neg or s.startswith("+"):
             s = s[1:].strip()
         try:
             if s[:2].lower() == "0x":
+                if not s[2:]:
+                    raise ValueError
                 v = int(s[2:], 16)
+            elif s.endswith("ms"):
+                inner = s[:-2].strip()
+                if not inner.isdigit():
+                    raise ValueError
+                v = int(inner)
+            elif s.endswith("s"):
+                inner = s[:-1].strip()
+                int_part, dot, frac_part = inner.partition(".")
+                if not int_part.isdigit() or (dot and not frac_part.isdigit()):
+                    raise ValueError
+                k = len(frac_part)
+                n = int(int_part) * (10 ** k) + (int(frac_part) if dot else 0)
+                v = (2000 * n + (10 ** k)) // (2 * (10 ** k))
+            elif "." in s:
+                raise MacroError("fractional number requires unit 's'", pos)
             else:
+                if not s.isdigit():
+                    raise ValueError
                 v = int(s)
         except ValueError:
             raise MacroError(f"Invalid integer: {s}", pos)
         if neg:
             v = -v
-        if not (-2147483648 <= v <= 4294967295):
+        if not (-2147483648 <= v <= 2147483647):
             raise MacroError("integer out of i32 range", pos)
         return v
+
+    def _parse_duration_literal(self, s, pos):
+        """Duration and timeout grammars exclude HexLiteral."""
+        unsigned = s.strip().lstrip("+-").strip()
+        if unsigned[:2].lower() == "0x":
+            raise MacroError("hexadecimal duration not allowed", pos)
+        return self._parse_int_literal(s, pos)
 
     def _parse_value(self, s, pos, reserved=()):
         """Value-position segment: int literal, $var/${var}, or \rgb{r,g,b}.
@@ -848,15 +877,16 @@ class Compiler:
         return "int"  # transient slot-temp registers hold ints
 
     def _parse_time(self, s, pos, reserved=()):
-        """Time arg: float seconds (imm -> ms) or $var (register holds ms)."""
+        """Duration arg: static milliseconds or a dynamic register holding ms."""
         s = s.strip()
         if s.startswith("$"):
             return (TAG_REG, self._parse_var_ref(s, pos, reserved))
-        try:
-            ms = int(float(s) * 1000)
-        except ValueError:
-            raise MacroError(f"Invalid time value: {s}", pos)
-        return (TAG_IMM, max(1, min(65535, ms)))
+        if s.startswith("-"):
+            raise MacroError("negative duration not allowed", pos)
+        ms = self._parse_duration_literal(s, pos)
+        if not 0 <= ms <= 65535:
+            raise MacroError("duration out of range [0, 65535]", pos)
+        return (TAG_IMM, ms)
 
     def _parse_btn_arg(self, s, pos):
         """Mouse button: name (L, R, M, B, F)."""
@@ -893,8 +923,6 @@ class Compiler:
         if arg is None:
             raise MacroError("pace requires {value}", self._pos)
         v = self._parse_time(arg, pos)
-        if v[0] == TAG_IMM:
-            v = (TAG_IMM, max(0, v[1]))
         self._emit(OP_PACE)
         self._emit_typed(v, 2)
 
@@ -1035,6 +1063,7 @@ class Compiler:
         self._emit(TAG_REG, REG_RET)
 
         done_label.mark(self)
+        self._ret_type = "snap"
 
     def _cmd_set(self, pos):
         r"""\set{x}{val} — assign a variable (spec/dsl.md §6.1)."""
@@ -1270,30 +1299,9 @@ class Compiler:
                 raise MacroError("guarded throttle must be static literal", start)
             if not t_str:
                 raise MacroError("Empty guarded throttle", start)
-            # Parse throttle duration
-            if t_str.endswith("ms"):
-                inner = t_str[:-2].strip()
-                if not inner.isdigit():
-                    raise MacroError(f"Invalid guarded throttle: {t_str}", start)
-                throttle_ms = int(inner)
-            elif t_str.endswith("s"):
-                inner = t_str[:-1].strip()
-                if "." in inner:
-                    int_part, dot, frac_part = inner.partition(".")
-                    if not int_part.isdigit() or not frac_part.isdigit():
-                        raise MacroError(f"Invalid guarded throttle: {t_str}", start)
-                    k = len(frac_part)
-                    N = int(int_part) * (10 ** k) + int(frac_part)
-                    throttle_ms = (2000 * N + (10 ** k)) // (2 * (10 ** k))
-                else:
-                    if not inner.isdigit():
-                        raise MacroError(f"Invalid guarded throttle: {t_str}", start)
-                    throttle_ms = int(inner) * 1000
-            elif t_str.isdigit():
-                throttle_ms = int(t_str)
-            else:
-                raise MacroError(f"Invalid guarded throttle: {t_str}", start)
-
+            if t_str.startswith("-"):
+                raise MacroError("negative duration not allowed", start)
+            throttle_ms = self._parse_duration_literal(t_str, start)
             if not 0 <= throttle_ms <= 65535:
                 raise MacroError(f"guarded throttle out of range [0, 65535]: {throttle_ms}", start)
             has_throttle = 1
@@ -1587,52 +1595,14 @@ class Compiler:
             raise MacroError("Empty wait timeout", pos)
         if s.startswith("$"):
             return (TAG_REG, self._parse_var_ref(s, pos))
-
-        neg = False
-        if s.startswith("-"):
-            neg = True
-            s = s[1:].strip()
-        elif s.startswith("+"):
-            s = s[1:].strip()
-
-        if s.endswith("ms"):
-            inner = s[:-2].strip()
-            if not inner.isdigit():
-                raise MacroError(f"Invalid wait timeout: {s}", pos)
-            ms = int(inner)
-        elif s.endswith("s"):
-            inner = s[:-1].strip()
-            if "." in inner:
-                int_part, dot, frac_part = inner.partition(".")
-                if not int_part.isdigit() or not frac_part.isdigit():
-                    raise MacroError(f"Invalid wait timeout: {s}", pos)
-                k = len(frac_part)
-                N = int(int_part) * (10 ** k) + int(frac_part)
-                ms = (2000 * N + (10 ** k)) // (2 * (10 ** k))
-            else:
-                if not inner.isdigit():
-                    raise MacroError(f"Invalid wait timeout: {s}", pos)
-                ms = int(inner) * 1000
-        elif "." in s:
-            try:
-                ms = int(float(s) * 1000)
-            except ValueError:
-                raise MacroError(f"Invalid wait timeout: {s}", pos)
-        elif s.startswith("0x") or s.startswith("0X"):
-            try:
-                ms = int(s[2:], 16)
-            except ValueError:
-                raise MacroError(f"Invalid wait timeout: {s}", pos)
-        elif s.isdigit():
-            ms = int(s)
-        else:
+        try:
+            ms = self._parse_duration_literal(s, pos)
+        except MacroError as e:
+            if e.msg == "integer out of i32 range":
+                raise MacroError("wait timeout out of i32 range", pos)
+            if e.msg == "fractional number requires unit 's'":
+                raise
             raise MacroError(f"Invalid wait timeout: {s}", pos)
-
-        if neg:
-            ms = -ms
-
-        if not (-2147483648 <= ms <= 2147483647):
-            raise MacroError("wait timeout out of i32 range", pos)
         return (TAG_IMM, ms)
 
     def _cmd_wait(self, pos):
@@ -1828,12 +1798,14 @@ class Compiler:
         if arg is None:
             raise MacroError("click requires {btn} or {btn,count}", self._pos)
         parts = arg.split(",")
+        if len(parts) not in (1, 2):
+            raise MacroError("click requires {btn} or {btn,count}", pos)
         btn = self._parse_btn_arg(parts[0], pos)
         count = (TAG_IMM, 1)
-        if len(parts) >= 2:
+        if len(parts) == 2:
             count = self._parse_value(parts[1], pos)
-            if count[0] == TAG_IMM:
-                count = (TAG_IMM, max(1, min(65535, count[1])))
+            if count[0] == TAG_IMM and not 1 <= count[1] <= 65535:
+                raise MacroError("click count out of range [1, 65535]", pos)
         self._emit(OP_MCLICK)
         self._emit_typed((TAG_IMM, btn))
         self._emit_typed(count)
@@ -1843,29 +1815,20 @@ class Compiler:
         if arg is None:
             raise MacroError("move requires {dx,dy}", self._pos)
         parts = arg.split(",")
+        if len(parts) != 2:
+            raise MacroError("move requires {dx,dy}", pos)
         dx = self._parse_value(parts[0], pos)
-        dy = (TAG_IMM, 0)
-        if len(parts) >= 2:
-            # reserve the dx register so a slot-derived dy cannot clobber it
-            dy = self._parse_value(
-                parts[1], pos, reserved=(dx[1],) if dx[0] == TAG_REG else ())
+        if dx[0] == TAG_IMM and not -32768 <= dx[1] <= 32767:
+            raise MacroError("move component out of i16 range", pos)
+        # Reserve the dx register so a slot-derived dy cannot clobber it.
+        dy = self._parse_value(
+            parts[1], pos, reserved=(dx[1],) if dx[0] == TAG_REG else ())
+        if dy[0] == TAG_IMM and not -32768 <= dy[1] <= 32767:
+            raise MacroError("move component out of i16 range", pos)
 
-        if dx[0] == TAG_IMM and dy[0] == TAG_IMM:
-            # Immediate moves: emit in chunks of 32767
-            vx, vy = dx[1], dy[1]
-            while vx != 0 or vy != 0:
-                mx = max(-32767, min(32767, vx))
-                my = max(-32767, min(32767, vy))
-                self._emit(OP_MMOVE)
-                self._emit_typed((TAG_IMM, mx))
-                self._emit_typed((TAG_IMM, my))
-                vx -= mx
-                vy -= my
-        else:
-            # Register moves: a single op, VM reads at exec time
-            self._emit(OP_MMOVE)
-            self._emit_typed(dx)
-            self._emit_typed(dy)
+        self._emit(OP_MMOVE)
+        self._emit_typed(dx)
+        self._emit_typed(dy)
 
     def _cmd_mdown(self, pos):
         arg = self._read_braces()

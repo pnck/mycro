@@ -119,7 +119,7 @@ def test_typed_delay():
 
 
 def test_imm_delay_stays_imm():
-    bc = compile_ok("\\delay{0.5}")
+    bc = compile_ok("\\delay{0.5s}")
     assert bc[len(H):] == bytes([OP_SLEEP, TAG_IMM, 500 & 0xFF, 500 >> 8, 0, 0, OP_END])
 
 

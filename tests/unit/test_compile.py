@@ -91,12 +91,12 @@ def test_empty_braces_separator():
 # --- DSL v2: \delay (one-shot sleep) / \pace (inter-action delay) ---
 
 def test_delay_is_one_shot_sleep():
-    bc = compile_ok("\\delay{0.5}")
+    bc = compile_ok("\\delay{0.5s}")
     assert bc == H + bytes([OP_SLEEP, 0, 500 & 0xFF, 500 >> 8, 0, 0, OP_END])
 
 
 def test_pace():
-    bc = compile_ok("\\pace{0.1}")
+    bc = compile_ok("\\pace{0.1s}")
     assert bc == H + bytes([OP_PACE, 0, 100, 0, 0, 0, OP_END])
 
 
@@ -309,9 +309,9 @@ def test_bytecode_limit():
 def test_index_html_examples_compile():
     examples = [
         "Hello World\\enter",
-        "\\ctrl+c\\delay{0.2}\\rep{3}{\\ctrl+v}",
-        "\\win+r\\delay{0.3}notepad\\enter",
-        "\\cmd+space\\delay{0.2}terminal\\enter",
+        "\\ctrl+c\\delay{0.2s}\\rep{3}{\\ctrl+v}",
+        "\\win+r\\delay{0.3s}notepad\\enter",
+        "\\cmd+space\\delay{0.2s}terminal\\enter",
         "\\mdown{L}\\move{100,0}\\mup{L}",
         "\\kdown{ctrl}ccc\\kup{}",
         "\\def{cp}[1]{\\ctrl+#1}\\cp{c}\\cp{v}",

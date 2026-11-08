@@ -31,7 +31,9 @@ import zlib
 PROTO_VERSION = 1
 AUTH_MAGIC = b"MYCR"
 CHUNK_RAW = 8192 - 4  # binary frame payload minus u16 stream_id + u16 flags
-FLAG_STREAM_END = 1
+MAX_POINTS = 256
+MAX_RECT_EDGE = 128
+IMG_STREAM_MAX = 48 * 1024
 
 W, H = 80, 60
 BIG_W, BIG_H = 1920, 1080
@@ -108,6 +110,22 @@ def _gray(rgb):
     for i in range(0, len(rgb), 3):
         out[j] = (rgb[i] * 77 + rgb[i + 1] * 150 + rgb[i + 2] * 29) >> 8
         j += 1
+    return bytes(out)
+
+
+def _resample(rgb, source_w, source_h, w, h):
+    """Deterministic nearest-neighbor whole-source resampling."""
+    if (source_w, source_h) == (w, h):
+        return rgb
+    out = bytearray(w * h * 3)
+    dst = 0
+    for y in range(h):
+        source_y = y * source_h // h
+        for x in range(w):
+            source_x = x * source_w // w
+            src = (source_y * source_w + source_x) * 3
+            out[dst:dst + 3] = rgb[src:src + 3]
+            dst += 3
     return bytes(out)
 
 
@@ -192,52 +210,78 @@ class ReferenceProvider:
 
                 if t != "img.frame":
                     continue  # pushes (macro.result et al.) are ignored
-                if "rect" in p:
-                    rc = p["rect"]
-                    x, y = int(rc["x"]), int(rc["y"])
-                    w, h = int(rc["w"]), int(rc["h"])
-                    x0, y0 = max(x, 0), max(y, 0)
-                    x1, y1 = min(x + w, w0), min(y + h, h0)
-                    if x1 <= x0 or y1 <= y0:
-                        self._send_env(s, "error", rid,
-                                       {"code": "capture_failed",
-                                        "message": "crop rect outside frame bounds"})
-                        continue
-                    cw, ch = x1 - x0, y1 - y0
-                    out = bytearray(cw * ch * 3)
-                    for yy in range(ch):
-                        src = ((y0 + yy) * w0 + x0) * 3
-                        out[yy * cw * 3:(yy + 1) * cw * 3] = \
-                            rgb[src:src + cw * 3]
-                    sid = (sid + 1) & 0xFFFF
-                    self._send_stream(s, rid, sid,
-                                      {"width": w0, "height": h0,
-                                        "crop_w": cw, "crop_h": ch,
-                                        "format": "rgb8"}, bytes(out))
-                elif "points" in p:
-                    colors = []
-                    for x, y in p["points"]:
-                        nx = min(max(int(x), 0), w0 - 1)
-                        ny = min(max(int(y), 0), h0 - 1)
-                        i = (ny * w0 + nx) * 3
-                        colors.append([rgb[i], rgb[i + 1], rgb[i + 2]])
-                    self._send_env(s, "img.frame.ok", rid,
-                                   {"width": w0, "height": h0,
-                                    "format": "colors", "colors": colors})
-                elif "w" in p and "h" in p:                    # native is already 80x60: only 1:1 is served
-                    w, h = int(p["w"]), int(p["h"])
-                    fmt = str(p.get("format", ""))
-                    if (w, h) != (W, H) or fmt not in ("rgb8", "gray8"):
-                        self._send_env(s, "error", rid,
-                                       {"code": "field",
-                                        "message": "reference is 80x60 native"})
-                        continue
-                    data = rgb if fmt == "rgb8" else _gray(rgb)
-                    sid = (sid + 1) & 0xFFFF
-                    self._send_stream(s, rid, sid,
-                                      {"width": W, "height": H,
-                                       "frame_w": w, "frame_h": h,
-                                       "format": fmt}, data)
+                try:
+                    if "rect" in p:
+                        rc = p["rect"]
+                        x, y = int(rc["x"]), int(rc["y"])
+                        w, h = int(rc["w"]), int(rc["h"])
+                        if not (1 <= w <= MAX_RECT_EDGE
+                                and 1 <= h <= MAX_RECT_EDGE
+                                and w * h * 3 <= IMG_STREAM_MAX):
+                            self._send_env(s, "error", rid,
+                                           {"code": "field",
+                                            "message": "rect exceeds the snapshot budget"})
+                            continue
+                        if x < 0 or y < 0 or x + w > w0 or y + h > h0:
+                            self._send_env(s, "error", rid,
+                                           {"code": "out_of_bounds",
+                                            "message": "crop rect outside frame bounds"})
+                            continue
+                        out = bytearray(w * h * 3)
+                        for yy in range(h):
+                            src = ((y + yy) * w0 + x) * 3
+                            out[yy * w * 3:(yy + 1) * w * 3] = \
+                                rgb[src:src + w * 3]
+                        sid = (sid + 1) & 0xFFFF
+                        self._send_stream(s, rid, sid,
+                                          {"width": w0, "height": h0,
+                                           "w": w, "h": h,
+                                           "format": "rgb8"}, bytes(out))
+                    elif "points" in p:
+                        points = p["points"]
+                        if not (1 <= len(points) <= MAX_POINTS):
+                            self._send_env(s, "error", rid,
+                                           {"code": "field",
+                                            "message": "points capped at %d" % MAX_POINTS})
+                            continue
+                        colors = []
+                        for x, y in points:
+                            nx, ny = int(x), int(y)
+                            if not (0 <= nx < w0 and 0 <= ny < h0):
+                                self._send_env(s, "error", rid,
+                                               {"code": "out_of_bounds",
+                                                "message": "point outside frame bounds"})
+                                break
+                            i = (ny * w0 + nx) * 3
+                            colors.append((rgb[i] << 16) | (rgb[i + 1] << 8)
+                                          | rgb[i + 2])
+                        if len(colors) != len(points):
+                            continue
+                        self._send_env(s, "img.frame.ok", rid,
+                                       {"width": w0, "height": h0,
+                                        "format": "colors", "colors": colors})
+                    elif "w" in p and "h" in p:
+                        w, h = int(p["w"]), int(p["h"])
+                        fmt = str(p.get("format", ""))
+                        if (fmt not in ("rgb8", "gray8") or w < 1 or h < 1
+                                or w * h * (3 if fmt == "rgb8" else 1) > IMG_STREAM_MAX):
+                            self._send_env(s, "error", rid,
+                                           {"code": "field",
+                                            "message": "invalid resample dimensions or format"})
+                            continue
+                        data = _resample(rgb, w0, h0, w, h)
+                        if fmt == "gray8":
+                            data = _gray(data)
+                        sid = (sid + 1) & 0xFFFF
+                        self._send_stream(s, rid, sid,
+                                          {"width": w0, "height": h0,
+                                           "w": w, "h": h,
+                                           "format": fmt}, data)
+                    else:
+                        raise ValueError("missing frame selector")
+                except (KeyError, TypeError, ValueError) as e:
+                    self._send_env(s, "error", rid,
+                                   {"code": "field", "message": str(e)})
         finally:
             s.close()
 
@@ -273,7 +317,7 @@ class ReferenceProvider:
                     req_nonce = qs.get("nonce", [""])[0]
                     req_sig = qs.get("sig", [""])[0]
                     req_type = qs.get("type", [""])[0]
-                    auth_ok = (not self.token) or hmac.compare_digest(req_sig, exp_sig)
+                    auth_ok = hmac.compare_digest(req_sig, exp_sig)
                     if not (parsed.path == "/capture" and req_type == "png" and req_nonce == exp_nonce and auth_ok):
                         conn.sendall(
                             b"HTTP/1.1 403 Forbidden\r\n"
@@ -332,6 +376,5 @@ class ReferenceProvider:
         ReferenceProvider._send_env(s, "img.frame.ok", rid, meta)
         for i in range(chunks):
             part = data[i * CHUNK_RAW:(i + 1) * CHUNK_RAW]
-            flags = FLAG_STREAM_END if i == chunks - 1 else 0
-            pl = struct.pack("<HH", sid, flags) + part
+            pl = struct.pack("<HH", sid, 0) + part
             s.sendall(struct.pack("<I", 0x80000000 | len(pl)) + pl)

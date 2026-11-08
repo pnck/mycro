@@ -71,6 +71,54 @@ def recv_tag(client, tag, timeout=8.0):
     )
 
 
+def abort_and_drain(client):
+    """Best-effort cleanup for a failed or timed-out macro case."""
+    try:
+        r = client.call("macro.abort")
+        if r.get("type") == "macro.abort.ok":
+            recv_result(client, timeout=2)
+    except Exception:
+        pass
+
+
+def collect_tag_sequence(client, timeout=15.0):
+    """Collect every net.msg label through the terminal macro.result."""
+    tags = []
+    result = None
+    deadline = time.monotonic() + timeout
+    while result is None:
+        env = recv_until(client, lambda e: True,
+                         max(0.05, deadline - time.monotonic()))
+        if env is None:
+            break
+        if env.get("type") == "net.msg":
+            tags.append(env["payload"].get("tag"))
+        elif env.get("type") == "macro.result":
+            result = env
+    return tags, result
+
+
+def submit_tag_sequence(ctx, code, timeout=15.0):
+    """Run one macro and return its complete ordered labels and result."""
+    c = ctx.client()
+    result = None
+    try:
+        r = c.call("macro.submit", {"code": code})
+        if r.get("type") == "macro.submit.ok":
+            tags, result = collect_tag_sequence(c, timeout)
+            if result is None:
+                abort_and_drain(c)
+        else:
+            tags = []
+        return tags, result
+    except Exception:
+        if result is None:
+            abort_and_drain(c)
+        raise
+    finally:
+        c.close()
+
+
 def expect_closed(sock, timeout=5.0):
     """The device closes silently: EOF, RST, or no data before timeout."""
     sock.settimeout(timeout)
@@ -90,18 +138,39 @@ def http_get(ctx, path):
         return r.read().decode()
 
 
-def http_post_macro(ctx, code):
+def _http_post_form(ctx, path, fields):
     from urllib.parse import urlencode
 
     req = urllib.request.Request(
-        f"http://{ctx.host}/macro",
-        data=urlencode({"code": code}).encode(),
+        f"http://{ctx.host}{path}",
+        data=urlencode(fields).encode(),
         method="POST",
     )
     if ctx.token:
         req.add_header("Authorization", f"Bearer {ctx.token}")
-    with urllib.request.urlopen(req, timeout=5) as r:
+    with urllib.request.urlopen(req, timeout=10) as r:
         return r.read().decode()
+
+
+def http_post_macro(ctx, code, hold_ms=None):
+    fields = {"code": code}
+    if hold_ms is not None:
+        fields["hold_ms"] = hold_ms
+    return _http_post_form(ctx, "/macro", fields)
+
+
+def http_compile(ctx, code, hold_ms=None):
+    fields = {"code": code}
+    if hold_ms is not None:
+        fields["hold_ms"] = hold_ms
+    return _http_post_form(ctx, "/compile", fields)
+
+
+def http_compile_result(ctx, code, hold_ms=None):
+    try:
+        return 200, http_compile(ctx, code, hold_ms)
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()
 
 
 class Ctx:
@@ -302,7 +371,7 @@ def c3_compile_error(ctx):
 
 def c4_busy_rejected(ctx):
     c = ctx.client()
-    c.call("macro.submit", {"code": "\\delay{5}"})
+    c.call("macro.submit", {"code": "\\delay{5s}"})
     r = c.call("macro.submit", {"code": "\\set{x}{1}"})
     c.call("macro.abort")  # cleanup
     recv_result(c)
@@ -313,7 +382,7 @@ def c4_busy_rejected(ctx):
 
 def c5_abort_running(ctx):
     c = ctx.client()
-    c.call("macro.submit", {"code": "\\delay{30}"})
+    c.call("macro.submit", {"code": "\\delay{30s}"})
     r = c.call("macro.abort")
     res = recv_result(c)
     check("C5 abort -> abort.ok + result aborted",
@@ -388,7 +457,7 @@ def c12_error_envelope_ignored(ctx):
     # The device must not have responded with an error, and must still be responsive
     st = c.call("macro.status")
     check("C12 inbound error envelope ignored without error reply",
-          st["type"] == "macro.status.ok")
+          st["type"] == "macro.status.ok" and not c.pending)
     c.close()
 
 
@@ -402,7 +471,7 @@ def c13_stray_response_ignored(ctx):
     time.sleep(0.1)
     st = c.call("macro.status")
     check("C13 stray .ok response ignored without error reply",
-          st["type"] == "macro.status.ok")
+          st["type"] == "macro.status.ok" and not c.pending)
     c.close()
 
 
@@ -410,37 +479,32 @@ def c14_compile_busy_when_running(ctx):
     """POST /compile must reject with Busy when a macro is running to protect
     the active macro's const store (spec/vm.md Part II §5)."""
     c = ctx.client()
-    c.call("macro.submit", {"code": "\\delay{3}"})
-    from urllib.parse import urlencode
-    req = urllib.request.Request(
-        f"http://{ctx.host}/compile",
-        data=urlencode({"code": "\\set{x}{1}"}).encode(),
-        method="POST",
-    )
-    if ctx.token:
-        req.add_header("Authorization", f"Bearer {ctx.token}")
-    with urllib.request.urlopen(req, timeout=5) as r:
-        resp = r.read().decode()
-    c.call("macro.abort")
-    recv_result(c)
-    check("C14 /compile returns Busy while macro running",
-          "Busy" in resp, resp)
+    c.call("macro.submit", {"code": "\\delay{3s}"})
+    try:
+        status, resp = http_compile_result(ctx, "\\set{x}{1}")
+    finally:
+        abort_and_drain(c)
+    check("C14 /compile returns HTTP 409 while macro running",
+          status == 409 and "Busy" in resp, f"HTTP {status}: {resp}")
     c.close()
 
 
 # --- D: DSL net roundtrip ---
 
-WAIT_MOVE = "\\use{net}\\wait{net.msg}{30}\\move{$net.msg.x,$net.msg.y}\\call{net.send}{woke}"
-WAIT_TIMEOUT = ("\\use{net}\\wait{net.msg}{1}"
+WAIT_MOVE = ("\\use{net}\\call{net.send}{wait_ready}"
+             "\\wait[30s]{$slot.net.msg.val}"
+             "\\move{$slot.net.msg.x,$slot.net.msg.y}\\call{net.send}{woke}")
+WAIT_TIMEOUT = ("\\use{net}\\wait[1s]{$slot.net.msg.val}"
                 "\\if{ {$timeout, =, 1} }{\\call{net.send}{timeout}}{\\call{net.send}{fired}}")
-WAIT_COUNT = ("\\use{net}\\wait{net.msg}{30}\\call{net.send}{probe}"
+WAIT_COUNT = ("\\use{net}\\wait[30s]{$slot.net.msg.val}\\call{net.send}{probe}"
               "\\if{ {$ret, =, 2} }{\\call{net.send}{two}}{\\call{net.send}{not2}}")
 SLOT_PROBE = ("\\use{net}"
-              "\\if{ {$net.msg.x, =, 7} }{\\call{net.send}{state7}}{\\call{net.send}{nostate}}")
-SLOT_XY_CHECK = ("\\use{net}\\wait{net.msg}{30}"
-                 "\\if{ {$net.msg.x, =, 10} }{"
-                 "\\if{ {$net.msg.y, =, 20} }{\\call{net.send}{xy-ok}}{\\call{net.send}{y-wrong}}"
-                 "}{\\call{net.send}{x-wrong}}")
+              "\\if{ {$slot.net.msg.x, =, 7} }{\\call{net.send}{state7}}{\\call{net.send}{nostate}}")
+SLOT_XY_CHECK = ("\\use{net}\\call{net.send}{slot_ready}"
+                 "\\wait[30s]{$slot.net.msg.val}"
+                 "\\if{ {$slot.net.msg.x, =, 10} }{"
+                 "\\if{ {$slot.net.msg.y, =, 20} }{\\call{net.send}{xy_ok}}{\\call{net.send}{y_wrong}}"
+                 "}{\\call{net.send}{x_wrong}}")
 
 
 def d1_wait_wake(ctx):
@@ -451,13 +515,16 @@ def d1_wait_wake(ctx):
               json.dumps(r))
         c.close()
         return
-    # Prove the macro is parked in \wait BEFORE the event is sent
-    st = c.call("macro.status")
-    c.call("event.push", {"name": "net.msg", "fields": {"x": 400, "y": 200}})
-    woke = recv_tag(c, "woke")
+    # Synchronize after the pre-WAIT marker before injecting the event.
+    ready = recv_tag(c, "wait_ready")
+    st = c.call("macro.status") if ready else None
+    if ready:
+        c.call("event.push", {"name": "net.msg", "fields": {"val": 1, "x": 400, "y": 200}})
+    woke = recv_tag(c, "woke") if ready else None
     res = recv_result(c)
-    check("D1 wait-then-signal: parked macro wakes on event (mouse +400/+200!)",
-          st["payload"].get("state") == "running"
+    check("D1 wait-then-signal: macro reaches WAIT and wakes on event (mouse +400/+200!)",
+          ready is not None and st is not None
+          and st["payload"].get("state") == "running"
           and woke is not None and res is not None
           and res["payload"]["state"] == "done")
     c.close()
@@ -468,14 +535,16 @@ def d7_slot_values_on_wire(ctx):
     values it read and reports the outcome — no physical observation."""
     c = ctx.client()
     c.call("macro.submit", {"code": SLOT_XY_CHECK})
-    st = c.call("macro.status")
-    c.call("event.push", {"name": "net.msg", "fields": {"x": 10, "y": 20}})
+    ready = recv_tag(c, "slot_ready")
+    st = c.call("macro.status") if ready else None
+    if ready:
+        c.call("event.push", {"name": "net.msg", "fields": {"val": 1, "x": 10, "y": 20}})
     tag = recv_until(
         c, lambda e: e.get("type") == "net.msg", timeout=8)
     got = tag["payload"].get("tag") if tag else None
     res = recv_result(c)
-    check("D7 slot values verified on wire (x=10,y=20 -> xy-ok)",
-          st["payload"].get("state") == "running" and got == "xy-ok"
+    check("D7 slot values verified on wire (x=10,y=20 -> xy_ok)",
+          st is not None and st["payload"].get("state") == "running" and got == "xy_ok"
           and res is not None and res["payload"]["state"] == "done",
           f"tag={got}")
     c.close()
@@ -490,16 +559,30 @@ def d2_wait_timeout(ctx):
     c.close()
 
 
-def d5_stale_signal_dropped(ctx):
+def d5_pending_latch_consumed(ctx):
     c = ctx.client()
-    # Fire with no waiter; under next-fire semantics the latch is discarded
-    c.call("event.push", {"name": "net.msg", "fields": {"x": 1}})
-    time.sleep(0.2)
-    c.call("macro.submit", {"code": WAIT_TIMEOUT})  # 1s window, self-reports
-    tag = recv_tag(c, "timeout", timeout=6)
-    check("D5 signal-then-wait: stale fire does not wake \\wait",
-          tag is not None)
+    # Drain any latch retained by an earlier macro or an earlier suite run.
+    c.call("macro.submit", {"code": "\\use{net}\\wait[0]{$slot.net.msg.val}"})
     recv_result(c)
+    # An empty notification arrives with no waiter and latches net.msg.val.
+    c.call("event.push", {"name": "net.msg", "fields": {}})
+    time.sleep(0.2)
+    c.call("macro.submit", {"code": WAIT_TIMEOUT})
+    tag = recv_tag(c, "fired", timeout=2)
+    res = recv_result(c, timeout=2)
+    # A second immediate poll must time out: the first WAIT consumed the latch.
+    c.call("macro.submit", {"code":
+           "\\use{net}\\wait[0]{$slot.net.msg.val}"
+           "\\if{ {$timeout, =, 1} }{\\call{net.send}{drained}}"
+           "{\\call{net.send}{latch_leaked}}"})
+    drained = recv_tag(c, "drained", timeout=2)
+    res2 = recv_result(c, timeout=2)
+    check("D5 pending latch is consumed immediately and exactly once",
+          tag is not None and res is not None
+          and res["payload"].get("state") == "done"
+          and res["payload"].get("ms", 1000) < 500
+          and drained is not None and res2 is not None
+          and res2["payload"].get("state") == "done")
     c.close()
 
 
@@ -536,11 +619,11 @@ def d3_ret_client_count(ctx):
 
 def d4_abort_during_wait(ctx):
     c = ctx.client()
-    c.call("macro.submit", {"code": "\\use{net}\\wait{net.msg}"})
+    c.call("macro.submit", {"code": "\\use{net}\\wait{$slot.net.msg.val}"})
     time.sleep(0.3)
     r = c.call("macro.abort")
     res = recv_result(c)
-    check("D4 abort interrupts a forever \\wait",
+    check("D4 abort interrupts a bounded \\wait",
           r["type"] == "macro.abort.ok" and res is not None
           and res["payload"]["state"] == "aborted")
     c.close()
@@ -692,26 +775,27 @@ def g2_latency_probe(ctx, n=10):
 
 IMG_NOPROV = ("\\use{img}\\use{net}"
               "\\call{img.snap}{10,8,1,1}"
-              "\\if{ {$ret, <, 0} }{\\call{net.send}{noprov}}{\\call{net.send}{prov-ok}}")
+              "\\if{ \\all{{$ret, =, 0}, {$err, =, 3}} }"
+              "{\\call{net.send}{noprov}}{\\call{net.send}{prov_ok}}")
 
 IMG_AT = ("\\use{img}\\use{net}"
           "\\call{img.snap}{10,8,1,1}\\set{s}{$ret}"
           "\\call{img.at}{$s}{0,0}"
-          "\\if{ {$ret, =, 0x466E96} }{\\call{net.send}{at-ok}}{\\call{net.send}{at-wrong}}")
+          "\\if{ {$ret, =, 0x466E96} }{\\call{net.send}{at_ok}}{\\call{net.send}{at_wrong}}")
 
 IMG_DIFF = ("\\use{img}\\use{net}"
             "\\call{img.snap}{0,0,8,8}\\set{a}{$ret}"
             "\\call{net.send}{snapped}"
-            "\\wait{net.msg}{30}"
+            "\\wait[30s]{$slot.net.msg.val}"
             "\\call{img.snap}{0,0,8,8}\\set{b}{$ret}"
             "\\call{img.diff}{$a}{$b}{0}"
-            "\\if{ {$ret, >, 0} }{\\call{net.send}{diff-ok}}{\\call{net.send}{no-diff}}")
+            "\\if{ {$ret, >, 0} }{\\call{net.send}{diff_ok}}{\\call{net.send}{no_diff}}")
 
 IMG_REUSE = ("\\use{img}\\use{net}"
              "\\call{img.snap}{0,0,4,4}\\set{a}{$ret}"
              "\\call{img.snap}{10,8,4,4}\\set{a}{$ret}"  # overwrite releases
              "\\call{img.at}{$a}{0,0}"
-             "\\if{ {$ret, =, 0x466E96} }{\\call{net.send}{reuse-ok}}{\\call{net.send}{reuse-wrong}}")
+             "\\if{ {$ret, =, 0x466E96} }{\\call{net.send}{reuse_ok}}{\\call{net.send}{reuse_wrong}}")
 
 
 def g3_img_no_provider(ctx):
@@ -721,7 +805,7 @@ def g3_img_no_provider(ctx):
     c.call("macro.submit", {"code": IMG_NOPROV})
     tag = recv_tag(c, "noprov", timeout=10)
     res = recv_result(c)
-    check("G3 img.snap without provider -> $ret<0",
+    check("G3 img.snap without provider -> $ret=0, $err=ERR_NO_PROVIDER",
           tag is not None and res is not None)
     c.close()
 
@@ -742,11 +826,21 @@ def _frame_fullhd():
 
 
 def _ensure_provider(ctx):
-    if getattr(ctx, "provider", None) is None:
-        ctx.provider = reference_provider.ReferenceProvider(
-            ctx.host, ctx.port, ctx.token)
-        ctx.provider.start()
-        time.sleep(0.3)  # connect + img.hello registration
+    if getattr(ctx, "provider", None) is not None:
+        return
+    ctx.provider = reference_provider.ReferenceProvider(
+        ctx.host, ctx.port, ctx.token)
+    ctx.provider.start()
+    # img.hello has no ack; a tiny real request proves device registration.
+    deadline = time.monotonic() + 8
+    while True:
+        tags, res = submit_tag_sequence(ctx, IMG_NOPROV, timeout=8)
+        if tags == ["prov_ok"] and res is not None \
+                and res["payload"].get("state") == "done":
+            return
+        if tags != ["noprov"] or time.monotonic() >= deadline:
+            raise RuntimeError(f"provider registration failed: {tags}")
+        time.sleep(0.05)
 
 
 def g4_img_snap_at(ctx):
@@ -757,7 +851,7 @@ def g4_img_snap_at(ctx):
     got = tag["payload"].get("tag") if tag else None
     res = recv_result(c)
     check("G4 snap + at reads exact pixel color",
-          got == "at-ok" and res is not None, str(got))
+          got == "at_ok" and res is not None, str(got))
     c.close()
 
 
@@ -773,12 +867,12 @@ def g5_img_diff(ctx):
         tag = recv_until(
             c,
             lambda e: e.get("type") == "net.msg"
-            and e["payload"].get("tag") in ("diff-ok", "no-diff"),
+            and e["payload"].get("tag") in ("diff_ok", "no_diff"),
             timeout=15)
         got = tag["payload"].get("tag") if tag else None
         res = recv_result(c)
         check("G5 diff detects swapped frame (and stays silent when same)",
-              snapped is not None and got == "diff-ok" and res is not None,
+              snapped is not None and got == "diff_ok" and res is not None,
               f"snapped={'ok' if snapped else 'FAIL'} diff={got}")
     finally:
         if getattr(ctx, "provider", None) is not None:
@@ -794,15 +888,15 @@ def g6_handle_overwrite_reuse(ctx):
     got = tag["payload"].get("tag") if tag else None
     res = recv_result(c)
     check("G6 handle overwrite releases; variable reusable",
-          got == "reuse-ok" and res is not None, str(got))
+          got == "reuse_ok" and res is not None, str(got))
     c.close()
 
 
 IMG_REFLIT = ("\\use{img}\\use{net}"
-              "\\set{r}{\\rect{\\row{0x002850,0x032B53}}}"
+              "\\pixelrect{r}{\\row{0x002850,0x032B53}}"
               "\\call{img.snap}{0,0,2,1}\\set{c}{$ret}"
               "\\call{img.diff}{$r}{$c}{0}"
-              "\\if{ {$ret, =, 0} }{\\call{net.send}{ref-ok}}{\\call{net.send}{ref-wrong}}")
+              "\\if{ \\all{{$ret, =, 0}, {$err, =, 0}} }{\\call{net.send}{ref_ok}}{\\call{net.send}{ref_wrong}}")
 
 
 def g7_capture_passthrough(ctx):
@@ -861,11 +955,7 @@ def g7_capture_passthrough(ctx):
 
 def g7b_preview_rejections(ctx):
     """Direct preview security: tampered signature or nonce rejected with 403,
-    and ephemeral socket closes immediately preventing replay."""
-    if not ctx.token:
-        check("G7b preview security rejections", True,
-              "SKIP: dev mode has no token to reject")
-        return
+    including dev mode's empty-key HMAC; the one-shot socket prevents replay."""
     _ensure_provider(ctx)
 
     def req(method):
@@ -909,7 +999,10 @@ def g7b_preview_rejections(ctx):
         urllib.request.urlopen(bad_url, timeout=2)
     except urllib.error.HTTPError:
         pass
-    except Exception:
+    except urllib.error.URLError as e:
+        replay_blocked = isinstance(
+            e.reason, (ConnectionRefusedError, ConnectionResetError))
+    except (ConnectionRefusedError, ConnectionResetError):
         replay_blocked = True
 
     # 3. Tampered nonce test
@@ -962,15 +1055,15 @@ def g7c_preview_busy_conflict(ctx):
         check("G7c preview busy conflict", False, str(e))
 
 
-def g8_rect_literal(ctx):
+def g8_pixelrect_literal(ctx):
     _ensure_provider(ctx)
     c = ctx.client()
     c.call("macro.submit", {"code": IMG_REFLIT})
     tag = recv_until(c, lambda e: e.get("type") == "net.msg", timeout=15)
     got = tag["payload"].get("tag") if tag else None
     res = recv_result(c)
-    check("G8 \\rect literal diffs 0 against the live frame",
-          got == "ref-ok" and res is not None, str(got))
+    check("G8 \\pixelrect literal diffs 0 against the live frame",
+          got == "ref_ok" and res is not None, str(got))
     c.close()
 
 
@@ -1040,55 +1133,261 @@ def g9_stream_throughput(ctx):
 IMG_POOL = ("\\use{img}\\use{net}"
             + "".join(f"\\call{{img.snap}}{{0,0,4,4}}\\set{{{v}}}{{"
                       f"$ret}}" for v in "abcdefgh")  # fill all SNAP_SLOTS
-            + "\\call{img.snap}{0,0,4,4}"  # 9th: pool full -> $ret=-1
-            # $ret must be checked directly: storing it types the variable
-            # as a handle and \if rejects handle operands (the $ret
-            # exemption exists exactly for error-sentinel checks)
-            "\\if{ {$ret, <, 0} }{\\call{net.send}{pool-full}}"
-            "{\\call{net.send}{pool-nine}}"
+            + "\\call{img.snap}{0,0,4,4}"  # 9th: pool exhausted
+            "\\if{ \\all{{$ret, =, 0}, {$err, =, 6}} }{\\call{net.send}{pool_full}}"
+            "{\\call{net.send}{pool_nine}}"
             "\\set{a}{0}"  # overwrite-release happens at the WRITE: the
             # slot must be freed BEFORE the next snap, one breath earlier
             "\\call{img.snap}{10,8,4,4}\\set{a}{$ret}"
             "\\call{img.at}{$a}{0,0}"
-            "\\if{ {$ret, =, 0x466E96} }{\\call{net.send}{pool-reused}}"
-            "{\\call{net.send}{pool-bad}}")
+            "\\if{ {$ret, =, 0x466E96} }{\\call{net.send}{pool_reused}}"
+            "{\\call{net.send}{pool_bad}}")
 
 
 def g10_snap_pool_exhaustion(ctx):
-    """Snap slot pool (spec/vm.md Appendix A): after SNAP_SLOTS live
-    snapshots the next snap fails deterministically ($ret<0); an
-    overwrite-release reopens a slot and the pool keeps working."""
+    """After SNAP_SLOTS live snapshots the next snap returns
+    ERR_RESOURCE_EXHAUSTED; overwrite-release reopens a slot."""
     _ensure_provider(ctx)
-    c = ctx.client()
-    c.call("macro.submit", {"code": IMG_POOL})
-    tags = []
-    for _ in range(2):
-        e = recv_until(c, lambda m: m.get("type") == "net.msg", timeout=15)
-        tags.append(e["payload"].get("tag") if e else None)
-    res = recv_result(c)
+    tags, res = submit_tag_sequence(ctx, IMG_POOL, timeout=60)
     check("G10 snap pool: exhaustion fails clean, release reopens a slot",
-          tags == ["pool-full", "pool-reused"] and res is not None,
+          tags == ["pool_full", "pool_reused"] and res is not None
+          and res["payload"].get("state") == "done",
           str(tags))
-    c.close()
 
 
 IMG_OUT_OF_BOUNDS = ("\\use{img}\\use{net}"
                      "\\call{img.snap}{9999,9999,10,10}"
-                     "\\if{ {$ret, <, 0} }{\\call{net.send}{oob-fail}}{\\call{net.send}{oob-ok}}")
+                     "\\if{ \\all{{$ret, =, 0}, {$err, =, 4}} }"
+                     "{\\call{net.send}{oob_fail}}{\\call{net.send}{oob_ok}}")
 
 
 def g11_img_out_of_bounds_rect(ctx):
-    """Out-of-bounds img.snap rect is rejected by provider (capture_failed),
-    returns $ret < 0 to macro, and keeps the provider link healthy."""
+    """Out-of-bounds img.snap returns ERR_OUT_OF_BOUNDS and keeps the
+    provider link healthy."""
     _ensure_provider(ctx)
     c = ctx.client()
     c.call("macro.submit", {"code": IMG_OUT_OF_BOUNDS})
-    tag = recv_tag(c, "oob-fail", timeout=10)
+    tag = recv_tag(c, "oob_fail", timeout=10)
     res = recv_result(c)
-    check("G11 out-of-bounds rect rejected cleanly ($ret < 0)",
+    check("G11 out-of-bounds rect -> $ret=0, $err=ERR_OUT_OF_BOUNDS",
           tag is not None and res is not None and res["payload"]["state"] == "done",
           str(tag))
     c.close()
+
+
+# --- V/H/R/T/I: v4 conformance on the device ---
+
+
+def v1_program_version_and_strings(ctx):
+    dis = http_compile(ctx, "\\use{net}\\call{net.send}{v1}")
+    check("V1 device compiler emits VERSION=0xA6, strings, and END",
+          dis.startswith("; bytecode v166,") and "CALL net.send" in dis
+          and dis.splitlines()[-1] == "END",
+          dis.splitlines()[0] if dis else "empty disassembly")
+
+
+def v2_code_capacity_beyond_legacy_limit(ctx):
+    # 2500 CHAR instructions produce 5001 opcode bytes including END.
+    dis = http_compile(ctx, "a" * 2500)
+    first = dis.splitlines()[0] if dis else ""
+    size = int(first.split(",")[1].strip()[:-1]) if ", " in first else 0
+    check("V2 opcode segment exceeds the legacy 4 KiB limit",
+          size > 4096 and dis.splitlines()[-1] == "END", first)
+
+
+PIXELRECT_SELFTEST = ("\\use{img}\\use{net}"
+    "\\pixelrect{p}{\\row{0xFF0000,\\rgb{0,255,0}},\\row{17,0x0000FF}}"
+    "\\call{img.at}{$p}{0,0}\\set{c0}{$ret}"
+    "\\call{img.at}{$p}{1,0}\\set{c1}{$ret}"
+    "\\call{img.at}{$p}{0,1}\\set{c2}{$ret}"
+    "\\call{img.at}{$p}{1,1}\\set{c3}{$ret}"
+    "\\call{img.diff}{$p}{$p}{0}"
+    "\\if{ \\all{{$ret, =, 0}, {$err, =, 0}, "
+    "{$c0, =, 0xFF0000}, {$c1, =, 0x00FF00}, "
+    "{$c2, =, 17}, {$c3, =, 0x0000FF}} }"
+    "{\\call{net.send}{pixelrect_ok}}{\\call{net.send}{pixelrect_bad}}")
+
+
+def h1_pixelrect_without_provider(ctx):
+    tags, res = submit_tag_sequence(ctx, PIXELRECT_SELFTEST)
+    check("H1 PixelRect RGB packing, row-major reads, shared self-diff",
+          tags == ["pixelrect_ok"] and res is not None
+          and res["payload"]["state"] == "done", str(tags))
+
+
+SHARED_HANDLE = ("\\use{img}\\use{sys}\\use{net}"
+    "\\call{img.snap}{0,0,4,4}\\set{a}{$ret}\\set{b}{$a}"
+    "\\call{sys.free}\\set{a}{0}"  # b remains the sole snapshot reference
+    "\\call{img.at}{$b}{0,0}\\set{c0}{$ret}"
+    "\\set{b}{$b}\\call{img.at}{$b}{0,0}\\set{c1}{$ret}"
+    "\\if{ \\all{{$c0, =, 0x002850}, {$c1, =, 0x002850}, {$err, =, 0}} }"
+    "{\\call{net.send}{shared_ok}}{\\call{net.send}{shared_bad}}")
+
+
+def h2_shared_handle_lifecycle(ctx):
+    _ensure_provider(ctx)
+    tags, res = submit_tag_sequence(ctx, SHARED_HANDLE)
+    check("H2 shared Handle survives overwrite of $ret and other aliases",
+          tags == ["shared_ok"] and res is not None
+          and res["payload"]["state"] == "done", str(tags))
+
+
+def h3_abort_releases_handle_pool(ctx):
+    _ensure_provider(ctx)
+    c = ctx.client()
+    hold = ("\\use{img}\\use{net}\\set{ok}{1}"
+            + "".join(
+                f"\\call{{img.snap}}{{0,0,4,4}}"
+                f"\\if{{ {{$err, !=, 0}} }}{{\\set{{ok}}{{0}}}}"
+                f"\\set{{{v}}}{{$ret}}" for v in "abcdefgh")
+            + "\\if{ {$ok, =, 1} }{"
+              "\\call{net.send}{pool_ready}\\wait[30s]{$slot.net.msg.val}}"
+              "{\\call{net.send}{setup_bad}}")
+    aborted = None
+    try:
+        c.call("macro.submit", {"code": hold})
+        ready = recv_tag(c, "pool_ready", timeout=45)
+        if ready is not None:
+            c.call("macro.abort")
+            aborted = recv_result(c, timeout=3)
+    finally:
+        if aborted is None:
+            abort_and_drain(c)
+        c.close()
+    if ready is not None and aborted is not None \
+            and aborted["payload"].get("state") == "aborted":
+        tags, res = submit_tag_sequence(ctx, IMG_POOL, timeout=60)
+    else:
+        tags, res = [], None
+    check("H3 filled snapshot pool is fully reusable after abort",
+          ready is not None and aborted is not None
+          and aborted["payload"].get("state") == "aborted"
+          and tags == ["pool_full", "pool_reused"] and res is not None
+          and res["payload"]["state"] == "done", str(tags))
+
+
+GUARD_ENTRY = ("\\use{net}"
+    "\\guarded{ {$slot.net.msg.stop, =, 0} }"
+    "{\\call{net.send}{guard_body}}{\\call{net.send}{guard_abort}}"
+    "\\call{net.send}{guard_done}")
+
+
+def r1_guard_entry_and_normal_exit(ctx):
+    c = ctx.client()
+    c.call("event.push", {"name": "net.msg", "fields": {"stop": 0}})
+    c.close()
+    entered, res1 = submit_tag_sequence(ctx, GUARD_ENTRY)
+    c = ctx.client()
+    c.call("event.push", {"name": "net.msg", "fields": {"stop": 1}})
+    c.close()
+    aborted, res2 = submit_tag_sequence(ctx, GUARD_ENTRY)
+    check("R1 guard normal exit and false-on-entry controlled abort",
+          entered == ["guard_body", "guard_done"]
+          and aborted == ["guard_abort", "guard_done"]
+          and all(r is not None and r["payload"]["state"] == "done"
+                  for r in (res1, res2)),
+          f"normal={entered} abort={aborted}")
+
+
+GUARD_WAIT = ("\\use{net}\\wait[0]{$slot.net.msg.r2_idle}"
+    "\\guarded[20ms]{ {$slot.net.msg.stop, =, 0} }"
+    "{\\call{net.send}{guard_ready}\\wait[30s]{$slot.net.msg.go}\\call{net.send}{guard_late}}"
+    "{\\if{ {$timeout, =, 1} }{\\call{net.send}{guard_abort}}"
+    "{\\call{net.send}{guard_timeout}}}\\call{net.send}{guard_done}")
+
+
+def r2_guard_interrupts_wait(ctx):
+    c = ctx.client()
+    res = None
+    try:
+        c.call("event.push", {"name": "net.msg", "fields": {"stop": 0}})
+        c.call("macro.submit", {"code": GUARD_WAIT})
+        ready = recv_tag(c, "guard_ready", timeout=5)
+        if ready is not None:
+            # Target arrival and guard violation share one projection. The
+            # guard must win without consuming go or replacing old $timeout.
+            c.call("event.push", {"name": "net.msg",
+                                  "fields": {"stop": 1, "go": 1}})
+            tags, res = collect_tag_sequence(c, timeout=5)
+        else:
+            tags = []
+        if res is not None:
+            probe_tags, probe_res = submit_tag_sequence(
+                ctx,
+                "\\use{net}\\wait[0]{$slot.net.msg.go}"
+                "\\if{ {$timeout, =, 0} }{\\call{net.send}{target_kept}}"
+                "{\\call{net.send}{target_lost}}")
+        else:
+            probe_tags, probe_res = [], None
+        check("R2 guarded WAIT aborts before late body and preserves target state",
+              ready is not None and tags == ["guard_abort", "guard_done"]
+              and res is not None and res["payload"]["state"] == "done"
+              and probe_tags == ["target_kept"] and probe_res is not None
+              and probe_res["payload"]["state"] == "done",
+              f"guard={tags} probe={probe_tags}")
+    finally:
+        if res is None:
+            abort_and_drain(c)
+        c.close()
+
+
+def t1_hold_pace_and_execution_reset(ctx):
+    c = ctx.client()
+    c.call("macro.status")  # authenticate before any HTTP result is broadcast
+    timings = []
+    states = []
+    try:
+        for code, hold in (("\\pace{100ms}\\a", 20),
+                           ("\\pace{100ms}\\a\\a", 20),
+                           ("\\a", 0)):
+            body = http_post_macro(ctx, code, hold_ms=hold)
+            if not body.startswith("Started"):
+                raise RuntimeError(f"HTTP submit failed: {body}")
+            res = recv_result(c, timeout=5)
+            if res is None:
+                break
+            timings.append(res["payload"]["ms"])
+            states.append(res["payload"].get("state"))
+    finally:
+        if len(states) != 3:
+            abort_and_drain(c)
+        try:
+            # click_hold_ms is device-global; restore the documented default.
+            http_post_macro(ctx, "\\set{x}{1}", hold_ms=10)
+            recv_result(c, timeout=3)
+        except Exception:
+            pass
+        c.close()
+    one, two, reset = (timings + [None] * 3)[:3]
+    ok = (states == ["done", "done", "done"]
+          and one is not None and 110 <= one < 1000
+          and two is not None and 225 <= two < 2000
+          and reset is not None and reset < 80)
+    check("T1 hold+PACE totals and execution-start PACE reset",
+          ok, f"one={one}ms two={two}ms reset={reset}ms states={states}")
+
+
+def i1_multichunk_snapshot(ctx):
+    _ensure_provider(ctx)
+    indices = (0, 2729, 2730, 5460, 16383)
+    code = "\\use{img}\\use{net}\\call{img.snap}{0,0,128,128}\\set{s}{$ret}"
+    checks = ["{$err, =, 0}"]
+    for i, index in enumerate(indices):
+        x, y = index % 128, index // 128
+        v = (x * 3 + y * 5) % 256
+        expected = (v << 16) | (((v + 40) % 256) << 8) | ((v + 80) % 256)
+        code += f"\\call{{img.at}}{{$s}}{{{x},{y}}}\\set{{m{i}}}{{$ret}}"
+        checks.append("{$m" + str(i) + ", =, " + str(expected) + "}")
+    code += ("\\if{ \\all{" + ", ".join(checks) + "} }"
+             "{\\call{net.send}{multichunk_ok}}{\\call{net.send}{multichunk_bad}}")
+    try:
+        ctx.provider.set_frame(128, 128, reference_provider.frame_default(128, 128))
+        tags, res = submit_tag_sequence(ctx, code, timeout=30)
+        check("I1 128x128 snapshot preserves bytes across all seven chunks",
+              tags == ["multichunk_ok"] and res is not None
+              and res["payload"]["state"] == "done", str(tags))
+    finally:
+        ctx.provider.set_frame(*_frame_default())
 
 
 def _mem_now(ctx):
@@ -1177,6 +1476,14 @@ def main(argv=None):
         for _ in range(3):
             c.call("macro.submit", {"code": "\\set{x}{1}"})
             recv_result(c, timeout=3)
+        # Test-owned wait receptors retain state across macros and aborts.
+        c.call("macro.submit", {"code":
+               "\\use{net}\\wait[0]{$slot.net.msg.val}"
+               "\\wait[0]{$slot.net.msg.go}"
+               "\\wait[0]{$slot.net.msg.r2_idle}"})
+        drained = recv_result(c, timeout=3)
+        if drained is None or drained["payload"].get("state") != "done":
+            raise RuntimeError("could not drain test-owned slot latches")
         time.sleep(0.3)
         mem0 = c.call("device.info", {"gc": True})["payload"].get("free_mem")
         c.close()
@@ -1194,16 +1501,20 @@ def main(argv=None):
              c10_event_unknown_signal, c11_event_bad_fields,
              c12_error_envelope_ignored, c13_stray_response_ignored,
              c14_compile_busy_when_running,
+             v1_program_version_and_strings, v2_code_capacity_beyond_legacy_limit,
+             r1_guard_entry_and_normal_exit, r2_guard_interrupts_wait,
+             t1_hold_pace_and_execution_reset,
              d1_wait_wake, d2_wait_timeout, d3_ret_client_count,
-             d4_abort_during_wait, d5_stale_signal_dropped,
+             d4_abort_during_wait, d5_pending_latch_consumed,
              d6_slot_state_persists, d7_slot_values_on_wire,
              e1_http_status_during_raw, e2_http_submit_broadcasts_to_raw,
              f2_submit_storm, f3_hard_kill, g1_binary_flood, g2_latency_probe,
-             g3_img_no_provider, g4_img_snap_at, g5_img_diff,
-             g6_handle_overwrite_reuse, g7_capture_passthrough,
+             g3_img_no_provider, h1_pixelrect_without_provider, g4_img_snap_at,
+             g5_img_diff, g6_handle_overwrite_reuse, g7_capture_passthrough,
              g7b_preview_rejections, g7c_preview_busy_conflict,
-             g8_rect_literal, g9_stream_throughput, g10_snap_pool_exhaustion,
-             g11_img_out_of_bounds_rect]
+             g8_pixelrect_literal, g9_stream_throughput, g10_snap_pool_exhaustion,
+             g11_img_out_of_bounds_rect, h2_shared_handle_lifecycle,
+             h3_abort_releases_handle_pool, i1_multichunk_snapshot]
     if not args.skip_slow:
         cases.append(a4_slow_auth_deadline)
     if args.only:

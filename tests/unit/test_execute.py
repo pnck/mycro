@@ -165,7 +165,7 @@ def test_pace_does_not_sleep_immediately():
     import time
 
     start = time.monotonic()
-    run("\\pace{0.2}a")
+    run("\\pace{0.2s}a")
     elapsed = time.monotonic() - start
     # one 'a' with 200ms pace → ~0.2s total, not 0.4s (old dual semantics)
     assert 0.18 < elapsed < 0.35
@@ -175,7 +175,7 @@ def test_delay_is_one_shot():
     import time
 
     start = time.monotonic()
-    run("\\delay{0.2}")
+    run("\\delay{0.2s}")
     elapsed = time.monotonic() - start
     assert 0.18 < elapsed < 0.35
 

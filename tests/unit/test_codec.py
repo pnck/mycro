@@ -158,11 +158,12 @@ def test_auth_dev_mode_skips_hash_but_checks_magic():
 
 
 def test_split_chunk_roundtrip():
-    from codec import FLAG_STREAM_END, split_chunk
-    payload = bytes((0x34, 0x12, FLAG_STREAM_END, 0x00)) + b"payload-bytes"
+    from codec import split_chunk
+    # The codec exposes the reserved field; protocol v1 requires it to be 0.
+    payload = bytes((0x34, 0x12, 0, 0)) + b"payload-bytes"
     sid, flags, data = split_chunk(payload)
     assert sid == 0x1234
-    assert flags == FLAG_STREAM_END
+    assert flags == 0
     assert data == b"payload-bytes"
 
 

@@ -15,8 +15,9 @@ selectors (stateless: every request takes a fresh screenshot):
                                             is ever silently downgraded)
 
 All coordinates are native source pixels. Responses carry the source's
-native width/height (plus crop_w/crop_h for clamped rects). OBS rejects
-concurrent screenshots, so captures are serialized on a lock.
+native width/height. Rect requests must lie wholly within those bounds;
+providers never clip them. OBS rejects concurrent screenshots, so captures
+are serialized on a lock.
 
 gray8 uses integer BT.601 luma (r*77 + g*150 + b*29) >> 8 — bit-exact
 with src/lib/imgmatch.py and tests/device/reference_provider.py
@@ -47,10 +48,9 @@ PROTO_VERSION = 1
 AUTH_MAGIC = b"MYCR"
 DEFAULT_PORT = 7373
 CHUNK_RAW = 8192 - 4  # binary frame payload minus u16 stream_id + u16 flags
-FLAG_STREAM_END = 1
 
-MAX_POINTS = 64
-MAX_RECT_EDGE = 512
+MAX_POINTS = 256
+MAX_RECT_EDGE = 128
 MAX_FRAME_W = 160
 MAX_FRAME_H = 120
 SHOT_TIMEOUT_S = 5.0
@@ -332,6 +332,14 @@ class ImgFail(Exception):
     pass
 
 
+class ImgField(Exception):
+    pass
+
+
+class ImgBounds(Exception):
+    pass
+
+
 def _grab_file():
     """Fresh screenshot of the configured source; returns the file path.
     The caller reads and deletes the file."""
@@ -440,8 +448,7 @@ def send_stream(s, ok_type, rid, meta, data):
     send_env(s, ok_type, rid, meta)
     for i in range(chunks):
         part = data[i * CHUNK_RAW:(i + 1) * CHUNK_RAW]
-        flags = FLAG_STREAM_END if i == chunks - 1 else 0
-        payload = struct.pack("<HH", sid, flags) + part
+        payload = struct.pack("<HH", sid, 0) + part
         s.sendall(struct.pack("<I", 0x80000000 | len(payload)) + payload)
 
 
@@ -487,6 +494,10 @@ def handle(s, env):
         else:
             obs.script_log(obs.LOG_WARNING, "mycro: unknown request type from device: %r (id %s)" % (t, rid))
             send_error(s, rid, "unknown_type", "unknown type: %r" % t)
+    except ImgBounds as e:
+        send_error(s, rid, "out_of_bounds", str(e))
+    except ImgField as e:
+        send_error(s, rid, "field", str(e))
     except ImgFail as e:
         send_error(s, rid, "capture_failed", str(e))
     except (KeyError, TypeError, ValueError) as e:
@@ -557,8 +568,8 @@ def handle_arm_preview(s, rid, p):
                     req_sig = qs.get("sig", [""])[0]
                     req_type = qs.get("type", [""])[0]
 
-                    # Dev mode (empty device_token) skips sig check
-                    auth_ok = (not device_token) or hmac.compare_digest(req_sig, exp_sig)
+                    # Dev mode uses the empty HMAC key; verification stays active.
+                    auth_ok = hmac.compare_digest(req_sig, exp_sig)
                     if parsed.path == "/capture" and req_type == "png" and req_nonce == exp_nonce and auth_ok:
                         # Verified! Perform Lazy Capture now.
                         png_bytes, _, _ = capture_png()
@@ -622,36 +633,31 @@ def handle_frame(s, rid, p):
     if "w" in p and "h" in p:
         return _scaled(s, rid, int(p["w"]), int(p["h"]),
                        str(p.get("format", "")))
-    raise ImgFail("img.frame needs one of: rect / points / w+h")
+    raise ImgField("img.frame needs one of: rect / points / w+h")
 
 
 def _rect(s, rid, rect):
     """Lossless native-pixel crop; never resampled."""
     x, y, w, h = (int(rect[k]) for k in ("x", "y", "w", "h"))
     if not (1 <= w <= MAX_RECT_EDGE and 1 <= h <= MAX_RECT_EDGE):
-        raise ImgFail("rect edge capped at %d" % MAX_RECT_EDGE)
+        raise ImgField("rect edge capped at %d" % MAX_RECT_EDGE)
     im = capture()
     W, H = im.size
     if W <= 0 or H <= 0:
         raise ImgFail("empty image from capture source (%dx%d)" % (W, H))
-    x0 = max(x, 0)
-    y0 = max(y, 0)
-    x1 = min(x + w, W)
-    y1 = min(y + h, H)
-    if x1 <= x0 or y1 <= y0:
-        raise ImgFail("crop rect [%d,%d,%d,%d] outside source bounds (%dx%d)"
-                      % (x, y, w, h, W, H))
-    out = im.crop((x0, y0, x1, y1))
+    if x < 0 or y < 0 or x + w > W or y + h > H:
+        raise ImgBounds("crop rect [%d,%d,%d,%d] outside source bounds (%dx%d)"
+                        % (x, y, w, h, W, H))
+    out = im.crop((x, y, x + w, y + h))
     send_stream(s, "img.frame.ok", rid,
-                {"width": W, "height": H,
-                 "crop_w": x1 - x0, "crop_h": y1 - y0,
+                {"width": W, "height": H, "w": w, "h": h,
                  "format": "rgb8"}, out.tobytes())
 
 
 def _points(s, rid, points):
     """Exact colors at native pixels."""
     if not (1 <= len(points) <= MAX_POINTS):
-        raise ImgFail("points capped at %d" % MAX_POINTS)
+        raise ImgField("points capped at %d" % MAX_POINTS)
     im = capture()
     W, H = im.size
     if W <= 0 or H <= 0:
@@ -659,9 +665,12 @@ def _points(s, rid, points):
     px = im.load()
     colors = []
     for x, y in points:
-        nx = min(max(int(x), 0), W - 1)
-        ny = min(max(int(y), 0), H - 1)
-        colors.append(list(px[nx, ny][:3]))
+        nx, ny = int(x), int(y)
+        if not (0 <= nx < W and 0 <= ny < H):
+            raise ImgBounds("point (%d,%d) outside source bounds (%dx%d)"
+                            % (nx, ny, W, H))
+        r, g, b = px[nx, ny][:3]
+        colors.append((r << 16) | (g << 8) | b)
     send_env(s, "img.frame.ok", rid, {"width": W, "height": H,
                                       "format": "colors",
                                       "colors": colors})
@@ -670,9 +679,11 @@ def _points(s, rid, points):
 def _scaled(s, rid, w, h, fmt):
     """Whole source resampled to w,h in an EXPLICIT format."""
     if fmt not in ("rgb8", "gray8"):
-        raise ImgFail("w,h selector requires format: rgb8 | gray8")
+        raise ImgField("w,h selector requires format: rgb8 | gray8")
     if not (1 <= w <= MAX_FRAME_W and 1 <= h <= MAX_FRAME_H):
-        raise ImgFail("frame capped at %dx%d" % (MAX_FRAME_W, MAX_FRAME_H))
+        raise ImgField("frame capped at %dx%d" % (MAX_FRAME_W, MAX_FRAME_H))
+    if w * h * (3 if fmt == "rgb8" else 1) > 49152:
+        raise ImgField("pixel stream exceeds 48 KiB budget")
     im = capture()
     W, H = im.size
     if W <= 0 or H <= 0:
@@ -681,7 +692,7 @@ def _scaled(s, rid, w, h, fmt):
     if fmt == "gray8":
         out = gray_of(out)
     send_stream(s, "img.frame.ok", rid,
-                {"width": W, "height": H, "frame_w": w, "frame_h": h,
+                {"width": W, "height": H, "w": w, "h": h,
                  "format": fmt}, out)
 
 

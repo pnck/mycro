@@ -28,7 +28,7 @@ AUTH_LEN = len(AUTH_MAGIC) + 1 + 32  # magic + version + SHA-256 digest
 KIND_JSON = 0
 KIND_BINARY = 1
 
-FLAG_STREAM_END = 1  # chunk flags bit0: last chunk of the stream
+# Binary chunk flags are reserved and must be zero in protocol v1.
 
 MAX_PAYLOAD = 8192  # JSON envelope cap (macro source maxes at 4096)
 MAX_BINARY_CHUNK = 8192  # per-chunk cap for future bulk streams

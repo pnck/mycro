@@ -35,8 +35,8 @@ def test_macro_used_twice_expands_twice():
 
 def test_one_arg_substitution():
     assert compile_ok(
-        "\\def{open}[1]{\\win+r\\delay{0.3}#1\\enter}\\open{notepad}"
-    ) == compile_ok("\\win+r\\delay{0.3}notepad\\enter")
+        "\\def{open}[1]{\\win+r\\delay{0.3s}#1\\enter}\\open{notepad}"
+    ) == compile_ok("\\win+r\\delay{0.3s}notepad\\enter")
 
 
 def test_arg_used_twice():

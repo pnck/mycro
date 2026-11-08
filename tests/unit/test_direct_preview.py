@@ -95,8 +95,8 @@ def _handle_preview_conn(conn, exp_sig: str, exp_nonce: str, capture_fn, token="
         req_sig = qs.get("sig", [""])[0]
         req_type = qs.get("type", [""])[0]
 
-        # Unified with A2: if token is unset/empty (dev mode), skip sig check or accept default
-        auth_ok = (not token) or hmac.compare_digest(req_sig, exp_sig)
+        # Dev mode uses an empty HMAC key; signature verification remains active.
+        auth_ok = hmac.compare_digest(req_sig, exp_sig)
 
         if parsed.path == "/capture" and req_type == "png" and req_nonce == exp_nonce and auth_ok:
             png_bytes, w, h = capture_fn()
@@ -271,29 +271,28 @@ def test_preview_single_use_closes_immediately():
 
 
 def test_preview_dev_mode_token_unset():
-    """Unified with A2: when token is unset (dev mode), signature is either skipped
-    or negotiated with empty default, but nonce must still match."""
+    """Dev mode verifies empty-key HMAC and still requires the nonce."""
     spy = CaptureSpy()
     nonce = os.urandom(16).hex()
     empty_sig = _compute_sig("", nonce)
 
-    # 1. Matching nonce with empty sig -> succeeds in dev mode
+    # 1. Missing signature is rejected even with an empty HMAC key.
     req1 = f"GET /capture?type=png&nonce={nonce} HTTP/1.1\r\nHost: localhost\r\n\r\n"
-    status1, _, body1 = _do_request(req1, exp_sig=empty_sig, exp_nonce=nonce, capture_fn=spy.capture, token="")
-    assert status1 == 200
-    assert spy.count == 1
+    status1, _, _ = _do_request(req1, exp_sig=empty_sig, exp_nonce=nonce, capture_fn=spy.capture, token="")
+    assert status1 == 403
+    assert spy.count == 0
 
-    # 2. Matching nonce with default empty negotiated sig -> succeeds
+    # 2. The valid empty-key signature succeeds.
     req2 = f"GET /capture?type=png&nonce={nonce}&sig={empty_sig} HTTP/1.1\r\nHost: localhost\r\n\r\n"
     status2, _, _ = _do_request(req2, exp_sig=empty_sig, exp_nonce=nonce, capture_fn=spy.capture, token="")
     assert status2 == 200
-    assert spy.count == 2
+    assert spy.count == 1
 
-    # 3. Wrong nonce -> rejected even in dev mode
-    req3 = f"GET /capture?type=png&nonce=wrong_nonce HTTP/1.1\r\nHost: localhost\r\n\r\n"
+    # 3. Wrong nonce is rejected even with a valid signature for another nonce.
+    req3 = f"GET /capture?type=png&nonce=wrong_nonce&sig={empty_sig} HTTP/1.1\r\nHost: localhost\r\n\r\n"
     status3, _, _ = _do_request(req3, exp_sig=empty_sig, exp_nonce=nonce, capture_fn=spy.capture, token="")
     assert status3 == 403
-    assert spy.count == 2  # not incremented
+    assert spy.count == 1
 
 
 # ============================================================================

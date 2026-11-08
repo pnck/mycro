@@ -152,3 +152,34 @@ def test_error_envelope_not_reflected(server):
     assert r["type"] == "macro.status.ok"
     c.close()
 
+
+def test_call_buffers_interleaved_push_for_later_receive():
+    client_sock, server_sock = socket.socketpair()
+
+    def respond():
+        request = client_mod.json.loads(server_sock.recv(4096)[4:].decode("utf-8"))
+        push = {"v": 1, "type": "net.msg", "id": 0, "ts": 0,
+                "payload": {"tag": "early"}}
+        response = {"v": 1, "type": "macro.status.ok", "id": request["id"],
+                    "ts": 0, "payload": {"state": "idle"}}
+        server_sock.sendall(codec.pack_frame(0, codec.encode_envelope(push))
+                            + codec.pack_frame(0, codec.encode_envelope(response)))
+        server_sock.close()
+
+    thread = threading.Thread(target=respond, daemon=True)
+    thread.start()
+    c = object.__new__(client_mod.Client)
+    c.sock = client_sock
+    c._buf = bytearray()
+    c._req_id = 0
+    c.pending = []
+    try:
+        response = c.call("macro.status")
+        assert response["type"] == "macro.status.ok"
+        push = c.recv_envelope()
+        assert push["type"] == "net.msg" and push["payload"]["tag"] == "early"
+        assert c.pending == []
+    finally:
+        c.close()
+        thread.join(timeout=2)
+

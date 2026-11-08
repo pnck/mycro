@@ -81,6 +81,7 @@ MAX_SLOTS = 256
 DELAY_SLICE_QUANTUM = 20
 DEFAULT_WAIT_TIMEOUT_MS = 2147483647
 DEFAULT_CLICK_HOLD_MS = 10
+DEFAULT_PACE_MS = 0
 
 # Guard operand tags (spec/vm.md §4.1)
 GUARD_TAG_IMM = 0
@@ -321,9 +322,16 @@ def read_header(bc):
     i = 2
     strs = []
     for _ in range(n):
+        if i >= len(bc):
+            raise ValueError("Truncated bytecode string table")
         ln = bc[i]
         i += 1
-        strs.append(bytes(bc[i : i + ln]).decode("utf-8"))
+        if i + ln > len(bc):
+            raise ValueError("Truncated bytecode string table entry")
+        try:
+            strs.append(bytes(bc[i : i + ln]).decode("utf-8"))
+        except UnicodeError as exc:
+            raise ValueError("Invalid UTF-8 in bytecode string table") from exc
         i += ln
     return strs, i
 

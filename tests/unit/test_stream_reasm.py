@@ -25,8 +25,7 @@ def _make_stream(sid=7):
     chunks = (len(data) + CHUNK_RAW - 1) // CHUNK_RAW
     for i in range(chunks):
         part = data[i * CHUNK_RAW:(i + 1) * CHUNK_RAW]
-        flags = codec.FLAG_STREAM_END if i == chunks - 1 else 0
-        payload = sid.to_bytes(2, "little") + flags.to_bytes(2, "little") + part
+        payload = sid.to_bytes(2, "little") + (0).to_bytes(2, "little") + part
         out += codec.pack_frame(codec.KIND_BINARY, payload)
     return bytes(out), data
 
@@ -38,7 +37,7 @@ def test_multi_chunk_stream_survives_arbitrary_read_sizes():
     for read_size in (8192, 4096, 8196, 1024, 1):
         r = codec.Reassembler()
         got = bytearray()
-        ends = 0
+        chunks = 0
         off = 0
         while off < len(wire):
             piece = wire[off:off + read_size]
@@ -46,11 +45,11 @@ def test_multi_chunk_stream_survives_arbitrary_read_sizes():
             for kind, payload in r.feed(piece):
                 assert kind == codec.KIND_BINARY
                 sid, flags, raw = codec.split_chunk(payload)
-                assert sid == 7
+                assert sid == 7 and flags == 0
                 got += raw
-                ends += bool(flags & codec.FLAG_STREAM_END)
+                chunks += 1
         assert bytes(got) == data, f"read_size={read_size}"
-        assert ends == 1, f"read_size={read_size}"
+        assert chunks == 153, f"read_size={read_size}"
 
 
 def test_stream_armed_by_write_view_recv_pattern():

@@ -14,7 +14,11 @@ from lib import codec, proto
 from lib.hid_adafruit import AdafruitHIDProvider
 from lib.keymap import BTN_ALL
 from lib.macro import Macro, RECT_MAX_EDGE
-from lib.runtime import Runtime
+from lib.runtime import (
+    Runtime, ERR_GENERIC, ERR_INVALID_ARG, ERR_NO_PROVIDER,
+    ERR_OUT_OF_BOUNDS, ERR_HANDLE_INVALID, ERR_RESOURCE_EXHAUSTED,
+    ERR_TIMEOUT,
+)
 
 RAW_PORT = 7373       # raw TCP message channel (docs/protocol.md)
 MAX_CLIENTS = 2       # authed raw clients; extras are rejected at auth time
@@ -22,7 +26,7 @@ AUTH_DEADLINE_S = 5   # a connection must complete the auth prologue within this
 OUTBOX_CAP = 32       # per-client queued push frames; beyond this the peer is not reading
 
 # img namespace (exact pixel matching; spec/vm.md + docs/protocol.md)
-IMG_TIMEOUT_S = 20    # reverse-request ceiling
+IMG_TIMEOUT_S = 5     # reverse-request ceiling (EXT_TIMEOUT_MS)
 SNAP_MAX_EDGE = RECT_MAX_EDGE  # snapshot edge cap (128x128 RGB = 48KB)
 IMG_STREAM_MAX = SNAP_MAX_EDGE * SNAP_MAX_EDGE * 3  # macro streams capped at 1 snapshot slot (48KB)
 _stream_buf = None    # allocated once on demand (<= 48KB) for macro \snap crops
@@ -203,7 +207,7 @@ def _macro_form(request):
     hold_ms = None
     if hold:
         try:
-            hold_ms = max(0, min(1000, int(hold)))
+            hold_ms = max(0, min(65535, int(hold)))
         except Exception:
             pass
     return urldecode(code), hold_ms
@@ -242,7 +246,8 @@ def run_macro(request: Request):
     if not _authorized(request):
         return _unauth(request)
     if state["state"] == "running":
-        return Response(request, "Busy: Macro is running", content_type="text/plain")
+        return Response(request, "Busy: Macro is running", status=(409, "Conflict"),
+                        content_type="text/plain")
 
     code, hold_ms = _macro_form(request)
     if code is None:
@@ -374,7 +379,8 @@ def compile_macro(request: Request):
     if not _authorized(request):
         return _unauth(request)
     if state["state"] == "running":
-        return Response(request, "Busy: Macro is running", content_type="text/plain")
+        return Response(request, "Busy: Macro is running", status=(409, "Conflict"),
+                        content_type="text/plain")
 
     code, hold_ms = _macro_form(request)
     if code is None:
@@ -459,6 +465,7 @@ class _Client:
         self.authed = False
         self.alive = True
         self.deadline = time.monotonic() + AUTH_DEADLINE_S
+        self.img_stream_seen = False
 
     def enqueue(self, frame):
         if self.alive and len(self.outbox) < OUTBOX_CAP:
@@ -490,7 +497,20 @@ _img_req_id = 0
 
 
 class ImgError(Exception):
-    """img.* call failures; the DSL surface sees $ret < 0 + a serial log."""
+    """Internal image failure; public img.* functions map it to $err."""
+
+
+def _img_failure(code):
+    """The declared failure result for an image operation."""
+    err = {
+        "no_provider": ERR_NO_PROVIDER,
+        "provider_lost": ERR_NO_PROVIDER,
+        "timeout": ERR_TIMEOUT,
+        "field": ERR_INVALID_ARG,
+        "out_of_bounds": ERR_OUT_OF_BOUNDS,
+        "local_resource_exhausted": ERR_RESOURCE_EXHAUSTED,
+    }.get(code, ERR_GENERIC)
+    return 0, err
 
 
 def _sys_const(cid):
@@ -499,8 +519,11 @@ def _sys_const(cid):
     entry = runtime.const_entry(cid)
     if entry is None:
         print("sys.const: bad const id", cid)
-        return -1
-    return runtime.new_handle(entry["kind"], entry["data"])
+        return 0, ERR_INVALID_ARG
+    hid = runtime.new_handle(entry["kind"], entry["data"])
+    if hid <= 0:
+        return 0, ERR_RESOURCE_EXHAUSTED
+    return hid
 
 
 def _img_register(c):
@@ -518,8 +541,9 @@ def _img_drop(c):
         _img_client = None
         print("img provider lost:", c.addr)
     ent = _img_pending
-    if ent is not None and ent["client"] is c:
-        ent["err"] = "provider_lost"
+    if ent is not None and ent["client"] is c and not ent["done"]:
+        ent["err"] = ent["err"] or "provider_lost"
+        ent["done"] = True
         ent["event"].set()
 
 
@@ -534,9 +558,11 @@ async def _img_request(type_, payload):
         raise ImgError("busy")
     _img_req_id = (_img_req_id + 1) & 0x7FFFFFFF
     ent = {"id": _img_req_id, "event": asyncio.Event(), "client": c,
-           "resp": None, "err": None, "sid": -1, "stream": None,
-           "have": -1}
+           "type": type_, "resp": None, "err": None, "sid": -1,
+           "stream": None, "have": -1, "chunks": 0, "seen": 0,
+           "done": False}
     _img_pending = ent
+    c.img_stream_seen = True
     env = {"v": codec.PROTO_VERSION, "type": type_, "id": ent["id"],
            "ts": _now_ms(), "payload": payload}
     c.enqueue(codec.pack_frame(codec.KIND_JSON, codec.encode_envelope(env)))
@@ -544,7 +570,13 @@ async def _img_request(type_, payload):
         try:
             await asyncio.wait_for(ent["event"].wait(), IMG_TIMEOUT_S)
         except _TimeoutError:
-            ent["err"] = "timeout"
+            if not ent["done"]:
+                ent["err"] = "timeout"
+                ent["done"] = True
+                # An armed stream that misses its declared completion is
+                # desynchronized; late bytes must not enter a later request.
+                if ent["sid"] >= 0:
+                    c.alive = False
         if ent["err"]:
             raise ImgError(ent["err"])
         resp = ent["resp"]
@@ -555,52 +587,121 @@ async def _img_request(type_, payload):
         _img_pending = None
 
 
+def _img_stream_error(c, ent, code, message):
+    """Fail the request and close a desynchronized provider connection."""
+    print("img protocol error:", message)
+    ent["err"] = code
+    ent["done"] = True
+    ent["event"].set()
+    c.alive = False
+
+
 def _img_resolve(c, env):
-    """Complete (or arm) the pending reverse request from a response
-    envelope. Macro crop streams are bounded by IMG_STREAM_MAX (48 KiB)."""
+    """Complete a response or arm its declared binary pixel stream."""
     global _stream_buf
     ent = _img_pending
     if ent is None or c is not ent["client"] or env.get("id") != ent["id"]:
         print("img: stray response dropped:", env.get("type"))
         return
-    ent["resp"] = env
+    if ent["done"]:
+        print("img: duplicate response dropped:", env.get("type"))
+        return
+
+    invalid = proto.validate_envelope(env)
+    if invalid:
+        _img_stream_error(c, ent, invalid[0], invalid[1])
+        return
+
+    response_type = env.get("type")
+    if response_type == "error":
+        if ent["sid"] >= 0:
+            _img_stream_error(c, ent, "stream_incomplete",
+                              "provider error during an active stream")
+            return
+        ent["resp"] = env
+        ent["done"] = True
+        ent["event"].set()
+        return
+    if response_type != ent["type"] + ".ok":
+        print("img: unexpected response type dropped:", response_type)
+        return
+
     p = env.get("payload", {})
+    if not isinstance(p, dict):
+        _img_stream_error(c, ent, "field", "response payload is not an object")
+        return
+    ent["resp"] = env
     sid = p.get("stream_id")
-    if env.get("type") != "error" and isinstance(sid, int) and p.get("chunks", 0) > 0:
-        total = p.get("bytes")
-        if not isinstance(total, int) or not (0 < total <= IMG_STREAM_MAX):
-            print(f"img: stream {total}B invalid or exceeds cap {IMG_STREAM_MAX}B")
-            ent["err"] = "stream_overrun"
+    chunks = p.get("chunks")
+    if sid is None and chunks is None:
+        ent["done"] = True
+        ent["event"].set()
+        return
+    if ent["sid"] >= 0:
+        _img_stream_error(c, ent, "stream_overrun", "duplicate stream begin")
+        return
+
+    total = p.get("bytes")
+    valid = (type(sid) is int and 0 <= sid <= 65535
+             and type(chunks) is int and chunks > 0
+             and type(total) is int and 0 < total <= IMG_STREAM_MAX)
+    if not valid:
+        _img_stream_error(c, ent, "stream_overrun",
+                          f"invalid stream metadata sid={sid} chunks={chunks} bytes={total}")
+        return
+    if _stream_buf is None:
+        try:
+            _stream_buf = bytearray(IMG_STREAM_MAX)
+        except MemoryError:
+            ent["err"] = "local_resource_exhausted"
+            ent["done"] = True
             ent["event"].set()
             return
-        if _stream_buf is None:
-            _stream_buf = bytearray(IMG_STREAM_MAX)
-        ent["sid"] = sid
-        ent["stream"] = memoryview(_stream_buf)[:total]
-        ent["have"] = 0
-    else:
-        ent["event"].set()
+    ent["sid"] = sid
+    ent["chunks"] = chunks
+    ent["stream"] = memoryview(_stream_buf)[:total]
+    ent["have"] = 0
 
 
 def _img_chunk(c, payload):
     """Route a kind-1 frame to the armed stream collector."""
     ent = _img_pending
-    if ent is None or c is not ent["client"] or ent["sid"] < 0:
+    if ent is None or c is not ent["client"]:
+        if getattr(c, "img_stream_seen", False):
+            print("img protocol error: chunk without an active stream")
+            c.alive = False
+            return True
         return False
+    if ent["sid"] < 0:
+        _img_stream_error(c, ent, "stream_id", "chunk before stream metadata")
+        return True
     sid, flags, data = codec.split_chunk(payload)
     if sid != ent["sid"]:
-        return False
+        _img_stream_error(c, ent, "stream_id", f"unknown stream id {sid}")
+        return True
+    if ent["done"]:
+        _img_stream_error(c, ent, "stream_overrun", "chunk after completion")
+        return True
+    if flags != 0:
+        _img_stream_error(c, ent, "stream_flags", f"nonzero flags {flags}")
+        return True
+    ent["seen"] += 1
     end = ent["have"] + len(data)
-    if end > len(ent["stream"]):
-        print(f"img: stream overrun! have={ent['have']} len={len(data)} end={end} buf={len(ent['stream'])}")
-        ent["err"] = "stream_overrun"
-        ent["event"].set()
+    if ent["seen"] > ent["chunks"] or end > len(ent["stream"]):
+        _img_stream_error(
+            c, ent, "stream_overrun",
+            f"chunk={ent['seen']}/{ent['chunks']} bytes={end}/{len(ent['stream'])}")
+        return True
+    final = ent["seen"] == ent["chunks"]
+    if final and end != len(ent["stream"]):
+        _img_stream_error(
+            c, ent, "stream_incomplete",
+            f"final chunk bytes={end}/{len(ent['stream'])}")
         return True
     ent["stream"][ent["have"]:end] = data
     ent["have"] = end
-    if flags & codec.FLAG_STREAM_END:
-        if ent["have"] < len(ent["stream"]):
-            ent["stream"] = ent["stream"][:ent["have"]]
+    if final:
+        ent["done"] = True
         ent["event"].set()
     return True
 
@@ -609,40 +710,54 @@ def _img_snap(x, y, w, h):
     async def run():
         if not (1 <= w <= SNAP_MAX_EDGE and 1 <= h <= SNAP_MAX_EDGE):
             print("img.snap: edge capped at", SNAP_MAX_EDGE)
-            return -1
+            return 0, ERR_INVALID_ARG
         if x < 0 or y < 0:
             print("img.snap: negative origin")
-            return -1
+            return 0, ERR_INVALID_ARG
         try:
             payload, stream = await _img_request(
                 "img.frame", {"rect": {"x": x, "y": y, "w": w, "h": h}})
         except ImgError as e:
             print("img.snap failed:", e)
-            return -1
+            return _img_failure(str(e))
         if stream is None:
-            return -1
-        cw = payload.get("crop_w", w)  # provider clamps at source borders
-        ch = payload.get("crop_h", h)
-        if not (isinstance(cw, int) and isinstance(ch, int) and 1 <= cw <= w and 1 <= ch <= h):
-            print("img.snap: invalid crop dimensions")
-            return -1
-        if len(stream) != cw * ch * 3 or len(stream) > runtime.snap_pool.slot_bytes:
+            return 0, ERR_GENERIC
+        # A snapshot is exactly the requested rect. Providers report native
+        # bounds violations instead of clipping or silently resizing it.
+        source_w = payload.get("width")
+        source_h = payload.get("height")
+        if (type(source_w) is not int or type(source_h) is not int
+                or source_w <= 0 or source_h <= 0
+                or payload.get("format") != "rgb8"
+                or x + w > source_w or y + h > source_h):
+            print("img.snap: invalid source metadata or format")
+            return 0, ERR_GENERIC
+        cw = payload.get("w")
+        ch = payload.get("h")
+        if type(cw) is not int or type(ch) is not int or cw != w or ch != h:
+            print("img.snap: response dimensions differ from request")
+            return 0, ERR_GENERIC
+        if len(stream) != w * h * 3 or len(stream) > runtime.snap_pool.slot_bytes:
             print("img.snap: bad stream")
-            return -1
+            return 0, ERR_GENERIC
         slot = runtime.snap_pool.alloc()
         if slot is None:
             print("img.snap: snapshot pool exhausted (release a snapshot)")
-            return -1
+            return 0, ERR_RESOURCE_EXHAUSTED
         try:
             view = runtime.snap_pool.view(slot, len(stream))
             view[:] = stream  # arena -> slot memcpy, no heap involved
-            return runtime.new_handle("snap", {"w": cw, "h": ch, "rgb": view,
-                                               "_arena": runtime.snap_pool,
-                                               "_slot": slot})
+            hid = runtime.new_handle("snap", {"w": w, "h": h, "rgb": view,
+                                              "_arena": runtime.snap_pool,
+                                              "_slot": slot})
+            if hid <= 0:
+                runtime.snap_pool.free(slot)
+                return 0, ERR_RESOURCE_EXHAUSTED
+            return hid
         except Exception as e:
             print("img.snap slot init error:", e)
             runtime.snap_pool.free(slot)
-            return -1
+            return 0, ERR_GENERIC
     return run()
 
 
@@ -650,10 +765,10 @@ def _img_at(handle, x, y):
     data = runtime.handle_data(handle, "snap")
     if data is None:
         print("img.at: invalid snap handle", handle)
-        return -1
+        return 0, ERR_HANDLE_INVALID
     if not (0 <= x < data["w"] and 0 <= y < data["h"]):
         print("img.at: point outside snapshot")
-        return -1
+        return 0, ERR_OUT_OF_BOUNDS
     i = (y * data["w"] + x) * 3
     rgb = data["rgb"]
     return (rgb[i] << 16) | (rgb[i + 1] << 8) | rgb[i + 2]
@@ -664,10 +779,10 @@ def _img_diff(a, b, tol):
     db = runtime.handle_data(b, "snap")
     if da is None or db is None:
         print("img.diff: invalid snap handle")
-        return -1
+        return 0, ERR_HANDLE_INVALID
     if da["w"] != db["w"] or da["h"] != db["h"]:
         print("img.diff: dimension mismatch")
-        return -1
+        return 0, ERR_INVALID_ARG
     tol = max(0, min(255, tol))
     ra, rb = da["rgb"], db["rgb"]
     n = 0
@@ -744,6 +859,8 @@ def _service(c, now):
                 c.alive = False
         return True
     for _ in range(8):  # bounded reads per tick so one client can't starve others
+        if not c.alive:
+            return True
         # recv straight into the reassembler's static buffer: the hot
         # path allocates nothing, each byte is copied exactly twice
         r = _recv_into(conn, c.reasm.write_view())
@@ -761,6 +878,8 @@ def _service(c, now):
             return
         print(f"raw rx {r}B -> {len(frames)} frame(s)")
         for kind, payload in frames:
+            if not c.alive:
+                return True
             if kind != codec.KIND_JSON:
                 resp = None if _img_chunk(c, payload) else proto.error_response(
                     None, "unsupported_kind", "no binary consumer registered")
@@ -774,6 +893,7 @@ def _service(c, now):
                         _img_register(c)
                         resp = None
                     elif _img_pending is not None \
+                            and c is _img_pending["client"] \
                             and env.get("id") == _img_pending["id"]:
                         _img_resolve(c, env)
                         resp = None

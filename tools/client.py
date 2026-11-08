@@ -43,6 +43,7 @@ class Client:
         self.sock.sendall(AUTH_MAGIC + bytes([PROTO_VERSION]) + digest)
         self._buf = bytearray()
         self._req_id = 0
+        self.pending = []
 
     def close(self):
         self.sock.close()
@@ -64,9 +65,8 @@ class Client:
         del self._buf[:n]
         return out
 
-    def recv_envelope(self):
-        """Next inbound envelope. Binary-kind frames surface as a
-        {"type": "<binary>"} placeholder until Phase 3 defines them."""
+    def _recv_wire(self):
+        """Read one envelope from the socket without consuming pending pushes."""
         (hdr,) = struct.unpack("<I", self._recv_exact(4))
         kind, length = hdr >> 31, hdr & 0x7FFFFFFF
         payload = self._recv_exact(length)
@@ -75,23 +75,30 @@ class Client:
                     "payload": {"bytes": length}}
         return json.loads(payload.decode("utf-8"))
 
+    def recv_envelope(self):
+        """Next inbound envelope, including pushes buffered during calls.
+        Binary-kind frames surface as a {"type": "<binary>"} placeholder."""
+        if self.pending:
+            return self.pending.pop(0)
+        return self._recv_wire()
+
     def send_envelope(self, env):
         body = json.dumps(env).encode("utf-8")
         self.sock.sendall(struct.pack("<I", len(body)) + body)
 
     # --- API ---
     def call(self, type_, payload=None):
-        """Send a request and return its response; interleaved pushes are
-        printed to stderr."""
+        """Send a request and return its response; buffer interleaved pushes."""
         self._req_id = (self._req_id + 1) & 0x7FFFFFFF
         eid = self._req_id
         self.send_envelope({"v": PROTO_VERSION, "type": type_, "id": eid,
                             "ts": int(time.time() * 1000),
                             "payload": payload or {}})
         while True:
-            env = self.recv_envelope()
+            env = self._recv_wire()
             if env.get("id") == eid:
                 return env
+            self.pending.append(env)
             print("push:", _fmt(env), file=sys.stderr)
 
     def listen(self):

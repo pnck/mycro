@@ -327,9 +327,28 @@ class Runtime:
             return True
         return False
 
-    def call(self, ns, fn, args):
-        """Invoke an ext function; may return a value or a coroutine."""
+    def call(self, ns, fn, args, arg_handles=None):
+        """Invoke an ext function after applying its physical argument types.
+
+        `arg_handles` is the VM's parallel Handle-metadata vector. Compound
+        point/rect signatures expand to scalar i32 operands in bytecode.
+        """
         self._fresh = None  # a fresh handle belongs to the call that made it
+        if arg_handles is not None:
+            expected = []
+            for typ in self._ns[ns][fn][0]:
+                if typ in ("point", "rect"):
+                    expected.extend(["int"] * (2 if typ == "point" else 4))
+                else:
+                    expected.append(typ)
+            if len(args) != len(expected) or len(arg_handles) != len(expected):
+                return 0, ERR_INVALID_ARG
+            for value, typ, is_handle in zip(args, expected, arg_handles):
+                if typ in ("int", "color", "str"):
+                    if is_handle:
+                        return 0, ERR_HANDLE_MISUSE
+                elif not is_handle or self.handle_data(value, typ) is None:
+                    return 0, ERR_HANDLE_INVALID
         return self._ns[ns][fn][2](*args)
 
     # --- handle ownership (register-write mediation) ---

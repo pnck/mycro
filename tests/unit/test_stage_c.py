@@ -363,7 +363,7 @@ def test_run_call_str_arg_and_handle_flow():
 
     def load(name):
         captured["name"] = name
-        return 7
+        return rt.new_handle("tpl", {"name": name})
 
     rt = make_runtime()
     rt.register_ns("img", {"load": (["str"], "tpl", load), "match": (["tpl"], "int", lambda h: 1)})
