@@ -78,7 +78,7 @@ class VM:
                 return str(v)
             raise ValueError(f"Invalid operand tag: {tag}")
 
-        def fmt_key_arg():
+        def fmt_key_arg(is_up=False):
             nonlocal i
             tag = bytecode[i]
             i += 1
@@ -94,7 +94,7 @@ class VM:
                     | (bytecode[i + 3] << 24)
                 )
                 i += 4
-                if kc == 0:
+                if kc == 0 and is_up:
                     return "ALL"
                 return keycode_name(kc)
             raise ValueError(f"Invalid operand tag: {tag}")
@@ -193,10 +193,10 @@ class VM:
                 i += 1
             elif op == OP_KEY_DOWN:
                 i += 1
-                lines.append(f"{prefix}KEY_DOWN {fmt_key_arg()}")
+                lines.append(f"{prefix}KEY_DOWN {fmt_key_arg(is_up=False)}")
             elif op == OP_KEY_UP:
                 i += 1
-                lines.append(f"{prefix}KEY_UP {fmt_key_arg()}")
+                lines.append(f"{prefix}KEY_UP {fmt_key_arg(is_up=True)}")
             elif op == OP_MDOWN:
                 i += 1
                 lines.append(f"{prefix}MDOWN {fmt_btn_arg()}")
@@ -625,9 +625,7 @@ class VM:
                             regs[REG_ERR] = ERR_HANDLE_MISUSE
                         else:
                             key = key & 0xFF
-                            if key == 0:
-                                hid.keys_release_all()
-                            else:
+                            if key != 0:
                                 hid.key_press(key)
                             await sleep_ms(delay_ms)
 

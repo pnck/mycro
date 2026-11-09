@@ -649,9 +649,27 @@ def test_kdown_kup_multi_key_combo():
     ])
 
 
-def test_kup_explicit_zero_releases_all():
+def test_kup_zero_releases_digit_key():
     bc = compile_ok("\\kup{0}")
-    assert bc == H + bytes([OP_KEY_UP, 0, 0, 0, 0, 0, OP_END])
+    assert bc == H + bytes([
+        OP_KEY_UP, 0, keymap.digit_keycode("0"), 0, 0, 0, OP_END
+    ])
+
+
+def test_kdown_empty_is_a_noop():
+    assert compile_ok("\\kdown{}") == H + bytes([OP_END])
+
+
+def test_zero_is_digit_key_in_hold_release_combo():
+    bc = compile_ok("\\kdown{ctrl+0}\\kup{ctrl+0}")
+    kc0 = keymap.digit_keycode("0")
+    assert bc == H + bytes([
+        OP_KEY_DOWN, 0, keymap.CONTROL, 0, 0, 0,
+        OP_KEY_DOWN, 0, kc0, 0, 0, 0,
+        OP_KEY_UP, 0, kc0, 0, 0, 0,
+        OP_KEY_UP, 0, keymap.CONTROL, 0, 0, 0,
+        OP_END,
+    ])
 
 
 def test_combo_max_keys_limit():

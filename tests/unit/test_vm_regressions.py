@@ -18,6 +18,7 @@ from bytecode import (
     OP_JMP,
     OP_KEY,
     OP_KEY_DOWN,
+    OP_KEY_UP,
     OP_LOOP,
     OP_LOOP_END,
     OP_MCLICK,
@@ -203,9 +204,31 @@ def test_handle_count_loop_fault_does_not_push_or_pop_a_frame():
     assert runner.last_regs[REG_ERR] == ERR_HANDLE_MISUSE
 
 
-def test_key_down_zero_releases_all_instead_of_pressing_key_zero():
+def test_key_down_zero_is_hid_no_event():
     hid, _ = execute(program(bytes([OP_KEY_DOWN]) + imm(0)))
-    assert hid.events == [("kra",)]
+    assert hid.events == []
+    dis = VM().disassemble(program(bytes([OP_KEY_DOWN]) + imm(0)))
+    assert "KEY_DOWN 0x00" in dis
+    dis_up = VM().disassemble(program(bytes([OP_KEY_UP]) + imm(0)))
+    assert "KEY_UP ALL" in dis_up
+
+
+def test_kdown_digit_zero_presses_the_digit_key():
+    hid = MockHID()
+    macro = Macro(hid)
+    bc, err = macro.compile(r"\kdown{0}")
+    assert err is None
+    asyncio.run(macro.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    assert hid.events == [("kp", keymap.digit_keycode("0"))]
+
+
+def test_kup_digit_zero_releases_the_digit_key():
+    hid = MockHID()
+    macro = Macro(hid)
+    bc, err = macro.compile(r"\kup{0}")
+    assert err is None
+    asyncio.run(macro.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    assert hid.events == [("kr", keymap.digit_keycode("0"))]
 
 
 @pytest.mark.parametrize("count", [0, -1])

@@ -1743,13 +1743,9 @@ class Compiler:
             raise MacroError("kdown requires {key}", self._pos)
         arg = arg.strip()
         if not arg:
-            raise MacroError("kdown requires {key}", pos)
+            return  # No selected keys: pressing nothing is a no-op.
         if arg.startswith("$"):
             raise MacroError("kdown/kup takes a key name, not a variable", pos)
-        if arg == "0":
-            self._emit(OP_KEY_DOWN)
-            self._emit_typed((TAG_IMM, 0))
-            return
         tokens = [t.strip() for t in arg.split("+")]
         if any(not t for t in tokens):
             raise MacroError("Expected key after +", pos)
@@ -1771,7 +1767,7 @@ class Compiler:
         if arg is None:
             raise MacroError("kup requires {key} or {}", self._pos)
         arg = arg.strip()
-        if not arg or arg == "0":
+        if not arg:
             self._emit(OP_KEY_UP)
             self._emit_typed((TAG_IMM, 0))  # release all
             return

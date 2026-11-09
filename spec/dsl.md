@@ -193,9 +193,9 @@ The close `}` of a `CodeBlock` ends that block. An open `{` encountered at a tex
 KeyStmt      ::= SpecialKey | KeyCombo | KeyHold | KeyRelease
 SpecialKey   ::= "\" KeyName
 KeyCombo     ::= "\" KeyName ("+" ComboKeyName)+
-KeyHold      ::= "\kdown" "{" ComboPayload "}"
-KeyRelease   ::= "\kup" "{" (ComboPayload | "0") "}"
-ComboPayload ::= KeyName | ComboKeyName ("+" ComboKeyName)+
+KeyHold      ::= "\kdown" "{" [ComboPayload] "}"
+KeyRelease   ::= "\kup" "{" [ComboPayload] "}"
+ComboPayload ::= ComboKeyName ("+" ComboKeyName)*
 ComboKeyName ::= KeyName | Digit
 KeyName      ::= [a-zA-Z] [a-zA-Z0-9_]*
 Digit        ::= "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
@@ -262,9 +262,9 @@ A lone key command lowers to one action:
 
 `click_hold_ms` is a device configuration input with domain `[0,65535]` milliseconds and default `DEFAULT_CLICK_HOLD_MS = 10`. A tap consists of press, hold for `click_hold_ms`, and release. The VM reads its execution-time value for taps in `KEY`, `CHAR`, `MCLICK`, `CONSUMER_KEY` and each `TYPEREG` character. Combination lowering reads the compiler-time value for the embedded `SLEEP`. Internal hold suspension, explicit `SLEEP`, and automatic pacing share the guard slicing in vm.md §6.2. Explicit holds use `\kdown`/`\mdown`, `\delay` and `\kup`/`\mup`.
 
-- `\kdown{combo}` emits the forward `KEY_DOWN` sequence.
-- `\kup{combo}` emits the reverse `KEY_UP` sequence.
-- `\kup{0}` releases all keyboard keys. Within a combination, `0` denotes the main-row zero key.
+- `\kdown{combo}` emits the forward `KEY_DOWN` sequence; an empty `\kdown{}` emits no instructions because no keys are selected.
+- `\kup{combo}` emits the reverse `KEY_UP` sequence; an empty `\kup{}` releases all keyboard keys because no subset is selected.
+- In every keyboard hold/release payload, including a lone `0` and combinations containing `0`, `0` denotes the main-row zero key (usage `0x27`). It is not a release-all alias.
 
 Combination expansion preserves duplicates and source order. For example, `\a+A` produces `[a, shift, a]` down, one hold, and the reverse sequence up. Host treatment of repeated assertions of the same usage is platform-dependent.
 

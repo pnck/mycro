@@ -148,7 +148,7 @@ Instruction decoding starts at logical address `0` of the opcode segment. `0xA6`
 | `0x08` | `CONSUMER_KEY` | `typed(u16 usage_id)` | Single Consumer Control pulse (USB HID Page 0x0C): `hid.consumer_press(usage_id)`, guard-sliced `click_hold_ms` suspension, then `hid.consumer_release(usage_id)`. The VM tracks the active usage between press and release. |
 | `0x10` | `LOOP` | `typed(u8 count), u16 len` | Let `loop_base` be the byte immediately after the complete `LOOP`; `len` is the body byte length including `LOOP_END`. For count 0, leave `loop_stack` unchanged and set `ip = loop_base + len`. For a nonzero count, push `(remaining_count = count, loop_body_pc = loop_base)` and continue at `ip = loop_base`. |
 | `0x11` | `LOOP_END` | — | Decrement the top `remaining_count`. If the result is greater than 0, set `ip = loop_body_pc`; otherwise pop the frame and advance to the following instruction. |
-| `0x12` | `KEY_DOWN` | `typed(u8 keycode)` | Press and hold key (keycode 0 = release all). |
+| `0x12` | `KEY_DOWN` | `typed(u8 keycode)` | Press and hold key. Keycode 0 is the HID no-event value: it performs no key press or release; instruction pacing still applies. |
 | `0x13` | `KEY_UP` | `typed(u8 keycode)` | Release held key (keycode 0 = release all). |
 | `0x14` | `MDOWN` | `typed(u8 btn)` | Press and hold mouse button. |
 | `0x15` | `MUP` | `typed(u8 btn)` | Release mouse button. |
