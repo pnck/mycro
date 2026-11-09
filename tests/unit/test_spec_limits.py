@@ -68,16 +68,27 @@ def make_test_runtime():
     return rt
 
 
+def _with_uses(text, rt):
+    uses = ""
+    for ns in ("sys", "img", "net", "test", "mock"):
+        if rt and rt.has_namespace(ns) and f"\\use{{{ns}}}" not in text:
+            if f"\\call{{{ns}." in text or f"$slot.{ns}." in text or f"${ns}." in text:
+                uses += f"\\use{{{ns}}}"
+    return uses + text
+
+
 def compile_ok(text, rt=None):
-    m = Macro(MockHID(), rt or make_test_runtime())
-    bc, err = m.compile(text)
+    rt_obj = rt or make_test_runtime()
+    m = Macro(MockHID(), rt_obj)
+    bc, err = m.compile(_with_uses(text, rt_obj))
     assert err is None, f"unexpected compile error: {err}"
     return bc
 
 
 def compile_err(text, rt=None):
-    m = Macro(MockHID(), rt or make_test_runtime())
-    bc, err = m.compile(text)
+    rt_obj = rt or make_test_runtime()
+    m = Macro(MockHID(), rt_obj)
+    bc, err = m.compile(_with_uses(text, rt_obj))
     assert err is not None, f"expected compile error, got success: {text}"
     return err
 
@@ -86,7 +97,7 @@ def run_macro(text, rt=None):
     hid = MockHID()
     runtime = rt or make_test_runtime()
     m = Macro(hid, runtime)
-    bc, err = m.compile(text)
+    bc, err = m.compile(_with_uses(text, runtime))
     assert err is None, f"compile failed: {err}"
     asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
     reg_dict = {

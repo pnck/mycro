@@ -226,11 +226,11 @@ def test_slot_operand_evaluation():
     rt.register_signal("net.msg")
     rt.fire_signal("net.msg", {"val": 42})
 
-    bc = compile_ok("\\if{ {$slot.net.msg.val, =, 42} }{y}{z}", rt=rt)
+    bc = compile_ok("\\use{net}\\if{ {$slot.net.msg.val, =, 42} }{y}{z}", rt=rt)
     assert OP_READSLOT in bc
     assert OP_BRA in bc
 
-    hid = run("\\if{ {$slot.net.msg.val, =, 42} }{y}{z}", rt=rt)
+    hid = run("\\use{net}\\if{ {$slot.net.msg.val, =, 42} }{y}{z}", rt=rt)
     assert typed_keys(hid) == "y"
 
 
@@ -281,7 +281,7 @@ def test_all_short_circuit_skips_second_operand():
     rt.read_slot = spy_read_slot
 
     # First predicate ($a = 1) is False since $a is 0. Second predicate reads slot.net.msg.val.
-    code = "\\set{a}{0}\\if{ \\all{ {$a, =, 1}, {$slot.net.msg.val, =, 42} } }{y}{z}"
+    code = "\\use{net}\\set{a}{0}\\if{ \\all{ {$a, =, 1}, {$slot.net.msg.val, =, 42} } }{y}{z}"
     hid = run(code, rt=rt)
     assert typed_keys(hid) == "z"
     assert len(reads) == 0, "Short-circuit failed: second predicate was evaluated in \\all!"
@@ -302,7 +302,7 @@ def test_any_short_circuit_skips_second_operand():
     rt.read_slot = spy_read_slot
 
     # First predicate ($a = 1) is True since $a is 1. Second predicate reads slot.net.msg.val.
-    code = "\\set{a}{1}\\if{ \\any{ {$a, =, 1}, {$slot.net.msg.val, =, 42} } }{y}{z}"
+    code = "\\use{net}\\set{a}{1}\\if{ \\any{ {$a, =, 1}, {$slot.net.msg.val, =, 42} } }{y}{z}"
     hid = run(code, rt=rt)
     assert typed_keys(hid) == "y"
     assert len(reads) == 0, "Short-circuit failed: second predicate was evaluated in \\any!"

@@ -44,12 +44,14 @@ def test_string_metadata_is_independent_at_code_capacity():
         "net", {"send": (["str"], "int", lambda label: len(label))}
     )
     label = "x" * 255
-    source = "a" * 32764 + f"\\call{{net.send}}{{{label}}}"
+    source = "\\use{net}" + "a" * 32764 + f"\\call{{net.send}}{{{label}}}"
     bytecode = compile_ok(source, runtime)
     strings, code_start = read_header(bytecode)
     assert len(bytecode) - code_start == MAX_CODE_BYTES
     assert len(bytecode) > MAX_CODE_BYTES
-    assert strings == [label, "net", "send"]
+    assert strings == [label]
+    assert "net" not in strings
+    assert "send" not in strings
 
 
 def test_pixelrect_makes_ret_a_snap_handle_for_next_call():
@@ -57,5 +59,5 @@ def test_pixelrect_makes_ret_a_snap_handle_for_next_call():
     runtime.register_ns(
         "img", {"at": (["snap", "point"], "int", lambda snap, x, y: 0)}
     )
-    source = r"\pixelrect{p}{\row{0}}\call{img.at}{$ret}{0,0}"
+    source = r"\use{img}\pixelrect{p}{\row{0}}\call{img.at}{$ret}{0,0}"
     compile_ok(source, runtime)

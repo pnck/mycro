@@ -39,6 +39,13 @@ ERR_RESOURCE_EXHAUSTED = 6
 ERR_TIMEOUT = 7
 ERR_HANDLE_MISUSE = 8
 
+# Standard ABI tables: fixed deterministic function index sequences
+STANDARD_ABI = {
+    "sys": ("free", "const"),
+    "net": ("send",),
+    "img": ("snap", "at", "diff"),
+}
+
 # --- static backing store (spec/vm.md Appendix A) ---
 # Profile constants, same standing as MAX_REGS: platform budgets, not
 # spec limits. Bulk byte data NEVER comes from the GC heap per-operation;
@@ -127,8 +134,12 @@ class BumpArena:
 
 
 class Runtime:
+    STANDARD_ABI = STANDARD_ABI
+
     def __init__(self):
-        self._ns = {}  # ns -> {fn_name: (arg_types, return_type, callable)}
+        self._ns = {}  # ns -> (entries, name_to_id)
+        # entries: [(fn_name, arg_types, return_type, callable), ...] indexed by fn_id
+        # name_to_id: {fn_name: fn_id}
         self._signals = {}  # name -> asyncio.Event
         self._slots = {}  # (name, field) -> {"val": int, "pending": int}
         self._waiters = {}  # (name, field) -> list of asyncio.Event
@@ -191,7 +202,27 @@ class Runtime:
     def register_ns(self, ns, fns):
         """fns: {fn_name: (arg_types, return_type, callable)}.
         See spec/vm.md Part II for the type discipline."""
-        self._ns.setdefault(ns, {}).update(fns)
+        entries, name_to_id = self._ns.setdefault(
+            ns, ([(n, None, None, None) for n in STANDARD_ABI.get(ns, ())],
+                 {n: i for i, n in enumerate(STANDARD_ABI.get(ns, ()))})
+        )
+        for fn_name, spec in fns.items():
+            entry = (fn_name, spec[0], spec[1] if len(spec) == 3 else "int", spec[-1])
+            fid = name_to_id.setdefault(fn_name, len(entries))
+            if fid < len(entries):
+                entries[fid] = entry
+            else:
+                entries.append(entry)
+
+    def get_fn_id(self, ns, fn_name):
+        return self._ns.get(ns, ([], {}))[1].get(fn_name)
+
+    def get_ns_entries(self, ns):
+        return self._ns.get(ns, ([], {}))[0]
+
+    def get_fn_name(self, ns, fn_id):
+        entries = self.get_ns_entries(ns)
+        return entries[fn_id][0] if 0 <= fn_id < len(entries) else None
 
     def register_signal(self, name):
         self._signals[name] = asyncio.Event()
@@ -234,15 +265,25 @@ class Runtime:
     # --- compiler queries ---
 
     def has_namespace(self, ns):
-        return ns in self._ns
+        if "." in ns:
+            return False
+        return (
+            ns in self._ns
+            or ns in self._signals
+            or any(sig.startswith(ns + ".") for sig in self._signals)
+        )
 
     def get_signature(self, ns, fn):
-        entry = self._ns.get(ns, {}).get(fn)
-        return entry[0] if entry else None
+        fid = self.get_fn_id(ns, fn)
+        if fid is not None:
+            return self._ns[ns][0][fid][1]
+        return None
 
     def get_return_type(self, ns, fn):
-        entry = self._ns.get(ns, {}).get(fn)
-        return entry[1] if entry and len(entry) == 3 else "int"
+        fid = self.get_fn_id(ns, fn)
+        if fid is not None:
+            return self._ns[ns][0][fid][2]
+        return None
 
     def has_signal(self, name):
         return name in self._signals
@@ -327,16 +368,19 @@ class Runtime:
             return True
         return False
 
-    def call(self, ns, fn, args, arg_handles=None):
-        """Invoke an ext function after applying its physical argument types.
-
+    def invoke_ext(self, entry, args, arg_handles=None):
+        """Invoke an ext entry after applying its physical argument types.
+        entry is (name, arg_types, ret_type, callable_fn).
         `arg_handles` is the VM's parallel Handle-metadata vector. Compound
         point/rect signatures expand to scalar i32 operands in bytecode.
         """
         self._fresh = None  # a fresh handle belongs to the call that made it
-        if arg_handles is not None:
+        if entry is None or entry[3] is None:
+            return 0, ERR_INVALID_ARG
+        _, arg_types, _, callable_fn = entry
+        if arg_handles is not None and arg_types is not None:
             expected = []
-            for typ in self._ns[ns][fn][0]:
+            for typ in arg_types:
                 if typ in ("point", "rect"):
                     expected.extend(["int"] * (2 if typ == "point" else 4))
                 else:
@@ -349,7 +393,7 @@ class Runtime:
                         return 0, ERR_HANDLE_MISUSE
                 elif not is_handle or self.handle_data(value, typ) is None:
                     return 0, ERR_HANDLE_INVALID
-        return self._ns[ns][fn][2](*args)
+        return callable_fn(*args)
 
     # --- handle ownership (register-write mediation) ---
 
@@ -430,7 +474,7 @@ class Runtime:
             return None
         return e["data"]
 
-    async def wait_signal(self, name, timeout_ms):
+    async def wait_signal(self, name, timeout_ms=0):
         """Wait for the NEXT fire of `name` after entry (legacy wrapper)."""
         ev = self._signals.get(name)
         if ev is None:
@@ -441,7 +485,5 @@ class Runtime:
             try:
                 await asyncio.wait_for(ev.wait(), timeout_ms / 1000.0)
             except _TimeoutError:
-                return False
-        else:
-            await ev.wait()
-        return True
+                pass
+        return ev.is_set()

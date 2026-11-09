@@ -28,8 +28,15 @@ def make_runtime():
 
 
 def compile_ok(text, rt=None):
-    m = Macro(MockHID(), rt or make_runtime())
-    bc, err = m.compile(text)
+    rt_obj = rt or make_runtime()
+    m = Macro(MockHID(), rt_obj)
+    if "\\#!" in text:
+        bc, err = m.compile(text)
+    else:
+        prefix = ""
+        if "go" in text and "\\use{go}" not in text:
+            prefix += "\\use{go}"
+        bc, err = m.compile(prefix + text)
     assert err is None, f"unexpected compile error: {err}"
     return bc
 
@@ -57,7 +64,10 @@ def run(text, rt=None, hid=None):
     hid = hid or MockHID()
     rt = rt or make_runtime()
     m = Macro(hid, rt)
-    bc, err = m.compile(text)
+    prefix = ""
+    if ("$slot.go" in text or "$go." in text) and "\\use{go}" not in text:
+        prefix += "\\use{go}"
+    bc, err = m.compile(prefix + text)
     assert err is None, f"compile error: {err}"
     asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
     return hid
@@ -112,7 +122,7 @@ def test_wait_braced_slot_and_whitespace():
     assert "go" in strs_tw
 
     # Free syntax mode with whitespace absorption
-    bc_free = compile_ok(r"\#!syntax: free" "\n" r"\wait [ 100ms ] { ${slot.go.ready} }")
+    bc_free = compile_ok(r"\#!syntax: free" "\n" r"\use{go}\wait [ 100ms ] { ${slot.go.ready} }")
     strs_free, _ = header_strs(bc_free)
     assert "ready" in strs_free
     assert "go" in strs_free
@@ -175,7 +185,7 @@ def test_wait_suspends_and_wakes_on_projection():
     rt = make_runtime()
     hid = MockHID()
     m = Macro(hid, rt)
-    bc, err = m.compile(r"\wait[500ms]{ $slot.go.val }\typenum{$timeout}\typenum{$go.val}")
+    bc, err = m.compile(r"\use{go}\wait[500ms]{ $slot.go.val }\typenum{$timeout}\typenum{$go.val}")
     assert err is None
 
     async def scenario():

@@ -15,16 +15,31 @@ from bytecode import (
 )
 from macro import Macro
 from mock_hid import MockHID
+from runtime import Runtime
 
 
-def compile_ok(source):
-    bytecode, error = Macro(MockHID()).compile(source)
+def make_runtime():
+    rt = Runtime()
+    rt.register_signal("test.sig")
+    return rt
+
+
+def compile_ok(source, rt=None):
+    rt_obj = rt or make_runtime()
+    prefix = ""
+    if "$slot.test." in source and r"\use{test}" not in source:
+        prefix = r"\use{test}"
+    bytecode, error = Macro(MockHID(), rt_obj).compile(prefix + source)
     assert error is None, error
     return bytecode
 
 
-def compile_error(source):
-    bytecode, error = Macro(MockHID()).compile(source)
+def compile_error(source, rt=None):
+    rt_obj = rt or make_runtime()
+    prefix = ""
+    if "$slot.test." in source and r"\use{test}" not in source:
+        prefix = r"\use{test}"
+    bytecode, error = Macro(MockHID(), rt_obj).compile(prefix + source)
     assert bytecode is None
     assert error
     return error

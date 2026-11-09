@@ -61,7 +61,10 @@ class Macro:
 
     def compile(self, text, config=None, click_hold_ms=None):
         """Compile macro text to bytecode. Returns (bytecode, error_msg)."""
-        return self.compiler.compile(text, config=config, click_hold_ms=click_hold_ms)
+        bc, err = self.compiler.compile(text, config=config, click_hold_ms=click_hold_ms)
+        if bc is not None:
+            self.vm.activated_namespaces = list(self.compiler.activated_namespaces)
+        return bc, err
 
     async def execute(self, bytecode, default_delay_ms=DEFAULT_PACE_MS, click_hold_ms=10):
         """Execute compiled bytecode asynchronously on the VM."""

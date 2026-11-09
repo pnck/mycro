@@ -51,22 +51,31 @@ def _diff(rt, a, b, tol):
     return n
 
 
+def _with_uses(text, rt):
+    uses = ""
+    for ns in ("img", "sys", "probe"):
+        if rt.has_namespace(ns) and f"\\use{{{ns}}}" not in text:
+            uses += f"\\use{{{ns}}}"
+    return uses + text
+
+
 def compile_ok(text, rt):
-    bc, err = Macro(MockHID(), rt).compile(text)
+    bc, err = Macro(MockHID(), rt).compile(_with_uses(text, rt))
     assert err is None, f"unexpected compile error: {err}"
     return bc
 
 
 def compile_err(text, rt):
-    bc, err = Macro(MockHID(), rt).compile(text)
+    bc, err = Macro(MockHID(), rt).compile(_with_uses(text, rt))
     assert bc is None and err, f"expected compile error, got success: {text}"
     return err
 
 
 def run(text, rt):
-    bc, err = Macro(MockHID(), rt).compile(text)
+    m = Macro(MockHID(), rt)
+    bc, err = m.compile(_with_uses(text, rt))
     assert err is None, err
-    asyncio.run(Macro(MockHID(), rt).execute(bc))
+    asyncio.run(m.execute(bc))
 
 
 def test_claim_and_release_at_exit():

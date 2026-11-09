@@ -28,8 +28,19 @@ def make_runtime():
     return rt
 
 
+def _auto_use(text, rt=None):
+    rt_obj = rt or make_runtime()
+    uses = ""
+    for ns in set(list(rt_obj._ns.keys()) + ["go", "net"]):
+        if f"\\call{{{ns}." in text or f"$slot.{ns}." in text or f"${ns}." in text:
+            if f"\\use{{{ns}}}" not in text:
+                uses += f"\\use{{{ns}}}"
+    return uses + text
+
+
 def compile_ok(text, rt=None):
-    bc, err = Macro(MockHID(), rt or make_runtime()).compile(text)
+    rt_obj = rt or make_runtime()
+    bc, err = Macro(MockHID(), rt_obj).compile(_auto_use(text, rt_obj))
     assert err is None, f"unexpected compile error: {err}"
     return bc
 
@@ -59,31 +70,37 @@ def header_strs(bc):
 def test_call_ext_string_table():
     bc = compile_ok("\\call{sys.free}")
     strs, code = header_strs(bc)
-    assert strs == ["sys", "free"]
-    assert bc[code:] == bytes([OP_CALL_EXT, 0, 1, 0, OP_END])
+    assert strs == []
+    assert "sys" not in strs
+    assert "free" not in strs
+    assert bc[code:] == bytes([OP_CALL_EXT, 0, 0, 0, OP_END])
 
 
 def test_string_dedup():
     bc = compile_ok("\\call{img.load}{a}\\call{img.load}{a}")
     strs, _ = header_strs(bc)
-    # ns/fn names dedup across calls; 'a' interned once
-    assert strs.count("a") == 1
-    assert strs.count("img") == 1
-    assert strs.count("load") == 1
+    # ns and ext fn names are erased; string arg 'a' interned once
+    assert strs == ["a"]
+    assert "img" not in strs
+    assert "load" not in strs
 
 
 def test_str_arg():
     bc = compile_ok("\\call{img.load}{logo}")
     strs, code = header_strs(bc)
+    rt = make_runtime()
+    fn_id = rt.get_fn_id("img", "load")
     assert bc[code:] == bytes([
-        OP_CALL_EXT, strs.index("img"), strs.index("load"), 1,
+        OP_CALL_EXT, 0, fn_id, 1,
         TAG_STR, strs.index("logo"), OP_END,
     ])
+    assert "img" not in strs
+    assert "load" not in strs
 
 
 def test_handle_arg_must_be_var():
     # form check: a literal can never be a handle
-    assert "must be a variable" in compile_err("\\call{img.match}{7}")
+    assert "must be a variable" in compile_err("\\use{img}\\call{img.match}{7}")
 
 
 def test_handle_type_environment():
@@ -92,10 +109,10 @@ def test_handle_type_environment():
     # $ret used directly is traceable as well
     compile_ok("\\call{img.load}{name}\\call{img.match}{$ret}")
     # plain int variable is not a tpl handle
-    assert "must hold a tpl handle" in compile_err("\\set{h}{0}\\call{img.match}{$h}")
+    assert "must hold a tpl handle" in compile_err("\\use{img}\\set{h}{0}\\call{img.match}{$h}")
     # stale $ret: an intervening int-returning call retypes $ret
     assert "must hold a tpl handle" in compile_err(
-        "\\call{img.load}{name}\\call{sys.free}\\call{img.match}{$ret}")
+        "\\use{img}\\use{sys}\\call{img.load}{name}\\call{sys.free}\\call{img.match}{$ret}")
 
 
 def test_add_rejects_handle():
@@ -123,7 +140,7 @@ def test_str_arg_unescape_and_strip():
     bc = compile_ok("\\call{img.load}{ a\\}b }")
     strs, _ = header_strs(bc)
     assert "a}b" in strs
-    assert "no string variables" in compile_err("\\call{img.load}{$x}")
+    assert "no string variables" in compile_err("\\use{img}\\call{img.load}{$x}")
 
 
 def test_point_rect_args_expand():
@@ -131,7 +148,10 @@ def test_point_rect_args_expand():
     strs, code = header_strs(bc)
     tail = bc[code:]
     at = tail.rindex(OP_CALL_EXT)  # the img.at call (img.load is first)
-    assert tail[at + 1] == strs.index("img") and tail[at + 2] == strs.index("at")
+    rt = make_runtime()
+    assert tail[at + 1] == 0 and tail[at + 2] == rt.get_fn_id("img", "at")
+    assert "at" not in strs
+    assert "img" not in strs
     assert tail[at + 3] == 3  # handle + point expanded to 2 operands
     bc = compile_ok("\\call{img.load}{n}\\set{h}{$ret}\\call{img.crop}{$h}{1,2,3,4}")
     tail = bc[header_strs(bc)[1]:]
@@ -140,9 +160,9 @@ def test_point_rect_args_expand():
 
 def test_point_rect_arg_errors():
     assert "2 comma-separated" in compile_err(
-        "\\call{img.load}{n}\\set{h}{$ret}\\call{img.at}{$h}{3}")
+        "\\use{img}\\call{img.load}{n}\\set{h}{$ret}\\call{img.at}{$h}{3}")
     assert "4 comma-separated" in compile_err(
-        "\\call{img.load}{n}\\set{h}{$ret}\\call{img.crop}{$h}{1,2,3}")
+        "\\use{img}\\call{img.load}{n}\\set{h}{$ret}\\call{img.crop}{$h}{1,2,3}")
 
 
 def test_point_rect_elements_support_vars_and_slots():
@@ -158,8 +178,11 @@ def test_int_args():
     strs, code = header_strs(bc)
     tail = bc[code:]
     at = tail.index(OP_CALL_EXT)
-    assert tail[at + 1] == strs.index("img")
-    assert tail[at + 2] == strs.index("peek")
+    rt = make_runtime()
+    assert tail[at + 1] == 0
+    assert tail[at + 2] == rt.get_fn_id("img", "peek")
+    assert "peek" not in strs
+    assert "img" not in strs
     assert tail[at + 3] == 2  # argc
     assert tail[at + 4] == TAG_IMM and tail[at + 5 : at + 9] == bytes([1, 0, 0, 0])
     assert tail[at + 9] == TAG_REG and tail[at + 10] == 0
@@ -176,7 +199,7 @@ def test_use_unknown_ns():
 
 
 def test_call_unknown_fn():
-    assert "Unknown ext function" in compile_err("\\call{sys.nope}")
+    assert "Unknown ext function" in compile_err("\\use{sys}\\call{sys.nope}")
 
 
 def test_call_bad_target():
@@ -184,16 +207,39 @@ def test_call_bad_target():
 
 
 def test_call_argc_mismatch():
-    assert "expects 1 arg" in compile_err("\\call{img.load}")
-    assert "expects 1 arg" in compile_err("\\call{img.load}{a}{b}")
+    assert "expects 1 arg" in compile_err("\\use{img}\\call{img.load}")
+    assert "expects 1 arg" in compile_err("\\use{img}\\call{img.load}{a}{b}")
 
 
 def test_call_zero_arg_rejects_extra():
-    assert "expects 0 arg" in compile_err("\\call{sys.free}{x}")
+    assert "expects 0 arg" in compile_err("\\use{sys}\\call{sys.free}{x}")
 
 
 def test_str_arg_rejects_var():
-    assert "no string variables" in compile_err("\\set{x}{1}\\call{img.load}{$x}")
+    assert "no string variables" in compile_err("\\use{img}\\set{x}{1}\\call{img.load}{$x}")
+
+
+def test_call_rejects_undeclared_ns():
+    assert "undeclared namespace: sys" in compile_err("\\call{sys.free}")
+    assert "undeclared namespace: img" in compile_err("\\call{img.load}{logo}")
+    assert "Unknown namespace: bogus" in compile_err("\\call{bogus.fn}")
+
+
+def test_use_top_level_only():
+    assert "use only allowed at top level" in compile_err("\\rep{1}{\\use{sys}}")
+    assert "use only allowed at top level" in compile_err("\\if{ {1, =, 1} }{\\use{sys}}")
+    assert "use only allowed at top level" in compile_err("\\guarded{ {1, =, 1} }{\\use{sys}}")
+    assert "use only allowed at top level" in compile_err("\\def{mm}{\\use{sys}}\\mm")
+
+
+def test_use_idempotent_and_order_sensitive():
+    compile_ok("\\use{sys}\\use{sys}\\call{sys.free}")
+    assert "undeclared namespace: sys" in compile_err("\\call{sys.free}\\use{sys}")
+
+
+def test_pixelrect_lowering_independent_of_use_sys():
+    # spec/dsl.md §6.4: Resource lowering activates sys.const independently of source \use
+    compile_ok("\\pixelrect{p}{\\row{0x123456}}")
 
 
 def test_call_requires_runtime():
@@ -331,7 +377,7 @@ def run(text, rt=None, hid=None):
     hid = hid or MockHID()
     rt = rt or make_runtime()
     m = Macro(hid, rt)
-    bc, err = m.compile(text)
+    bc, err = m.compile(_auto_use(text, rt))
     assert err is None, f"compile error: {err}"
     asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
     return hid
@@ -399,7 +445,7 @@ def test_run_wait_fired():
     rt = make_runtime()
     hid = MockHID()
     m = Macro(hid, rt)
-    bc, err = m.compile("\\wait{$slot.go.val}\\typenum{$timeout}")
+    bc, err = m.compile("\\use{go}\\wait{$slot.go.val}\\typenum{$timeout}")
     assert err is None
 
     async def scenario():
@@ -421,7 +467,7 @@ def test_run_wait_then_slot():
     rt = make_runtime()
     hid = MockHID()
     m = Macro(hid, rt)
-    bc, err = m.compile("\\wait{$slot.go.code}\\typenum{$go.code}")
+    bc, err = m.compile("\\use{go}\\wait{$slot.go.code}\\typenum{$go.code}")
     assert err is None
 
     async def scenario():
@@ -443,7 +489,7 @@ def test_run_abort_during_wait():
     rt = make_runtime()
     hid = MockHID()
     m = Macro(hid, rt)
-    bc, err = m.compile("\\kdown{ctrl}\\wait{$slot.go.val}")
+    bc, err = m.compile("\\use{go}\\kdown{ctrl}\\wait{$slot.go.val}")
     assert err is None
 
     async def scenario():
@@ -464,7 +510,7 @@ def test_run_abort_during_wait():
 def test_disassemble_stage_c():
     m = Macro(MockHID(), make_runtime())
     # ext args are separate brace groups, wait uses v4 syntax
-    bc, err = m.compile("\\call{img.peek}{1}{2}\\wait[3s]{$slot.go.code}\\typenum{$go.code}")
+    bc, err = m.compile("\\use{img}\\use{go}\\call{img.peek}{1}{2}\\wait[3s]{$slot.go.code}\\typenum{$go.code}")
     assert err is None
     out = m.disassemble(bc)
     assert "CALL img.peek(1, 2)" in out
@@ -479,5 +525,5 @@ def test_def_forwards_compound_arg():
                "\\fw{1,2,3,4}")
     # landing-position validity is checked after substitution
     assert "4 comma-separated" in compile_err(
-        "\\call{img.load}{n}\\set{h}{$ret}"
+        "\\use{img}\\call{img.load}{n}\\set{h}{$ret}"
         "\\def{fw}[1]{\\call{img.crop}{$h}{#1}}\\fw{1,2}")

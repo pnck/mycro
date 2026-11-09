@@ -45,7 +45,11 @@ def run(text, rt=None, hid=None):
     hid = hid or MockHID()
     rt = rt or make_runtime()
     m = Macro(hid, rt)
-    bc, err = m.compile(text)
+    uses = ""
+    for ns in ("img", "sys", "probe"):
+        if rt.has_namespace(ns) and f"\\use{{{ns}}}" not in text:
+            uses += f"\\use{{{ns}}}"
+    bc, err = m.compile(uses + text)
     assert err is None, f"compile error: {err}"
     asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
     return hid, rt

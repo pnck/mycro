@@ -21,6 +21,7 @@ from bytecode import (
     CC_NAMES, CONSUMER_NAMES,
     read_header, keycode_name, mod_names,
 )
+from runtime import STANDARD_ABI
 
 try:
     _TimeoutError = asyncio.TimeoutError
@@ -34,6 +35,7 @@ class VM:
     def __init__(self, hid=None, runtime=None):
         self.hid = hid
         self.runtime = runtime
+        self.activated_namespaces = []
 
     @staticmethod
     def _read_header(bc):
@@ -268,10 +270,20 @@ class VM:
                 i += 3
                 lines.append(f"{prefix}WAIT $slot.{sig}.{field} {fmt_arg(4)}ms")
             elif op == OP_CALL_EXT:
-                ns = strs[bytecode[i + 1]]
-                fn = strs[bytecode[i + 2]]
+                ns_id = bytecode[i + 1]
+                fn_id = bytecode[i + 2]
                 argc = bytecode[i + 3]
                 i += 4
+                act_ns = list(self.activated_namespaces)
+                ns = act_ns[ns_id] if ns_id < len(act_ns) else None
+                fn = None
+                if ns and self.runtime is not None:
+                    fn = self.runtime.get_fn_name(ns, fn_id)
+                if fn is None and ns in STANDARD_ABI:
+                    std = STANDARD_ABI[ns]
+                    if fn_id < len(std):
+                        fn = std[fn_id]
+                call_target = f"{ns}.{fn}" if (ns and fn) else f"ext[{ns_id}][{fn_id}]"
                 args = []
                 for _ in range(argc):
                     tag = bytecode[i]
@@ -331,6 +343,11 @@ class VM:
         runtime = self.runtime
         if runtime is not None:
             runtime.release_all()  # execution bracket: start (defensive)
+
+        self._ext_vtable = []
+        if runtime is not None:
+            for s in self.activated_namespaces:
+                self._ext_vtable.append(runtime.get_ns_entries(s))
 
         class _GuardAbort(Exception):
             pass
@@ -899,8 +916,8 @@ class VM:
                     elif op == OP_CALL_EXT:
                         if guard_depth > 0:
                             check_guards()
-                        ns = strs[read_u8()]
-                        fn = strs[read_u8()]
+                        ns_id = read_u8()
+                        fn_id = read_u8()
                         argc = read_u8()
                         args = []
                         arg_handles = []
@@ -920,10 +937,13 @@ class VM:
                                 raise RuntimeError(f"Invalid operand tag: {tag}")
                         if runtime is None:
                             raise RuntimeError("CALL_EXT without runtime registry")
-                        sig_entry = runtime._ns.get(ns, {}).get(fn)
-                        ret_type = sig_entry[1] if sig_entry else "int"
+                        if ns_id >= len(self._ext_vtable) or fn_id >= len(self._ext_vtable[ns_id]):
+                            raise RuntimeError(f"Unmapped ext call: ns_id={ns_id}, fn_id={fn_id}")
+                        entry = self._ext_vtable[ns_id][fn_id]
+                        if entry is None or entry[3] is None:
+                            raise RuntimeError(f"Unmapped ext call: ns_id={ns_id}, fn_id={fn_id}")
 
-                        r = runtime.call(ns, fn, args, arg_handles)
+                        r = runtime.invoke_ext(entry, args, arg_handles)
                         if hasattr(r, "send"):  # coroutine: await it
                             r = await r
 
@@ -941,7 +961,7 @@ class VM:
                                 ret_val = int(ret_val)
                             except (TypeError, ValueError):
                                 ret_val = 0
-                            is_handle = (ret_type not in ("int", "color", "void") and ret_val > 0)
+                            is_handle = (entry[2] not in ("int", "color", "void") and ret_val > 0)
 
                         runtime.reg_write(REG_ERR, err_val, None, False)
                         regs[REG_ERR] = err_val
