@@ -15,7 +15,7 @@ from lib.hid_adafruit import AdafruitHIDProvider
 from lib.keymap import BTN_ALL
 from lib.macro import Macro, RECT_MAX_EDGE
 from lib.runtime import (
-    Runtime, ERR_GENERIC, ERR_INVALID_ARG, ERR_NO_PROVIDER,
+    Runtime, ERR_OK, ERR_GENERIC, ERR_INVALID_ARG, ERR_NO_PROVIDER,
     ERR_OUT_OF_BOUNDS, ERR_HANDLE_INVALID, ERR_RESOURCE_EXHAUSTED,
     ERR_TIMEOUT,
 )
@@ -75,6 +75,10 @@ runtime.register_ns("img", {
     "at": (["snap", "point"], "color", lambda s, x, y: _img_at(s, x, y)),
     "diff": (["snap", "snap", "int"], "int",
              lambda a, b, tol: _img_diff(a, b, tol)),
+    "watch": (["str", "point", "span"], "int",
+              lambda name, x, y, interval, duration: _img_watch(name, x, y, interval, duration)),
+    "unwatch": (["str"], "int",
+                lambda name: _img_unwatch(name)),
 })
 macro = Macro(hid, runtime)
 
@@ -237,6 +241,7 @@ async def _run(bytecode):
             print("Macro runtime error:", e)
         _broadcast_result(t0)
     finally:
+        await _img_unwatch_all()
         gc.collect()
 
 
@@ -494,6 +499,7 @@ def broadcast(env):
 _img_client = None   # the _Client that announced img.hello
 _img_pending = None  # the single in-flight reverse request
 _img_req_id = 0
+_active_watches = {}  # name -> {"x": int, "y": int, "interval_ms": int, "deadline": float}
 
 
 class ImgError(Exception):
@@ -540,6 +546,9 @@ def _img_drop(c):
     if _img_client is c:
         _img_client = None
         print("img provider lost:", c.addr)
+        for name in list(_active_watches):
+            runtime.unregister_signal("img." + name)
+        _active_watches.clear()
     ent = _img_pending
     if ent is not None and ent["client"] is c and not ent["done"]:
         ent["err"] = ent["err"] or "provider_lost"
@@ -802,6 +811,57 @@ def _img_diff(a, b, tol):
                     continue
         n += 1
     return n
+
+
+def _img_watch(name, x, y, interval_ms, duration_ms):
+    async def run():
+        if x < 0 or y < 0 or interval_ms <= 0 or duration_ms <= 0:
+            return 0, ERR_INVALID_ARG
+        c = _img_client
+        if c is None or not c.alive or not c.authed:
+            return 0, ERR_NO_PROVIDER
+        sig_name = "img." + name
+        runtime.register_signal(sig_name)
+        try:
+            payload, _ = await _img_request("img.watch", {
+                "name": name,
+                "x": x,
+                "y": y,
+                "interval_ms": interval_ms,
+                "duration_ms": duration_ms,
+            })
+        except ImgError as e:
+            if name not in _active_watches:
+                runtime.unregister_signal(sig_name)
+            return _img_failure(str(e))
+        _active_watches[name] = {
+            "x": x, "y": y, "interval_ms": interval_ms,
+            "deadline": time.monotonic() + duration_ms / 1000.0,
+        }
+        return 0, ERR_OK
+    return run()
+
+
+def _img_unwatch(name):
+    async def run():
+        sig_name = "img." + name
+        _active_watches.pop(name, None)
+        runtime.unregister_signal(sig_name)
+        c = _img_client
+        if c is not None and c.alive and c.authed:
+            try:
+                await _img_request("img.unwatch", {"name": name})
+            except Exception as e:
+                print("img.unwatch warning:", e)
+        return 0, ERR_OK
+    return run()
+
+
+async def _img_unwatch_all():
+    if not _active_watches:
+        return
+    for name in list(_active_watches):
+        await _img_unwatch(name)
 
 
 def _recv(conn, nbytes):

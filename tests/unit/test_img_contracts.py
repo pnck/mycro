@@ -490,3 +490,113 @@ def test_same_id_from_another_client_uses_normal_dispatcher():
             pass
 
     _run(scenario())
+
+
+def test_img_watch_unwatch_compile():
+    m = device.Macro(device.hid, device.runtime)
+    # Valid point watch compiles successfully
+    bc, err = m.compile(r"\use{img}\call{img.watch}{hp}{10, 20}{100, 1000}")
+    assert err is None
+    assert bc is not None
+
+    # Valid unwatch compiles successfully
+    bc, err = m.compile(r"\use{img}\call{img.unwatch}{hp}")
+    assert err is None
+    assert bc is not None
+
+    # Region watch with 4-element rect produces dedicated compile error
+    bc, err = m.compile(r"\use{img}\call{img.watch}{hp}{10, 20, 30, 40}{100, 1000}")
+    assert bc is None
+    assert "region watch unsupported" in err
+
+
+def test_img_watch_unwatch_device_contracts():
+    from bytecode import ERR_INVALID_ARG, ERR_NO_PROVIDER, ERR_OK
+
+    # Argument validation
+    for args in [
+        ("hp", -1, 0, 100, 1000),
+        ("hp", 0, -1, 100, 1000),
+        ("hp", 0, 0, 0, 1000),
+        ("hp", 0, 0, 100, 0),
+    ]:
+        ret, err = _run(device._img_watch(*args))
+        assert (ret, err) == (0, ERR_INVALID_ARG)
+
+    # Missing provider
+    device._img_client = None
+    ret, err = _run(device._img_watch("hp", 10, 20, 100, 1000))
+    assert (ret, err) == (0, ERR_NO_PROVIDER)
+
+    # Provider connected flow
+    client = FakeClient()
+    device._img_client = client
+
+    async def watch_flow():
+        task = asyncio.create_task(device._img_watch("hp", 15, 25, 50, 2000))
+        await asyncio.sleep(0)
+        assert client.sent
+        req_frame = client.sent.pop(0)
+        req_env = device.codec.decode_envelope(req_frame[4:])
+        assert req_env["type"] == "img.watch"
+        assert req_env["payload"] == {
+            "name": "hp", "x": 15, "y": 25, "interval_ms": 50, "duration_ms": 2000,
+        }
+
+        # Provider responds ok
+        device._img_resolve(client, {
+            "type": "img.watch.ok", "v": 1, "ts": 0, "id": req_env["id"],
+            "payload": {"interval_ms": 50},
+        })
+        ret, err = await task
+        assert (ret, err) == (0, ERR_OK)
+        assert device.runtime.has_signal("img.hp")
+        assert "hp" in device._active_watches
+
+        # Simulate provider telemetry event.push
+        push_env = {
+            "v": 1, "type": "event.push", "id": 0, "ts": 0,
+            "payload": {"name": "img.hp", "fields": {"val": 0x334455}},
+        }
+        resp = device.dispatcher.dispatch(push_env, device.proto_ctx)
+        assert resp["type"] == "event.push.ok"
+        assert device.runtime.read_slot("img.hp", "val") == 0x334455
+
+        # Unwatch
+        unwatch_task = asyncio.create_task(device._img_unwatch("hp"))
+        await asyncio.sleep(0)
+        assert client.sent
+        unw_frame = client.sent.pop(0)
+        unw_env = device.codec.decode_envelope(unw_frame[4:])
+        assert unw_env["type"] == "img.unwatch"
+        assert unw_env["payload"] == {"name": "hp"}
+
+        device._img_resolve(client, {
+            "type": "img.unwatch.ok", "v": 1, "ts": 0, "id": unw_env["id"],
+            "payload": {},
+        })
+        ret, err = await unwatch_task
+        assert (ret, err) == (0, ERR_OK)
+        assert not device.runtime.has_signal("img.hp")
+        assert "hp" not in device._active_watches
+
+    _run(watch_flow())
+
+
+def test_img_watch_slot_scalar_execution():
+    """Verify that push telemetry lands in $slot.img.<name>.val as pure scalar
+    with zero handle metadata or allocation."""
+    m = device.Macro(device.hid, device.runtime)
+    device.runtime.register_signal("img.mana")
+    device.runtime.fire_signal("img.mana", {"val": 0x112233})
+
+    bc, err = m.compile(r"\use{img}\wait{$slot.img.mana.val}\set{x}{$slot.img.mana.val}")
+    assert err is None
+    _run(m.execute(bc))
+
+    assert m.last_regs[0] == 0x112233
+    assert not device.runtime.is_handle(0)
+    assert device.runtime._handles == {}
+    assert device.runtime._reg_handles == {}
+    device.runtime.unregister_signal("img.mana")
+

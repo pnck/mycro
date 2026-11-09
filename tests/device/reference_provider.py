@@ -136,6 +136,8 @@ class ReferenceProvider:
         self.ready = threading.Event()
         self._stop = threading.Event()
         self._thread = None
+        self._lock = threading.Lock()
+        self._watches = {}  # name -> threading.Event
 
     def set_frame(self, w, h, rgb):
         """The screen now shows this: (width, height, RGB888 bytes)."""
@@ -150,6 +152,9 @@ class ReferenceProvider:
 
     def stop(self):
         self._stop.set()
+        for w_stop in list(self._watches.values()):
+            w_stop.set()
+        self._watches.clear()
         if self._thread is not None:
             self._thread.join(timeout=3)
 
@@ -206,6 +211,68 @@ class ReferenceProvider:
                         "width": w0,
                         "height": h0,
                     })
+                    continue
+
+                if t == "img.watch":
+                    name = p.get("name")
+                    try:
+                        x, y = int(p.get("x")), int(p.get("y"))
+                        interval_ms = int(p.get("interval_ms"))
+                        duration_ms = int(p.get("duration_ms"))
+                    except (TypeError, ValueError):
+                        self._send_env(s, "error", rid,
+                                       {"code": "field", "message": "invalid numeric arguments"})
+                        continue
+                    if not isinstance(name, str) or not name or interval_ms <= 0 or duration_ms <= 0:
+                        self._send_env(s, "error", rid,
+                                       {"code": "field", "message": "invalid watch parameters"})
+                        continue
+                    if x < 0 or y < 0 or x >= w0 or y >= h0:
+                        self._send_env(s, "error", rid,
+                                       {"code": "out_of_bounds", "message": "point outside frame bounds"})
+                        continue
+                    prev_stop = self._watches.pop(name, None)
+                    if prev_stop:
+                        prev_stop.set()
+                    effective_interval = max(interval_ms, 20)
+                    watch_stop = threading.Event()
+                    self._watches[name] = watch_stop
+
+                    def _watch_loop(w_name, wx, wy, w_interval, w_duration, w_stop):
+                        deadline = time.monotonic() + w_duration / 1000.0
+                        period_s = w_interval / 1000.0
+                        while not self._stop.is_set() and not w_stop.is_set():
+                            if time.monotonic() >= deadline:
+                                break
+                            w_w0, w_h0, w_rgb = self._frame
+                            if 0 <= wx < w_w0 and 0 <= wy < w_h0:
+                                idx = (wy * w_w0 + wx) * 3
+                                val = (w_rgb[idx] << 16) | (w_rgb[idx + 1] << 8) | w_rgb[idx + 2]
+                                try:
+                                    self._send_env(s, "event.push", 0, {
+                                        "name": "img." + w_name,
+                                        "fields": {"val": val},
+                                    })
+                                except Exception:
+                                    break
+                            if w_stop.wait(period_s):
+                                break
+                        self._watches.pop(w_name, None)
+
+                    self._send_env(s, "img.watch.ok", rid, {"interval_ms": effective_interval})
+                    threading.Thread(
+                        target=_watch_loop,
+                        args=(name, x, y, effective_interval, duration_ms, watch_stop),
+                        daemon=True
+                    ).start()
+                    continue
+
+                if t == "img.unwatch":
+                    name = p.get("name")
+                    watch_stop = self._watches.pop(name, None)
+                    if watch_stop:
+                        watch_stop.set()
+                    self._send_env(s, "img.unwatch.ok", rid, {})
                     continue
 
                 if t != "img.frame":
@@ -362,19 +429,29 @@ class ReferenceProvider:
             buf += chunk
         return bytes(buf)
 
-    @staticmethod
-    def _send_env(s, type_, rid, payload):
+    def _send_env(self, s, type_, rid, payload):
         body = json.dumps({"v": PROTO_VERSION, "type": type_, "id": rid,
                            "ts": 0, "payload": payload}).encode("utf-8")
-        s.sendall(struct.pack("<I", len(body)) + body)
+        wire = struct.pack("<I", len(body)) + body
+        lock = getattr(self, "_lock", None)
+        if lock is not None:
+            with lock:
+                s.sendall(wire)
+        else:
+            s.sendall(wire)
 
-    @staticmethod
-    def _send_stream(s, rid, sid, meta, data):
+    def _send_stream(self, s, rid, sid, meta, data):
         chunks = (len(data) + CHUNK_RAW - 1) // CHUNK_RAW
         meta = dict(meta, stream_id=sid, chunks=chunks,
                     bytes=len(data))
-        ReferenceProvider._send_env(s, "img.frame.ok", rid, meta)
+        self._send_env(s, "img.frame.ok", rid, meta)
+        lock = getattr(self, "_lock", None)
         for i in range(chunks):
             part = data[i * CHUNK_RAW:(i + 1) * CHUNK_RAW]
             pl = struct.pack("<HH", sid, 0) + part
-            s.sendall(struct.pack("<I", 0x80000000 | len(pl)) + pl)
+            wire = struct.pack("<I", 0x80000000 | len(pl)) + pl
+            if lock is not None:
+                with lock:
+                    s.sendall(wire)
+            else:
+                s.sendall(wire)

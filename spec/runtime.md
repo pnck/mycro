@@ -155,10 +155,10 @@ Provider round-trips in `img.*` use `EXT_TIMEOUT_MS` ([vm.md §1.0](vm.md#10-pro
 This initiates continuous provider telemetry:
 
 - `name`: Stream identifier. The device registers external signal `img.<name>` (for example, `img.hp`) to admit the provider's `event.push` frames. Providers originate all projections; the device-side name selects the subscription and receiving slot (`$slot.img.<name>.val`). Re-subscribing an existing `name` replaces its subscription and registers the signal anew.
-- `x, y`: Sampling point with `x, y >= 0`; pushes packed `0xRRGGBB`. Extended form `x, y, w, h` selects a bounding rectangle with `w, h` in `[1, 128]` and pushes the per-channel mean as packed `0xRRGGBB`. Each channel mean uses floor integer division.
+- `x, y`: Sampling point with `x, y >= 0`; pushes packed `0xRRGGBB`. Region/rectangle sampling is unsupported in this version and produces a compile error.
 - `interval_ms`: Requested host sampling period in milliseconds, with valid values `> 0`. The provider clamps to its capture-chain floor and reports the effective period in `img.watch.ok`.
 - `duration_ms`: Mandatory lease duration in milliseconds, with valid values `> 0`. The device tracks the lease deadline, and the provider terminates the stream at lease expiration.
-- **Result**: Success returns `$ret = 0` and `$err = ERR_OK` (void). The rectangle form is `\call{img.watch}{name}{x, y, w, h}{interval_ms, duration_ms}` (`argc = 7`).
+- **Result**: Success returns `$ret = 0` and `$err = ERR_OK` (void). Only point sampling (`argc = 5`) is admitted; other forms produce a compile error.
 - **Wire path**: Subscription and cancellation use reverse requests `img.watch` / `img.unwatch`; telemetry uses `event.push` ([docs/protocol.md](../docs/protocol.md)).
 - **Errors**: Missing capture provider returns `$ret = 0`, `$err = ERR_NO_PROVIDER`; subscription timeout returns `ERR_TIMEOUT`; a sampling region exceeding source bounds returns `ERR_OUT_OF_BOUNDS`; other invalid parameters return `ERR_INVALID_ARG`.
 - **Cancellation**: Macro completion or abort sends `img.unwatch` for active subscriptions. The device unregisters the corresponding `img.<name>` signal on unwatch, lease expiry, or provider disconnect. A late `event.push` for an unregistered name receives `unknown_signal`. Unregistration retains slot `val`/`pending` state under the cross-macro lifecycle rules in §1.3.

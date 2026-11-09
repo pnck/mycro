@@ -16,7 +16,7 @@ from bytecode import (
     OP_SET, OP_ADD, OP_BRA, OP_JMP, OP_SUB, OP_GUARD_ENTER, OP_GUARD_EXIT,
     OP_READSLOT, OP_WAIT,
     OP_CALL_EXT, OP_TYPEREG, OP_END,
-    TAG_IMM, TAG_REG, TAG_STR,
+    TAG_IMM, TAG_REG, TAG_NAME,
     MAX_REGS, RECT_MAX_EDGE, REG_ERR, REG_SCRATCH, REG_TIMEOUT, REG_RET,
     CC_OPS, CC_NAMES, CONVERSE_CC, INVERT_CC,
     MAX_CODE_BYTES, MAX_BYTECODE, MAX_STRINGS, MAX_STRING_BYTES,
@@ -74,7 +74,12 @@ class Macro:
 
     def disassemble(self, bytecode):
         """Disassemble bytecode to human-readable format."""
-        return self.vm.disassemble(bytecode)
+        act_ns = (
+            self.compiler.activated_namespaces
+            if self.compiler.activated_namespaces
+            else self.vm.activated_namespaces
+        )
+        return self.vm.disassemble(bytecode, activated_namespaces=act_ns)
 
     @property
     def last_regs(self):

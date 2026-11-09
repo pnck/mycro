@@ -11,7 +11,7 @@ from .label import Label
 from bytecode import (
     TAG_IMM,
     TAG_REG,
-    TAG_STR,
+    TAG_NAME,
     OP_CHAR,
     OP_KEY,
     OP_SLEEP,
@@ -332,7 +332,7 @@ class ActionsMixin:
             elif tag == TAG_REG:
                 self._emit(TAG_REG, v)
             else:
-                self._emit(TAG_STR, v)
+                self._emit(TAG_NAME, v)
         consumer_skip.mark(self)
         self._ret_type = ret_type  # $ret's type flows from the call site
 
@@ -349,6 +349,9 @@ class ActionsMixin:
             n = 4 if typ == "rect" else 2
             parts = [p.strip() for p in a.split(",")]
             if len(parts) != n or not all(parts):
+                if target == "img.watch" and len(parts) == 4:
+                    raise MacroError(
+                        "img.watch: region watch unsupported (point sampling {x,y} only)", pos)
                 raise MacroError(
                     f"{target}: {typ} expects {n} comma-separated values", pos)
             out = []
@@ -359,11 +362,11 @@ class ActionsMixin:
                     acc = acc + (v,)  # don't clobber a sibling's slot-temp
                 out.append((t, v))
             return out
-        if typ == "str":
+        if typ in ("str", "name"):
             s_unesc = self._unescape_str(s)
             if s_unesc.startswith("$"):
-                raise MacroError(f"{target}: str args are literal (no string variables)", pos)
-            return (TAG_STR, self._str_idx(s_unesc, pos))
+                raise MacroError(f"{target}: {typ} args are literal (no string variables)", pos)
+            return (TAG_NAME, self._str_idx(s_unesc, pos))
         if typ in ("int", "color"):
             return self._parse_value(a, pos, reserved)
         # handle types (snap, tpl, ...):

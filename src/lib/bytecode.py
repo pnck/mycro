@@ -51,7 +51,7 @@ OP_END = 0xFF
 # Typed-operand tags (physical arg encodings; semantic types never reach bytecode)
 TAG_IMM = 0
 TAG_REG = 1
-TAG_STR = 2  # string table index (ext args only)
+TAG_NAME = 2  # string table index for Name category operands (spec/vm.md §3)
 
 # Register space
 MAX_REGS = 32         # user registers 0x00-0x1F (spec/vm.md: profile constant, u8 ceiling 256)

@@ -12,7 +12,7 @@ from bytecode import (
     OP_LOOP, OP_LOOP_END, OP_KEY_DOWN, OP_KEY_UP, OP_MDOWN, OP_MUP,
     OP_SET, OP_ADD, OP_SUB, OP_BRA, OP_JMP, OP_GUARD_ENTER, OP_GUARD_EXIT, OP_TYPEREG,
     OP_READSLOT, OP_WAIT, OP_CALL_EXT, OP_END,
-    TAG_IMM, TAG_REG, TAG_STR,
+    TAG_IMM, TAG_REG, TAG_NAME,
     REG_RET, REG_TIMEOUT, REG_ERR,
     ERR_OK, ERR_HANDLE_MISUSE,
     MAX_GUARD_NEST, DELAY_SLICE_QUANTUM,
@@ -41,7 +41,7 @@ class VM:
     def _read_header(bc):
         return read_header(bc)
 
-    def disassemble(self, bytecode):
+    def disassemble(self, bytecode, activated_namespaces=None):
         """Disassemble bytecode to human-readable format."""
         strs, i = self._read_header(bytecode)
         if len(bytecode) - i > MAX_CODE_BYTES:
@@ -85,7 +85,7 @@ class VM:
             tag = bytecode[i]
             i += 1
             if tag == TAG_REG:
-                r = f"$r{bytecode[i]}"
+                r = fmt_reg(bytecode[i])
                 i += 1
                 return r
             if tag == TAG_IMM:
@@ -106,7 +106,7 @@ class VM:
             tag = bytecode[i]
             i += 1
             if tag == TAG_REG:
-                r = f"$r{bytecode[i]}"
+                r = fmt_reg(bytecode[i])
                 i += 1
                 return r
             if tag == TAG_IMM:
@@ -126,7 +126,7 @@ class VM:
             tag = bytecode[i]
             i += 1
             if tag == TAG_REG:
-                r = f"$r{bytecode[i]}"
+                r = fmt_reg(bytecode[i])
                 i += 1
                 return r
             if tag == TAG_IMM:
@@ -243,26 +243,75 @@ class VM:
                     curr += 2
                     throttle_str = f" [{throttle_ms}ms]"
                 mode_str = "ANY" if logic_mode == 1 else "ALL"
-                lines.append(f"{prefix}GUARD_ENTER abort_off=+{abort_off}{throttle_str} {mode_str}({triplet_cnt})")
+
+                cond_strs = []
                 for _ in range(triplet_cnt):
                     spec = bytecode[curr]
                     curr += 1
+                    cc = spec & 7
+                    cc_name = CC_NAMES[cc] if cc < len(CC_NAMES) else f"0x{cc:02X}"
                     lhs_tag = (spec >> 3) & 3
                     rhs_tag = (spec >> 5) & 3
-                    curr += 4 if lhs_tag == 0 else (1 if lhs_tag == 1 else 2)
-                    curr += 4 if rhs_tag == 0 else (1 if rhs_tag == 1 else 2)
+
+                    if lhs_tag == GUARD_TAG_IMM:
+                        v = (
+                            bytecode[curr]
+                            | (bytecode[curr + 1] << 8)
+                            | (bytecode[curr + 2] << 16)
+                            | (bytecode[curr + 3] << 24)
+                        )
+                        curr += 4
+                        if v > 2147483647:
+                            v -= 4294967296
+                        lhs_str = str(v)
+                    elif lhs_tag == GUARD_TAG_REG:
+                        lhs_str = fmt_reg(bytecode[curr])
+                        curr += 1
+                    elif lhs_tag == GUARD_TAG_SLOT:
+                        sig = strs[bytecode[curr]]
+                        fld = strs[bytecode[curr + 1]]
+                        curr += 2
+                        lhs_str = f"$slot.{sig}.{fld}"
+                    else:
+                        raise ValueError(f"Invalid guard lhs tag: {lhs_tag}")
+
+                    if rhs_tag == GUARD_TAG_IMM:
+                        v = (
+                            bytecode[curr]
+                            | (bytecode[curr + 1] << 8)
+                            | (bytecode[curr + 2] << 16)
+                            | (bytecode[curr + 3] << 24)
+                        )
+                        curr += 4
+                        if v > 2147483647:
+                            v -= 4294967296
+                        rhs_str = str(v)
+                    elif rhs_tag == GUARD_TAG_REG:
+                        rhs_str = fmt_reg(bytecode[curr])
+                        curr += 1
+                    elif rhs_tag == GUARD_TAG_SLOT:
+                        sig = strs[bytecode[curr]]
+                        fld = strs[bytecode[curr + 1]]
+                        curr += 2
+                        rhs_str = f"$slot.{sig}.{fld}"
+                    else:
+                        raise ValueError(f"Invalid guard rhs tag: {rhs_tag}")
+
+                    cond_strs.append(f"{{{lhs_str}, {cc_name}, {rhs_str}}}")
+
+                lines.append(f"{prefix}GUARD_ENTER abort_off=+{abort_off}{throttle_str} {mode_str}({triplet_cnt}) {', '.join(cond_strs)}")
                 i = curr
             elif op == OP_GUARD_EXIT:
                 lines.append(f"{prefix}GUARD_EXIT")
                 i += 1
             elif op == OP_TYPEREG:
-                lines.append(f"{prefix}TYPEREG $r{bytecode[i + 1]}")
+                lines.append(f"{prefix}TYPEREG {fmt_reg(bytecode[i + 1])}")
                 i += 2
             elif op == OP_READSLOT:
                 reg = bytecode[i + 1]
                 sig = strs[bytecode[i + 2]]
                 field = strs[bytecode[i + 3]]
-                lines.append(f"{prefix}READSLOT $r{reg}, {sig}.{field}")
+                lines.append(f"{prefix}READSLOT {fmt_reg(reg)}, {sig}.{field}")
                 i += 4
             elif op == OP_WAIT:
                 sig = strs[bytecode[i + 1]]
@@ -274,7 +323,15 @@ class VM:
                 fn_id = bytecode[i + 2]
                 argc = bytecode[i + 3]
                 i += 4
-                act_ns = list(self.activated_namespaces)
+                if activated_namespaces is not None:
+                    act_ns = list(activated_namespaces)
+                elif self.activated_namespaces:
+                    act_ns = list(self.activated_namespaces)
+                elif self.runtime is not None and getattr(self.runtime, "_ns", None):
+                    act_ns = list(self.runtime._ns.keys())
+                else:
+                    act_ns = list(STANDARD_ABI.keys())
+
                 ns = act_ns[ns_id] if ns_id < len(act_ns) else None
                 fn = None
                 if ns and self.runtime is not None:
@@ -300,14 +357,14 @@ class VM:
                             v -= 4294967296
                         args.append(str(v))
                     elif tag == TAG_REG:
-                        args.append(f"$r{bytecode[i]}")
+                        args.append(fmt_reg(bytecode[i]))
                         i += 1
-                    elif tag == TAG_STR:
+                    elif tag == TAG_NAME:
                         args.append(repr(strs[bytecode[i]]))
                         i += 1
                     else:
                         raise ValueError(f"Invalid operand tag: {tag}")
-                lines.append(f"{prefix}CALL {ns}.{fn}({', '.join(args)})")
+                lines.append(f"{prefix}CALL {call_target}({', '.join(args)})")
             elif op == OP_END:
                 lines.append(f"{prefix}END")
                 saw_end = True
@@ -930,7 +987,7 @@ class VM:
                                 src = read_u8()
                                 args.append(regs[src])
                                 arg_handles.append(runtime is not None and runtime.is_handle(src))
-                            elif tag == TAG_STR:
+                            elif tag == TAG_NAME:
                                 args.append(strs[read_u8()])
                                 arg_handles.append(False)
                             else:

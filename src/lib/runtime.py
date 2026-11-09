@@ -43,7 +43,7 @@ ERR_HANDLE_MISUSE = 8
 STANDARD_ABI = {
     "sys": ("free", "const"),
     "net": ("send",),
-    "img": ("snap", "at", "diff"),
+    "img": ("snap", "at", "diff", "watch", "unwatch"),
 }
 
 # --- static backing store (spec/vm.md Appendix A) ---
@@ -227,6 +227,9 @@ class Runtime:
     def register_signal(self, name):
         self._signals[name] = asyncio.Event()
 
+    def unregister_signal(self, name):
+        self._signals.pop(name, None)
+
     def fire_signal(self, name, fields=None):
         """Publish slot fields and wake waiters per spec/runtime.md §1.1 #2.
         Returns True on success, False if MAX_SLOTS capacity exhausted."""
@@ -381,14 +384,14 @@ class Runtime:
         if arg_handles is not None and arg_types is not None:
             expected = []
             for typ in arg_types:
-                if typ in ("point", "rect"):
-                    expected.extend(["int"] * (2 if typ == "point" else 4))
+                if typ in ("point", "rect", "span"):
+                    expected.extend(["int"] * (4 if typ == "rect" else 2))
                 else:
                     expected.append(typ)
             if len(args) != len(expected) or len(arg_handles) != len(expected):
                 return 0, ERR_INVALID_ARG
             for value, typ, is_handle in zip(args, expected, arg_handles):
-                if typ in ("int", "color", "str"):
+                if typ in ("int", "color", "str", "name"):
                     if is_handle:
                         return 0, ERR_HANDLE_MISUSE
                 elif not is_handle or self.handle_data(value, typ) is None:

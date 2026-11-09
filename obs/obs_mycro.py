@@ -73,6 +73,8 @@ _thread = None
 _sock = None                         # closed from script_unload/disconnect to wake worker
 _shot = None                         # {"event": threading.Event} while capturing
 _cap_lock = threading.Lock()
+_sock_lock = threading.Lock()
+_watches = {}
 _preview_sock = None
 _preview_lock = threading.Lock()
 _stream_id = 0
@@ -191,6 +193,9 @@ def disconnect():
     obs.script_log(obs.LOG_INFO, "mycro: disconnect requested")
     _active.clear()
     _connected_event.clear()
+    for w in list(_watches.values()):
+        w.set()
+    _watches.clear()
     s = _sock
     if s is not None:
         try:
@@ -299,6 +304,9 @@ def script_unload():
     _stop.set()
     _active.clear()
     _connected_event.clear()
+    for w in list(_watches.values()):
+        w.set()
+    _watches.clear()
     _wake.set()
     s = _sock
     if s is not None:
@@ -427,7 +435,8 @@ def send_env(s, type_, rid, payload):
     body = json.dumps({"v": PROTO_VERSION, "type": type_, "id": rid,
                        "ts": int(time.monotonic() * 1000),
                        "payload": payload}).encode("utf-8")
-    s.sendall(struct.pack("<I", len(body)) + body)
+    with _sock_lock:
+        s.sendall(struct.pack("<I", len(body)) + body)
 
 
 def send_error(s, rid, code, message):
@@ -449,7 +458,9 @@ def send_stream(s, ok_type, rid, meta, data):
     for i in range(chunks):
         part = data[i * CHUNK_RAW:(i + 1) * CHUNK_RAW]
         payload = struct.pack("<HH", sid, 0) + part
-        s.sendall(struct.pack("<I", 0x80000000 | len(payload)) + payload)
+        wire = struct.pack("<I", 0x80000000 | len(payload)) + payload
+        with _sock_lock:
+            s.sendall(wire)
 
 
 def recv_exact(s, n):
@@ -491,6 +502,10 @@ def handle(s, env):
             handle_frame(s, rid, p)
         elif t == "img.arm_preview":
             handle_arm_preview(s, rid, p)
+        elif t == "img.watch":
+            handle_watch(s, rid, p)
+        elif t == "img.unwatch":
+            handle_unwatch(s, rid, p)
         else:
             obs.script_log(obs.LOG_WARNING, "mycro: unknown request type from device: %r (id %s)" % (t, rid))
             send_error(s, rid, "unknown_type", "unknown type: %r" % t)
@@ -502,6 +517,64 @@ def handle(s, env):
         send_error(s, rid, "capture_failed", str(e))
     except (KeyError, TypeError, ValueError) as e:
         send_error(s, rid, "field", "%s: %s" % (type(e).__name__, e))
+
+
+def handle_watch(s, rid, p):
+    name = p.get("name")
+    if not isinstance(name, str) or not name:
+        raise ImgField("invalid watch name")
+    x, y = int(p.get("x")), int(p.get("y"))
+    interval_ms = int(p.get("interval_ms"))
+    duration_ms = int(p.get("duration_ms"))
+    if x < 0 or y < 0 or interval_ms <= 0 or duration_ms <= 0:
+        raise ImgField("invalid watch parameters")
+    im = capture()
+    W, H = im.size
+    if x >= W or y >= H:
+        raise ImgBounds("point (%d,%d) outside source bounds (%dx%d)" % (x, y, W, H))
+    prev_stop = _watches.pop(name, None)
+    if prev_stop:
+        prev_stop.set()
+    effective_interval = max(interval_ms, 20)
+    watch_stop = threading.Event()
+    _watches[name] = watch_stop
+
+    def _watch_loop(w_name, wx, wy, w_interval, w_duration, w_stop):
+        deadline = time.monotonic() + w_duration / 1000.0
+        period_s = w_interval / 1000.0
+        while not _stop.is_set() and _active.is_set() and not w_stop.is_set():
+            if time.monotonic() >= deadline:
+                break
+            try:
+                im_curr = capture()
+                c_w, c_h = im_curr.size
+                if 0 <= wx < c_w and 0 <= wy < c_h:
+                    r, g, b = im_curr.load()[wx, wy][:3]
+                    val = (r << 16) | (g << 8) | b
+                    send_env(s, "event.push", 0, {
+                        "name": "img." + w_name,
+                        "fields": {"val": val},
+                    })
+            except Exception as e:
+                obs.script_log(obs.LOG_WARNING, "mycro: watch error: %s" % e)
+            if w_stop.wait(period_s):
+                break
+        _watches.pop(w_name, None)
+
+    send_env(s, "img.watch.ok", rid, {"interval_ms": effective_interval})
+    threading.Thread(
+        target=_watch_loop,
+        args=(name, x, y, effective_interval, duration_ms, watch_stop),
+        daemon=True
+    ).start()
+
+
+def handle_unwatch(s, rid, p):
+    name = p.get("name")
+    watch_stop = _watches.pop(name, None)
+    if watch_stop:
+        watch_stop.set()
+    send_env(s, "img.unwatch.ok", rid, {})
 
 
 def handle_arm_preview(s, rid, p):

@@ -5,7 +5,7 @@ import asyncio
 import keymap
 from macro import (
     Macro,
-    MAGIC, VERSION, TAG_IMM, TAG_REG, TAG_STR, REG_RET, REG_TIMEOUT,
+    MAGIC, VERSION, TAG_IMM, TAG_REG, TAG_NAME, REG_RET, REG_TIMEOUT,
     OP_SET, OP_ADD, OP_SLEEP, OP_KEY_DOWN, OP_READSLOT, OP_WAIT, OP_CALL_EXT,
     OP_TYPEREG, OP_END,
 )
@@ -92,7 +92,7 @@ def test_str_arg():
     fn_id = rt.get_fn_id("img", "load")
     assert bc[code:] == bytes([
         OP_CALL_EXT, 0, fn_id, 1,
-        TAG_STR, strs.index("logo"), OP_END,
+        TAG_NAME, strs.index("logo"), OP_END,
     ])
     assert "img" not in strs
     assert "load" not in strs

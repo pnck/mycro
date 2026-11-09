@@ -240,3 +240,56 @@ def test_reference_provider_preview_worker(token, reject_sig, expected_status):
     png_data = buf[idx + 4:]
     assert png_data[:8] == b"\x89PNG\r\n\x1a\n"
 
+
+def test_reference_provider_watch_unwatch_lifecycle():
+    provider_sock, device_sock = socket.socketpair()
+    device_sock.settimeout(2)
+    original_create_connection = rp.socket.create_connection
+    rp.socket.create_connection = lambda *args, **kwargs: provider_sock
+    p = rp.ReferenceProvider("127.0.0.1", 7373, "")
+    thread = threading.Thread(target=p._run, daemon=True)
+    try:
+        thread.start()
+        assert _recv_exact(device_sock, len(rp.AUTH_MAGIC) + 33)[:4] == rp.AUTH_MAGIC
+        hello = _recv_json(device_sock)
+        assert hello["type"] == "img.hello"
+
+        # 1. Invalid args
+        p._send_env(device_sock, "img.watch", 1,
+                    {"name": "", "x": 0, "y": 0, "interval_ms": 50, "duration_ms": 1000})
+        reply = _recv_json(device_sock)
+        assert reply["type"] == "error"
+        assert reply["payload"]["code"] == "field"
+
+        # 2. Out of bounds
+        p._send_env(device_sock, "img.watch", 2,
+                    {"name": "test", "x": rp.W, "y": 0, "interval_ms": 50, "duration_ms": 1000})
+        reply = _recv_json(device_sock)
+        assert reply["type"] == "error"
+        assert reply["payload"]["code"] == "out_of_bounds"
+
+        # 3. Valid watch
+        p._send_env(device_sock, "img.watch", 3,
+                    {"name": "test", "x": 10, "y": 8, "interval_ms": 30, "duration_ms": 1000})
+        reply = _recv_json(device_sock)
+        assert reply["type"] == "img.watch.ok"
+        assert reply["payload"]["interval_ms"] == 30
+
+        # Receive telemetry push
+        push = _recv_json(device_sock)
+        assert push["type"] == "event.push"
+        assert push["payload"]["name"] == "img.test"
+        assert push["payload"]["fields"]["val"] == 0x466E96
+
+        # 4. Unwatch
+        p._send_env(device_sock, "img.unwatch", 4, {"name": "test"})
+        reply = _recv_json(device_sock)
+        assert reply["type"] == "img.unwatch.ok"
+    finally:
+        device_sock.close()
+        p._stop.set()
+        thread.join(timeout=3)
+        rp.socket.create_connection = original_create_connection
+    assert not thread.is_alive()
+
+

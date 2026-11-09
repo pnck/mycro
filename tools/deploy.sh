@@ -15,7 +15,8 @@ SRC="$(cd "$(dirname "$0")/.." && pwd)/src"
 # parser — it catches CP-incompatible syntax that CPython happily accepts
 # (e.g. f-string brace escapes). Skipped with a note if not installed.
 if command -v mpy-cross >/dev/null 2>&1; then
-    for f in "$SRC/code.py" "$SRC/lib/"*.py; do
+    for f in "$SRC/code.py" "$SRC/lib/"*.py "$SRC/lib/compiler/"*.py; do
+        [ -f "$f" ] || continue
         mpy-cross -o /dev/null "$f" || exit 1
     done
     echo "  + mpy-cross syntax gate passed"
@@ -65,6 +66,13 @@ for f in "$SRC/lib/"*.py; do
     cp "$f" "$MNT/lib/"
     NEW_FILES="$NEW_FILES lib/$(basename "$f")"
 done
+if [ -d "$SRC/lib/compiler" ]; then
+    mkdir -p "$MNT/lib/compiler"
+    for f in "$SRC/lib/compiler/"*.py; do
+        cp "$f" "$MNT/lib/compiler/"
+        NEW_FILES="$NEW_FILES lib/compiler/$(basename "$f")"
+    done
+fi
 
 # --- companion tools: standalone OBS script folder on USB MSC ---
 mkdir -p "$MNT/obs"
