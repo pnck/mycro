@@ -357,9 +357,14 @@ class Runtime:
         waiters = self._waiters.setdefault(key, [])
         waiters.append(ev)
         try:
-            await asyncio.wait_for(ev.wait(), timeout_ms / 1000.0)
-        except _TimeoutError:
-            pass
+            rem = timeout_ms
+            while rem > 0:
+                cur = min(rem, 268400000)
+                try:
+                    await asyncio.wait_for(ev.wait(), cur / 1000.0)
+                    break
+                except _TimeoutError:
+                    rem -= cur
         finally:
             try:
                 waiters.remove(ev)
