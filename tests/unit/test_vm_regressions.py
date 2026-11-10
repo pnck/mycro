@@ -184,24 +184,29 @@ def test_zero_count_loop_does_not_disturb_outer_frame():
     assert typed_chars(hid) == "acac"
 
 
-class LoopHandleRuntime:
-    def release_all(self):
-        pass
-
-    def is_handle(self, index):
-        return index == 0
-
-    def reg_write(self, *args):
-        pass
-
-
 def test_handle_count_loop_fault_does_not_push_or_pop_a_frame():
-    code = set_reg(0, 2) + loop(
-        imm(2), char("a") + loop(reg(0), char("b")) + char("c")
+    hid = MockHID()
+    runtime = Runtime()
+    runtime.register_ns(
+        "img",
+        {
+            "snap": (
+                ["rect"],
+                "snap",
+                lambda x, y, w, h: runtime.new_handle(
+                    "snap", {"w": w, "h": h, "rgb": b"\x00" * (w * h * 3)}
+                ),
+            ),
+        },
     )
-    hid, runner = execute(program(code), runtime=LoopHandleRuntime())
+    macro = Macro(hid, runtime)
+    bc, err = macro.compile(
+        r"\use{img}\call{img.snap}{0, 0, 1, 1}\set{h}{$ret}\rep{2}{\a\rep{$h}{\b}\c}"
+    )
+    assert err is None
+    asyncio.run(macro.execute(bc, default_delay_ms=0, click_hold_ms=0))
     assert typed_chars(hid) == "acac"
-    assert runner.last_regs[REG_ERR] == ERR_HANDLE_MISUSE
+    assert macro.vm.last_regs[REG_ERR] == ERR_HANDLE_MISUSE
 
 
 def test_key_down_zero_is_hid_no_event():

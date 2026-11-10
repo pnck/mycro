@@ -129,8 +129,8 @@ def test_if_rejects_handle():
 
 
 def test_if_ret_exemption():
-    # $ret carries error sentinels alongside results — checking it is the
-    # mandatory failure path, exempt from the handle comparison ban
+    # In v4 (§6.7, §8.1), comparisons with $ret compile cleanly without static errors;
+    # runtime failure routing uses $err.
     compile_ok("\\call{img.load}{name}\\if{ {$ret, <, 0} }{a}")
     compile_ok("\\call{img.load}{name}\\set{x}{1}\\if{ {$x, =, $ret} }{a}")
 

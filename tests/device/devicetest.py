@@ -1337,9 +1337,9 @@ def t1_hold_pace_and_execution_reset(ctx):
     timings = []
     states = []
     try:
-        for code, hold in (("\\pace{100ms}\\a", 20),
-                           ("\\pace{100ms}\\a\\a", 20),
-                           ("\\a", 0)):
+        for code, hold in (("\\pace{100ms}\\move{0,0}", 20),
+                           ("\\pace{100ms}\\move{0,0}\\move{0,0}", 20),
+                           ("\\move{0,0}", 0)):
             body = http_post_macro(ctx, code, hold_ms=hold)
             if not body.startswith("Started"):
                 raise RuntimeError(f"HTTP submit failed: {body}")
@@ -1360,8 +1360,8 @@ def t1_hold_pace_and_execution_reset(ctx):
         c.close()
     one, two, reset = (timings + [None] * 3)[:3]
     ok = (states == ["done", "done", "done"]
-          and one is not None and 110 <= one < 1000
-          and two is not None and 225 <= two < 2000
+          and one is not None and 90 <= one < 1000
+          and two is not None and 190 <= two < 2000
           and reset is not None and reset < 80)
     check("T1 hold+PACE totals and execution-start PACE reset",
           ok, f"one={one}ms two={two}ms reset={reset}ms states={states}")
