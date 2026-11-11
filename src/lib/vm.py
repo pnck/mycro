@@ -46,7 +46,7 @@ class VM:
         strs, i = self._read_header(bytecode)
         if len(bytecode) - i > MAX_CODE_BYTES:
             raise ValueError(f"Bytecode code segment exceeds {MAX_CODE_BYTES} bytes")
-        lines = [f"; bytecode v{VERSION}, {len(bytecode)}B, {len(strs)} str(s)"]
+        lines = [f"; bytecode v4 (0x{VERSION:02X}), {len(bytecode)}B, {len(strs)} str(s)"]
         indent = 0
         saw_end = False
 

@@ -7,6 +7,13 @@ settings:
 importers:
 
   .:
+    dependencies:
+      nanostores:
+        specifier: ^1.5.5
+        version: 1.5.5
+      prism-code-editor:
+        specifier: ^5.4.0
+        version: 5.4.0
     devDependencies:
       typescript:
         specifier: ^5.7.0
@@ -358,6 +365,10 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
+  nanostores@1.5.5:
+    resolution: {integrity: sha512-FixtE239Gl6Gz0ZGCK0WzvNwObNCIwVT+L7zQcf1QgcA6AzBxblzqe9OT88qiucNkhsjSOqiogSaF5jVbJiqSA==}
+    engines: {node: ^20.0.0 || >=22.0.0}
+
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
 
@@ -372,6 +383,14 @@ packages:
   postcss@8.5.30:
     resolution: {integrity: sha512-zkd+e9S1AQHhmaBKye9zlFHWjOwVgqXl1q3ECYy8561K7qxR2cREf/STLskulBFd78k6AOFeA+ff1TtEzk9bAA==}
     engines: {node: ^10 || ^12 || >=14}
+
+  prism-code-editor@5.4.0:
+    resolution: {integrity: sha512-8y4SdQxwHa/lnxIbFf2w8N2D1OwxcskDRw774ov4XEEa1e5alqqrAZk08YXgaxisc1RuJdFbCTI+4tU3Plljqw==}
+    peerDependencies:
+      emmet: ^2.0.0
+    peerDependenciesMeta:
+      emmet:
+        optional: true
 
   rollup@4.64.7:
     resolution: {integrity: sha512-aCiJONoZp0lNGJ6sYqspLkh6UXaWEey/7Ko2TZyXQ4kgzAhDUxAgbt/oulXKmD+zFHXw1k+RF6ZZWOrjp7DZnQ==}
@@ -654,6 +673,8 @@ snapshots:
 
   nanoid@3.3.20: {}
 
+  nanostores@1.5.5: {}
+
   picocolors@1.1.1: {}
 
   picomatch@2.3.2: {}
@@ -665,6 +686,8 @@ snapshots:
       nanoid: 3.3.20
       picocolors: 1.1.1
       source-map-js: 1.2.2
+
+  prism-code-editor@5.4.0: {}
 
   rollup@4.64.7:
     dependencies:

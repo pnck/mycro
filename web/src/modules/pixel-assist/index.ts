@@ -1,6 +1,7 @@
 import { getToken, headers } from "../../utils/api";
 import { hmacSha256Hex } from "../../utils/crypto";
 import { generatePointSnippet, generateRegionSnippet, toHex } from "./generator";
+import { insertTextAtCursor } from "../editor";
 
 export function initPixelAssist(): void {
 	// --- DOM Element References ---
@@ -64,7 +65,6 @@ export function initPixelAssist(): void {
 	const paCopyHexCssBtn = document.getElementById("paCopyHexCssBtn");
 	const paCopyRgbBtn = document.getElementById("paCopyRgbBtn");
 	const paCopySnippetBtn = document.getElementById("paCopySnippetBtn");
-	const macroCodeEl = document.getElementById("macroCode") as HTMLTextAreaElement | null;
 
 	const paInX = document.getElementById("paInX") as HTMLInputElement;
 	const paInY = document.getElementById("paInY") as HTMLInputElement;
@@ -866,8 +866,9 @@ export function initPixelAssist(): void {
 
 	paInsertSnippetBtn?.addEventListener("click", () => {
 		const snip = paSnippetBox.value;
-		if (!snip || !macroCodeEl) return;
-		macroCodeEl.value += (macroCodeEl.value && !macroCodeEl.value.endsWith("\n") ? "\n" : "") + snip + "\n";
+		if (!snip) return;
+		insertTextAtCursor(snip);
+		flashKeyActive(paInsertSnippetBtn);
 	});
 
 	// --- Presentation Surface 3: Modal Dialog ---

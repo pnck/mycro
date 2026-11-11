@@ -60,7 +60,7 @@ def test_disassemble_header_and_basic_keys():
     bc, err = m.compile("ab\\enter")
     assert err is None
     dis = m.disassemble(bc)
-    assert f"; bytecode v{VERSION}" in dis
+    assert f"; bytecode v4 (0x{VERSION:02X})" in dis
     assert "CHAR 'a'" in dis
     assert "CHAR 'b'" in dis
     assert "KEY_TAP ENTER" in dis

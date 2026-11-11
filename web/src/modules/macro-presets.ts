@@ -1,32 +1,14 @@
-export interface MacroItem {
-	name: string;
-	code: string;
-	updatedAt?: number;
-}
+import { presetsStore, StoredMacro } from "../store";
 
-const STORAGE_KEY = "mycro_user_macros";
+export type MacroItem = StoredMacro;
 
 function getStoredMacros(): MacroItem[] {
-	try {
-		const raw = localStorage.getItem(STORAGE_KEY);
-		if (!raw) return [];
-		const parsed = JSON.parse(raw);
-		if (Array.isArray(parsed)) {
-			return parsed.filter(m => m && typeof m.name === "string" && typeof m.code === "string");
-		}
-	} catch {
-		// Ignore storage/parse errors
-	}
-	return [];
+	return presetsStore.get();
 }
 
 function saveStoredMacros(macros: MacroItem[]): boolean {
-	try {
-		localStorage.setItem(STORAGE_KEY, JSON.stringify(macros));
-		return true;
-	} catch {
-		return false;
-	}
+	presetsStore.set(macros);
+	return true;
 }
 
 export function initMacroPresets(): void {
@@ -244,6 +226,7 @@ export function initMacroPresets(): void {
 	};
 	codeEl.addEventListener("keydown", handleKeydown);
 	nameInput.addEventListener("keydown", handleKeydown);
+	window.addEventListener("keydown", handleKeydown);
 
 	renderSelect();
 }

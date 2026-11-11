@@ -7,11 +7,17 @@
     "dev": "vite",
     "build": "vite build",
     "check": "node scripts/check.mjs",
-    "test": "node scripts/test-crypto.mjs"
+    "test": "node scripts/test-crypto.mjs && node --experimental-strip-types scripts/test-token-inspector.mjs",
+    "test:inspector": "node --experimental-strip-types scripts/test-token-inspector.mjs",
+    "test:e2e": "node scripts/test-manual-interactive.mjs"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
     "vite": "^6.0.0",
     "vite-plugin-singlefile": "^2.1.0"
+  },
+  "dependencies": {
+    "nanostores": "^1.5.5",
+    "prism-code-editor": "^5.4.0"
   }
 }

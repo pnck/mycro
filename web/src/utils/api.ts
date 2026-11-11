@@ -1,8 +1,11 @@
 // API and auth helpers for communication with CircuitPython device
+import { configStore } from "../store";
 
 export function getToken(): string {
 	const tokenEl = document.getElementById("token") as HTMLInputElement | null;
-	return tokenEl ? tokenEl.value.trim() : "";
+	const domVal = tokenEl ? tokenEl.value.trim() : "";
+	if (domVal) return domVal;
+	return configStore.get().token;
 }
 
 export function headers(contentType: string = "application/x-www-form-urlencoded"): Record<string, string> {

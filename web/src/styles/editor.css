@@ -1,0 +1,72 @@
+.macro-editor-wrapper {
+	border: 1px solid #d0d7de;
+	border-radius: 6px;
+	height: 220px;
+	min-height: 140px;
+	max-height: 600px;
+	resize: vertical;
+	overflow: hidden;
+	margin: 4px 0 10px 0;
+	background: #ffffff;
+	box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.macro-editor-wrapper .prism-code-editor {
+	height: 100%;
+	width: 100%;
+	font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+	font-size: 13px;
+	line-height: 1.5;
+}
+
+/* Match Page UI styling */
+.macro-editor-wrapper .pce-line-numbers {
+	border-right: 1px solid #e1e4e8;
+	background: #f6f8fa;
+}
+
+/* Syntax Token Colors (GitHub Light aesthetic) */
+.token.comment {
+	color: #6e7781;
+	font-style: italic;
+}
+.token.escape {
+	color: #bc4c00;
+	font-weight: 600;
+}
+.token.parameter {
+	color: #953800;
+	font-weight: 600;
+}
+.token.directive {
+	color: #8250df;
+	font-weight: 600;
+}
+.token.control-command {
+	color: #cf222e;
+	font-weight: 600;
+}
+.token.action-command,
+.token.combo-command {
+	color: #0550ae;
+	font-weight: 600;
+}
+.token.command {
+	color: #116329;
+}
+.token.variable {
+	color: #0969da;
+	font-weight: 600;
+}
+.token.dimension,
+.token.hex,
+.token.number {
+	color: #953800;
+}
+.token.operator {
+	color: #cf222e;
+}
+.token.punctuation {
+	color: #57606a;
+}
+

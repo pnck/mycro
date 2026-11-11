@@ -1181,7 +1181,7 @@ def g11_img_out_of_bounds_rect(ctx):
 def v1_program_version_and_strings(ctx):
     dis = http_compile(ctx, "\\use{net}\\call{net.send}{v1}")
     check("V1 device compiler emits VERSION=0xA6, strings, and END",
-          dis.startswith("; bytecode v166,") and "CALL net.send" in dis
+          dis.startswith("; bytecode v4 (0xA6),") and "CALL net.send" in dis
           and dis.splitlines()[-1] == "END",
           dis.splitlines()[0] if dis else "empty disassembly")
 

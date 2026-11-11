@@ -20,8 +20,11 @@
 			<button type="button" id="macroExportBtn">Export</button>
 			<button type="button" id="macroImportBtn">Import</button>
 			<input type="file" id="macroImportFile" accept=".json,application/json" style="display:none">
+			<span class="macro-preset-sep"></span>
+			<button type="button" id="openManualBtn" class="manual-btn-toggle" title="Open Quick Manual (DSL v4)">📖 Manual</button>
 		</div>
-		<textarea id="macroCode" name="code" rows="6" placeholder="Example: Hello World\enter"></textarea><br>
+		<div id="macroEditorContainer" class="macro-editor-wrapper"></div>
+		<textarea id="macroCode" name="code" style="display:none"></textarea>
 		<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
 			<input type="submit" value="Execute Macro">
 			<button type="button" id="compileBtn">Compile Only</button>
@@ -65,6 +68,18 @@
 		<a href="/obs/obs_mycro.py" download="obs_mycro.py" class="pa-btn">Download OBS Script</a>
 		<span id="paMainStatus" style="font-size:12px;color:#57606a">Precision color picker &amp; region watcher (overlay workspace)</span>
 	</div>
+
+	<details style="margin:8px 0 16px 0;font-size:12px;color:#57606a">
+		<summary style="cursor:pointer;user-select:none;font-weight:600">OBS Capture Script Setup Guide</summary>
+		<p style="margin:4px 0 6px 0">The OBS script streams native-resolution screen frames to MYCRO (:7373) for Pixel Assist and <code>img.*</code> macro operations.</p>
+		<table>
+			<tr><th>Step</th><th>Instructions</th></tr>
+			<tr><td>1. Obtain script</td><td><a href="/obs/obs_mycro.py" download="obs_mycro.py">Download <code>obs_mycro.py</code></a> or copy from the device USB drive (<code>/obs/obs_mycro.py</code>).</td></tr>
+			<tr><td>2. Python environment</td><td>In OBS Studio: <strong>Tools &rarr; Scripts &rarr; Python Settings</strong>. Configure a 64-bit Python 3.10+ path with Pillow (<code>pip install pillow</code>).</td></tr>
+			<tr><td>3. Load script</td><td>Under <strong>Scripts</strong> tab, click <strong>+</strong> and select <code>obs_mycro.py</code>.</td></tr>
+			<tr><td>4. Connect</td><td>Enter your MYCRO device IP (and token if set), then click <strong>Connect</strong> to establish session.</td></tr>
+		</table>
+	</details>
 
 	<!-- Standalone Pixel Assist Overlay Workspace -->
 	<div id="paOverlay">
@@ -233,147 +248,58 @@
 		</div>
 	</div>
 
-	<details class="ref">
-		<summary><strong>Quick Reference (click to expand)</strong></summary>
+	<!-- Interactive Quick Manual Slide-over Drawer -->
+	<div id="manualDrawerBackdrop" class="manual-drawer-backdrop" style="display:none"></div>
+	<aside id="manualDrawer" class="manual-drawer" aria-label="Interactive Quick Manual">
+		<div class="manual-drawer-header">
+			<div class="manual-drawer-title-row">
+				<h3 class="manual-drawer-title">📖 MYCRO DSL Manual</h3>
+				<button type="button" id="closeManualBtn" class="manual-drawer-close" title="Close Manual (Esc)">✕</button>
+			</div>
+			<p class="manual-drawer-desc">Click any command badge or snippet to insert at cursor.</p>
+			<div class="manual-search-box">
+				<input type="text" id="manualSearchInput" class="manual-search-input" placeholder="Search commands, keys, syntax..." autocomplete="off" spellcheck="false">
+				<button type="button" id="manualSearchClear" class="manual-search-clear" style="display:none" title="Clear search">✕</button>
+			</div>
+			<div class="manual-quick-actions">
+				<button type="button" id="manualExpandAllBtn" class="manual-action-link">Expand All</button>
+				<span class="manual-action-sep">•</span>
+				<button type="button" id="manualCollapseAllBtn" class="manual-action-link">Collapse All</button>
+			</div>
+		</div>
+		<!-- Live Token Inspector & Candidates Dictionary -->
+		<div id="manualLiveInspector" class="manual-live-inspector">
+			<!-- Permanent Structural Status Bar (Scope & Bracket Balance) -->
+			<div class="inspector-status-bar" id="inspectorStatusBar">
+				<div class="inspector-scope-wrapper">
+					<span class="inspector-scope-icon">📍</span>
+					<span class="inspector-scope-label" id="inspectorScope">Scope: Document Root</span>
+				</div>
+				<div class="inspector-bracket-wrapper">
+					<span class="inspector-bracket-status bracket-balanced" id="inspectorBracketStatus">✓ Braces: Balanced (depth 0)</span>
+				</div>
+			</div>
 
-		<details open>
-			<summary><h5>Text & Escape</h5></summary>
-			<table>
-				<tr><th>Syntax</th><th>Description</th></tr>
-				<tr><td><code>abc 123</code></td><td>Plain text (space/newline become keys)</td></tr>
-				<tr><td><code>\\</code></td><td>Backslash</td></tr>
-				<tr><td><code>\{</code> <code>\}</code></td><td>Literal braces</td></tr>
-				<tr><td><code>\$</code></td><td>Literal dollar sign ($ is special only in value positions)</td></tr>
-				<tr><td><code>\cmd{}</code></td><td>Empty {} separates command from text</td></tr>
-				<tr><td><code>\</code> + newline</td><td>Line continuation — newline ignored (split logic blocks)</td></tr>
-				<tr><td><code>\# comment</code></td><td>Comment to end of line (no Enter emitted)</td></tr>
-			</table>
-		</details>
+			<!-- Lexical Candidates Panel (Commands, Keys, Variables, Slots) -->
+			<div class="inspector-lexical-panel" id="inspectorLexicalPanel">
+				<div class="inspector-header">
+					<div class="inspector-status-left">
+						<span class="inspector-dot"></span>
+						<span class="inspector-context-badge" id="inspectorContext">Context: Text</span>
+						<code class="inspector-token-badge" id="inspectorToken">Ready</code>
+					</div>
+					<span class="inspector-match-count" id="inspectorMatchCount"></span>
+				</div>
+				<div class="inspector-candidates-body" id="inspectorCandidatesBody">
+					<span class="inspector-idle-guide">💡 Live Inspector Ready: Type <code>\</code> for commands, <code>$</code> for variables/slots, or edit inside <code>{...}</code></span>
+				</div>
+			</div>
+		</div>
+		<div class="manual-drawer-body" id="manualDrawerContent"></div>
+	</aside>
 
-		<details>
-			<summary><h5>Special Keys</h5></summary>
-			<table>
-				<tr><th>Command</th><th>Key</th><th>Command</th><th>Key</th></tr>
-				<tr><td><code>\enter</code></td><td>Enter</td><td><code>\tab</code></td><td>Tab</td></tr>
-				<tr><td><code>\esc</code></td><td>Escape</td><td><code>\space</code></td><td>Space</td></tr>
-				<tr><td><code>\bs</code></td><td>Backspace</td><td><code>\del</code></td><td>Delete</td></tr>
-				<tr><td><code>\up \down \left \right</code></td><td>Arrow keys</td><td><code>\home \end</code></td><td>Home/End</td></tr>
-				<tr><td><code>\pgup \pgdn</code></td><td>Page Up/Down</td><td><code>\ins</code></td><td>Insert</td></tr>
-				<tr><td><code>\f1</code> ~ <code>\f12</code></td><td>Function keys</td><td><code>\caps</code></td><td>Caps Lock</td></tr>
-			</table>
-		</details>
-
-		<details>
-			<summary><h5>Combinations & Modifiers</h5></summary>
-			<table>
-				<tr><th>Modifier</th><th>Aliases</th><th>Example</th></tr>
-				<tr><td>Ctrl</td><td><code>\ctrl</code> <code>\control</code></td><td><code>\ctrl+c</code> (copy)</td></tr>
-				<tr><td>Shift</td><td><code>\shift</code></td><td><code>\shift+a</code> (capital A)</td></tr>
-				<tr><td>Alt</td><td><code>\alt</code> <code>\option</code> <code>\opt</code> </td><td><code>\alt+\f4</code> (close window)</td></tr>
-				<tr><td>Win/Cmd</td><td><code>\win</code> <code>\cmd</code> <code>\gui</code></td><td><code>\win+r</code> or <code>\cmd+space</code></td></tr>
-			</table>
-			<p><small><strong>Combo examples:</strong> <code>\ctrl+\shift+t</code> (reopen tab), <code>\alt+tab</code> (switch window)</small></p>
-		</details>
-
-		<details>
-			<summary><h5>Control Commands</h5></summary>
-			<table>
-				<tr><th>Command</th><th>Description</th></tr>
-				<tr><td><code>\delay{0.5s}</code></td><td>Sleep once</td></tr>
-				<tr><td><code>\pace{0.05s}</code></td><td>Set delay after every following action</td></tr>
-				<tr><td><code>\rep{5}{abc}</code></td><td>Repeat "abc" 5 times</td></tr>
-				<tr><td><code>\kdown{ctrl}</code></td><td>Press and hold Ctrl</td></tr>
-				<tr><td><code>\kup{ctrl}</code></td><td>Release Ctrl</td></tr>
-				<tr><td><code>\kup{}</code></td><td>Release all keys</td></tr>
-			</table>
-		</details>
-
-		<details>
-			<summary><h5>Mouse Commands</h5></summary>
-			<table>
-				<tr><th>Command</th><th>Description</th></tr>
-				<tr><td><code>\click{L}</code></td><td>Left click (L/R/M/B/F)</td></tr>
-				<tr><td><code>\click{back}</code></td><td>Side button (back/X1, forward/X2)</td></tr>
-				<tr><td><code>\click{R,3}</code></td><td>Right click 3 times</td></tr>
-				<tr><td><code>\move{100,-50}</code></td><td>Move mouse (x,y)</td></tr>
-				<tr><td><code>\mdown{L}</code></td><td>Press left button (hold)</td></tr>
-				<tr><td><code>\mup{L}</code></td><td>Release left button</td></tr>
-			</table>
-		</details>
-
-		<details>
-			<summary><h5>Variables & Interpolation (v3)</h5></summary>
-			<table>
-				<tr><th>Syntax</th><th>Description</th></tr>
-				<tr><td><code>\set{x}{5}</code></td><td>Set variable x (32 i32 registers; 0x hex ok)</td></tr>
-				<tr><td><code>\add{x}{-1}</code></td><td>Add to variable</td></tr>
-				<tr><td><code>$x</code> <code>${x}</code></td><td>Variable value — only in value positions (counts, seconds, keycodes, coords)</td></tr>
-				<tr><td><code>\typenum{$x}</code></td><td>Type out the variable's decimal digits</td></tr>
-				<tr><td><code>$ret</code> <code>$timeout</code></td><td>Read-only: last \call result / \wait timed-out flag</td></tr>
-			</table>
-		</details>
-
-		<details>
-			<summary><h5>Macros & Flow (v3)</h5></summary>
-			<table>
-				<tr><th>Syntax</th><th>Description</th></tr>
-				<tr><td><code>\def{dbl}[1]{#1#1}</code></td><td>Define a macro (params #1–#9, ## = literal #)</td></tr>
-				<tr><td><code>\dbl{ab}</code></td><td>Call it — expanded at compile time, max 4 nesting levels</td></tr>
-				<tr><td><code>\ifnum{$x}{>=}{10}{a}{b}</code></td><td>If x &gt;= 10 type "a" else "b" (= != &lt; &lt;= &gt; &gt;=)</td></tr>
-				<tr><td><code>\rep{$n}{ab}</code></td><td>Repeat with a variable count</td></tr>
-			</table>
-		</details>
-
-		<details>
-			<summary><h5>Runtime Extension (v3)</h5></summary>
-			<table>
-				<tr><th>Syntax</th><th>Description</th></tr>
-				<tr><td><code>\use{sys}</code></td><td>Declare a namespace dependency (compile-time check)</td></tr>
-				<tr><td><code>\call{sys.free}</code></td><td>Call an ext function; return value goes to <code>$ret</code></td></tr>
-				<tr><td><code>\wait{sig}{5}</code></td><td>Wait for signal sig up to 5s (0 = forever); sets <code>$timeout</code></td></tr>
-				<tr><td><code>$sig.field</code></td><td>Read a signal's payload slot (0 if unset)</td></tr>
-				<tr><td><code>\call{net.send}{tag}</code></td><td>Push a net.msg to all connected hosts ($ret = clients reached)</td></tr>
-				<tr><td><code>\wait{net.msg}{30}</code></td><td>Wait for a host's event.push; read fields as <code>$net.msg.x</code></td></tr>
-				<tr><td><code>\call{img.snap}{x,y,w,h}</code></td><td>Snapshot a screen rect (native px, lossless) → handle in <code>$ret</code> ($ret&lt;0 = error)</td></tr>
-				<tr><td><code>\call{img.at}{$s}{x,y}</code></td><td>Pixel color in a snapshot → packed <code>0xRRGGBB</code></td></tr>
-				<tr><td><code>\call{img.diff}{$a}{$b}{tol}</code></td><td>Count pixels diverging beyond tol (0 = identical)</td></tr>
-				<tr><td><code>\set{r}{\rect{\row{0xFF0000,…},…}}</code></td><td>Pixel literal — compile-time reference snapshot (handle)</td></tr>
-			</table>
-			<p><small>Handles: overwrite releases, <code>\set</code> moves, macro exit frees all — a polling loop cannot leak. Requires the capture provider (OBS script) connected (<a href="/obs/obs_mycro.py" download="obs_mycro.py">download obs_mycro.py</a> or copy from USB drive <code>/obs/</code>).</small></p>
-			<p><small>Namespaces/signals are registered by the runtime; this firmware provides <code>sys</code> (free/const), <code>net</code> (send + net.msg signal), <code>img</code> (snap/at/diff). Use the Pixel Assist above to grab coordinates and colors.</small></p>
-		</details>
-
-		<details>
-			<summary><h5>OBS Capture Script Setup</h5></summary>
-			<p><small>The OBS script serves native-resolution screen captures to MYCRO (:7373) for Pixel Assist and <code>img.*</code> macro operations.</small></p>
-			<table>
-				<tr><th>Step</th><th>Instructions</th></tr>
-				<tr><td>1. Obtain script</td><td><a href="/obs/obs_mycro.py" download="obs_mycro.py">Download <code>obs_mycro.py</code></a> or copy from the device's USB drive (<code>/obs/obs_mycro.py</code>).</td></tr>
-				<tr><td>2. Python environment</td><td>In OBS Studio, navigate to <strong>Tools &rarr; Scripts</strong> &rarr; <strong>Python Settings</strong>. Configure a 64-bit Python 3.10+ path with <code>Pillow</code> installed (<code>pip install pillow</code>).</td></tr>
-				<tr><td>3. Load script</td><td>Under the <strong>Scripts</strong> tab, click <strong>+</strong> and select <code>obs_mycro.py</code>.</td></tr>
-				<tr><td>4. Connect</td><td>Enter your MYCRO device IP (and token if configured), then click <strong>Connect</strong> to establish the capture session.</td></tr>
-			</table>
-		</details>
-
-		<details open>
-			<summary><h5>Examples</h5></summary>
-			<table>
-				<tr><th>Macro</th><th>Description</th></tr>
-				<tr><td><code>Hello World\enter</code></td><td>Type text and press Enter</td></tr>
-				<tr><td><code>\ctrl+c\delay{0.2s}\rep{3}{\ctrl+v}</code></td><td>Copy, wait, paste 3 times</td></tr>
-				<tr><td><code>\win+r\delay{0.3s}notepad\enter</code></td><td>Open Notepad (Windows)</td></tr>
-				<tr><td><code>\cmd+space\delay{0.2s}terminal\enter</code></td><td>Open Terminal (macOS)</td></tr>
-				<tr><td><code>\mdown{L}\move{100,0}\mup{L}</code></td><td>Drag mouse right 100px</td></tr>
-				<tr><td><code>\kdown{ctrl}ccc\kup{}</code></td><td>Hold Ctrl, type "ccc", release</td></tr>
-				<tr><td><code>\def{cp}[1]{\ctrl+#1}\cp{c}\cp{v}</code></td><td>Define & use a macro (v3)</td></tr>
-				<tr><td><code>\set{n}{3}\rep{$n}{ab\enter}</code></td><td>Variable repeat count (v3)</td></tr>
-				<tr><td><code>\call{sys.free}\typenum{$ret}</code></td><td>Call ext fn, type the result (v3)</td></tr>
-				<tr><td><code>\call{img.snap}{350,220,1,1}\set{p}{$ret}\call{img.at}{$p}{0,0}\ifnum{$ret}{=}{0xFF0000}{yes}</code></td><td>Type "yes" if the pixel at (350,220) is red</td></tr>
-			</table>
-		</details>
-
-		<p><small>Limits: 4096 bytes bytecode, max 4 nesting levels</small></p>
-	</details>
+	<!-- Floating Quick Manual Button -->
+	<button type="button" id="floatingManualBtn" class="manual-floating-tab" title="Quick Manual (DSL v4)">📖 Manual</button>
 
 	<script type="module" src="/src/main.ts"></script>
 </body>

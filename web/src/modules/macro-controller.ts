@@ -1,4 +1,5 @@
 import { headers } from "../utils/api";
+import { configStore } from "../store";
 
 export function initMacroController() {
 	const form = document.getElementById("macroForm") as HTMLFormElement | null;
@@ -7,9 +8,23 @@ export function initMacroController() {
 	const compileBtn = document.getElementById("compileBtn") as HTMLButtonElement | null;
 	const abortBtn = document.getElementById("abortBtn") as HTMLButtonElement | null;
 	const holdMsEl = document.getElementById("holdMs") as HTMLInputElement | null;
+	const tokenEl = document.getElementById("token") as HTMLInputElement | null;
 	const executeBtn = form?.querySelector("input[type=submit]") as HTMLInputElement | null;
 
 	if (!form || !codeEl || !outEl || !compileBtn || !abortBtn) return;
+
+	// Restore config state
+	const cfg = configStore.get();
+	if (tokenEl && cfg.token && !tokenEl.value) tokenEl.value = cfg.token;
+	if (holdMsEl && cfg.holdMs && !holdMsEl.value) holdMsEl.value = String(cfg.holdMs);
+
+	tokenEl?.addEventListener("input", () => {
+		configStore.setKey("token", tokenEl.value.trim());
+	});
+	holdMsEl?.addEventListener("input", () => {
+		const n = parseInt(holdMsEl.value, 10);
+		if (!isNaN(n)) configStore.setKey("holdMs", n);
+	});
 
 	let inFlight = false;
 
