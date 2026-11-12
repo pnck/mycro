@@ -274,17 +274,24 @@ async function main() {
 		}
 		console.log("✓ Drawer snippet insertion at cursor passed with visual feedback!");
 
-		// Close via Escape key
+		// Persistent: Escape key does NOT close drawer
 		await evaluate(`
 			window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 		`);
-		await sleep(300);
+		await sleep(100);
 
-		const drawerClosed = await evaluate(`!document.getElementById('manualDrawer').classList.contains('open')`);
-		console.log("Drawer closed after Escape key:", drawerClosed);
-		if (!drawerClosed) {
-			throw new Error("Escape key failed to close drawer!");
+		const stillOpen = await evaluate(`document.getElementById('manualDrawer').classList.contains('open')`);
+		console.log("Drawer still open after Escape key (persistent docking):", stillOpen);
+		if (!stillOpen) {
+			throw new Error("Escape key unexpectedly closed persistent drawer!");
 		}
+
+		// Close via close button ✕
+		await evaluate(`document.getElementById('closeManualBtn').click()`);
+		await sleep(300);
+		const closedViaBtn = await evaluate(`!document.getElementById('manualDrawer').classList.contains('open')`);
+		console.log("Drawer closed via close button ✕:", closedViaBtn);
+		if (!closedViaBtn) throw new Error("Close button failed to close drawer!");
 
 		// Open via floating button
 		await evaluate(`document.getElementById('floatingManualBtn').click()`);
@@ -296,9 +303,8 @@ async function main() {
 		// Close via close button ✕
 		await evaluate(`document.getElementById('closeManualBtn').click()`);
 		await sleep(300);
-		const closedViaBtn = await evaluate(`!document.getElementById('manualDrawer').classList.contains('open')`);
-		console.log("Drawer closed via close button ✕:", closedViaBtn);
-		if (!closedViaBtn) throw new Error("Close button failed to close drawer!");
+		const closedAgain = await evaluate(`!document.getElementById('manualDrawer').classList.contains('open')`);
+		if (!closedAgain) throw new Error("Close button failed to close drawer!");
 
 		console.log("\n========================================");
 		console.log("ALL 4 USER DIRECTIVES VERIFIED IN REAL HEADLESS CHROME!");

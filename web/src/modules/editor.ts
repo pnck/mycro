@@ -4,6 +4,7 @@ import { matchBrackets } from "prism-code-editor/match-brackets";
 import { indentGuides } from "prism-code-editor/guides";
 import { languages } from "prism-code-editor/prism";
 import { insertText } from "prism-code-editor/utils";
+import { isInsideVerbatim } from "./token-detector";
 
 import "prism-code-editor/layout.css";
 import "prism-code-editor/scrollbar.css";
@@ -150,6 +151,21 @@ export function initMacroEditor(): PrismEditor | null {
 
 	macroEditorInstance = editor;
 	(window as any).macroEditor = editor;
+
+	// Suppress bracket and quote auto-closing when typing inside verbatim text blocks (\text{}...\endtext{})
+	// Per spec/dsl.md §5.6, payload characters are literal keystrokes and do not require code-level pair closures.
+	const autoCloseChars = ['"', "'", "`", "(", "[", "{", ")", "]", "}"];
+	for (const ch of autoCloseChars) {
+		const original = (editor.inputCommandMap as Record<string, any>)[ch];
+		if (original) {
+			(editor.inputCommandMap as Record<string, any>)[ch] = (e: InputEvent, selection: [number, number], value: string) => {
+				if (isInsideVerbatim(value, selection[0])) {
+					return false;
+				}
+				return original(e, selection, value);
+			};
+		}
+	}
 
 	// Intercept codeEl.value property so external reads/writes seamlessly sync with editor
 	const desc = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");

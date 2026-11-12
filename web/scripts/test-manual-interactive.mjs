@@ -2,8 +2,10 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
 const CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const PORT = 9222;
 const HTTP_PORT = 8089;
@@ -14,7 +16,8 @@ async function sleep(ms) {
 
 async function main() {
 	// 1. Start simple static server for web/dist/index.html
-	const html = readFileSync(join(process.cwd(), "web/dist/index.html"), "utf-8");
+	const distHtmlPath = resolve(__dirname, "../dist/index.html");
+	const html = readFileSync(distHtmlPath, "utf-8");
 	const server = createServer((req, res) => {
 		res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
 		res.end(html);
@@ -371,11 +374,14 @@ async function main() {
 
 	} finally {
 		chrome.kill();
+		server.closeAllConnections?.();
 		server.close();
 	}
 }
 
-main().catch(err => {
+main().then(() => {
+	process.exit(0);
+}).catch(err => {
 	console.error(err);
 	process.exit(1);
 });

@@ -1,186 +1,36 @@
-export type CandidateKind =
-	| "cmd"
-	| "key"
-	| "var"
-	| "slot"
-	| "btn"
-	| "ns"
-	| "macro"
-	| "syntax"
-	| "escape"
-	| "op";
+import type {
+	CandidateKind,
+	InspectorCandidate,
+	BlockRule,
+	MultiBlockSignature
+} from "./catalog.ts";
+import {
+	COMMAND_CANDIDATES,
+	SYNTAX_CANDIDATES,
+	ESCAPE_CANDIDATES,
+	MOUSE_BUTTON_CANDIDATES,
+	KEY_NAME_CANDIDATES,
+	NAMESPACE_CANDIDATES,
+	EXT_FUNCTION_CANDIDATES,
+	PREDICATE_LOGIC_CANDIDATES,
+	PREDICATE_OP_CANDIDATES,
+	MULTI_BLOCK_SIGNATURES,
+	LONE_KEY_NAMES
+} from "./catalog.ts";
 
-export interface InspectorCandidate {
-	label: string;
-	insert: string;
-	kind: CandidateKind;
-	desc: string;
-	tokenStart?: number;
-	tokenEnd?: number;
-}
-
-// 1. Static built-in commands dictionary per spec/dsl.md
-export const COMMAND_CANDIDATES: InspectorCandidate[] = [
-	{ label: "\\set", insert: "\\set{x}{100}", kind: "cmd", desc: "Declare & assign variable" },
-	{ label: "\\add", insert: "\\add{x}{1}", kind: "cmd", desc: "In-place addition" },
-	{ label: "\\sub", insert: "\\sub{x}{1}", kind: "cmd", desc: "In-place subtraction" },
-	{ label: "\\click", insert: "\\click{L}", kind: "cmd", desc: "Click mouse button [L/R/M/B/F]" },
-	{ label: "\\move", insert: "\\move{100, -50}", kind: "cmd", desc: "Relative mouse movement dx, dy" },
-	{ label: "\\mdown", insert: "\\mdown{L}", kind: "cmd", desc: "Press and hold mouse button" },
-	{ label: "\\mup", insert: "\\mup{L}", kind: "cmd", desc: "Release held mouse button" },
-	{ label: "\\delay", insert: "\\delay{100ms}", kind: "cmd", desc: "Explicit sleep duration" },
-	{ label: "\\pace", insert: "\\pace{20ms}", kind: "cmd", desc: "Set VM inter-action pacing" },
-	{ label: "\\rep", insert: "\\rep{10}{\n  \\click{L}\n  \\delay{50ms}\n}\n", kind: "cmd", desc: "Bounded repeat loop" },
-	{ label: "\\if", insert: "\\if{ {$x, >=, 0} }{\n  \\enter\n}\n", kind: "cmd", desc: "Conditional branch" },
-	{ label: "\\all", insert: "\\all{ {$x, >=, 0}, {$x, <=, 100} }", kind: "cmd", desc: "Conjunction AND logic block" },
-	{ label: "\\any", insert: "\\any{ {$err, !=, 0}, {$timeout, =, 1} }", kind: "cmd", desc: "Disjunction OR logic block" },
-	{ label: "\\guarded", insert: "\\guarded{ {$err, =, 0} }{\n  \\ctrl+c\n}{\n  \\esc\n}\n", kind: "cmd", desc: "Guarded protected execution block" },
-	{ label: "\\wait", insert: "\\wait[5s]{ $slot.net.msg.val }", kind: "cmd", desc: "Wait for signal arrival latch" },
-	{ label: "\\def", insert: "\\def{my_macro}[0]{\\enter}\n", kind: "cmd", desc: "Define compile-time text macro" },
-	{ label: "\\use", insert: "\\use{sys}\n", kind: "cmd", desc: "Activate runtime namespace" },
-	{ label: "\\call", insert: "\\call{sys.free}", kind: "cmd", desc: "Invoke runtime extension function" },
-	{ label: "\\typenum", insert: "\\typenum{$x}", kind: "cmd", desc: "Render decimal integer as keystrokes" },
-	{ label: "\\text", insert: "\\text{}payload\\endtext{}", kind: "cmd", desc: "Verbatim text keystroke block" },
-	{ label: "\\endtext", insert: "\\endtext{}", kind: "cmd", desc: "End verbatim text block" },
-	{ label: "\\rgb", insert: "\\rgb{255, 0, 0}", kind: "cmd", desc: "Pack 24-bit RGB scalar literal" },
-	{ label: "\\pixelrect", insert: "\\pixelrect{target}{\\row{0xFF0000, 0x00FF00}}", kind: "cmd", desc: "Materialize snapshot pixel matrix" },
-	{ label: "\\row", insert: "\\row{0xFF0000, 0x00FF00}", kind: "cmd", desc: "Pixel row color vector" },
-	{ label: "\\kdown", insert: "\\kdown{ctrl}", kind: "cmd", desc: "Press and hold key down" },
-	{ label: "\\kup", insert: "\\kup{ctrl}", kind: "cmd", desc: "Release key (empty {} for all keys)" },
-	{ label: "\\enter", insert: "\\enter", kind: "key", desc: "Return / Enter key (alias: \\return)" },
-	{ label: "\\return", insert: "\\return", kind: "key", desc: "Alias for \\enter (Usage 0x28)" },
-	{ label: "\\esc", insert: "\\esc", kind: "key", desc: "Escape key (alias: \\escape)" },
-	{ label: "\\escape", insert: "\\escape", kind: "key", desc: "Alias for \\esc (Usage 0x29)" },
-	{ label: "\\tab", insert: "\\tab", kind: "key", desc: "Tab key (Usage 0x2B)" },
-	{ label: "\\space", insert: "\\space", kind: "key", desc: "Spacebar character tap" },
-	{ label: "\\bs", insert: "\\bs", kind: "key", desc: "Backspace key (alias: \\backspace)" },
-	{ label: "\\backspace", insert: "\\backspace", kind: "key", desc: "Alias for \\bs (Usage 0x2A)" },
-	{ label: "\\del", insert: "\\del", kind: "key", desc: "Forward Delete key (alias: \\delete)" },
-	{ label: "\\delete", insert: "\\delete", kind: "key", desc: "Alias for \\del (Usage 0x4C)" },
-	{ label: "\\ins", insert: "\\ins", kind: "key", desc: "Insert key (alias: \\insert)" },
-	{ label: "\\insert", insert: "\\insert", kind: "key", desc: "Alias for \\ins (Usage 0x49)" },
-	{ label: "\\home", insert: "\\home", kind: "key", desc: "Home navigation key" },
-	{ label: "\\end", insert: "\\end", kind: "key", desc: "End navigation key" },
-	{ label: "\\pgup", insert: "\\pgup", kind: "key", desc: "Page Up key (alias: \\pageup)" },
-	{ label: "\\pageup", insert: "\\pageup", kind: "key", desc: "Alias for \\pgup (Usage 0x4B)" },
-	{ label: "\\pgdn", insert: "\\pgdn", kind: "key", desc: "Page Down key (alias: \\pagedown)" },
-	{ label: "\\pagedown", insert: "\\pagedown", kind: "key", desc: "Alias for \\pgdn (Usage 0x4E)" },
-	{ label: "\\up", insert: "\\up", kind: "key", desc: "Arrow Up key" },
-	{ label: "\\down", insert: "\\down", kind: "key", desc: "Arrow Down key" },
-	{ label: "\\left", insert: "\\left", kind: "key", desc: "Arrow Left key" },
-	{ label: "\\right", insert: "\\right", kind: "key", desc: "Arrow Right key" },
-	{ label: "\\caps", insert: "\\caps", kind: "key", desc: "Caps Lock key (alias: \\capslock)" },
-	{ label: "\\capslock", insert: "\\capslock", kind: "key", desc: "Alias for \\caps (Usage 0x39)" },
-	{ label: "\\prtscr", insert: "\\prtscr", kind: "key", desc: "Print Screen key (Usage 0x46)" },
-	{ label: "\\ctrl+c", insert: "\\ctrl+c", kind: "key", desc: "Copy clipboard shortcut" },
-	{ label: "\\ctrl+v", insert: "\\ctrl+v", kind: "key", desc: "Paste clipboard shortcut" },
-	{ label: "\\ctrl+z", insert: "\\ctrl+z", kind: "key", desc: "Undo shortcut" },
-	{ label: "\\ctrl+a", insert: "\\ctrl+a", kind: "key", desc: "Select All shortcut" },
-	{ label: "\\ctrl+s", insert: "\\ctrl+s", kind: "key", desc: "Save document shortcut" },
-	{ label: "\\cmd+space", insert: "\\cmd+space", kind: "key", desc: "Spotlight / Launcher shortcut" },
-	{ label: "\\alt+tab", insert: "\\alt+tab", kind: "key", desc: "Switch application window" },
-	{ label: "\\volup", insert: "\\volup", kind: "key", desc: "Volume increment (Consumer 0x00E9)" },
-	{ label: "\\voldn", insert: "\\voldn", kind: "key", desc: "Volume decrement (Consumer 0x00EA)" },
-	{ label: "\\mute", insert: "\\mute", kind: "key", desc: "Audio mute toggle (Consumer 0x00E2)" },
-	{ label: "\\media_playpause", insert: "\\media_playpause", kind: "key", desc: "Media Play/Pause (Consumer 0x00CD)" },
-	{ label: "\\media_play", insert: "\\media_play", kind: "key", desc: "Media Play (Consumer 0x00B0)" },
-	{ label: "\\media_pause", insert: "\\media_pause", kind: "key", desc: "Media Pause (Consumer 0x00B1)" },
-	{ label: "\\media_next", insert: "\\media_next", kind: "key", desc: "Media Next track (Consumer 0x00B5)" },
-	{ label: "\\media_prev", insert: "\\media_prev", kind: "key", desc: "Media Previous track (Consumer 0x00B6)" },
-	{ label: "\\media_stop", insert: "\\media_stop", kind: "key", desc: "Media Stop track (Consumer 0x00B7)" },
-	{ label: "\\brightup", insert: "\\brightup", kind: "key", desc: "Brightness increment (Consumer 0x006F)" },
-	{ label: "\\brightdn", insert: "\\brightdn", kind: "key", desc: "Brightness decrement (Consumer 0x0070)" },
-	{ label: "\\sys_sleep", insert: "\\sys_sleep", kind: "key", desc: "System Sleep / Suspend (Consumer 0x0032)" }
-];
-
-// 2. Syntax Directives per spec/dsl.md §3
-export const SYNTAX_CANDIDATES: InspectorCandidate[] = [
-	{ label: "\\#!syntax: free", insert: "\\#!syntax: free\n", kind: "syntax", desc: "Free-form layout (absorbs raw whitespace)" },
-	{ label: "\\#!syntax: typewriter", insert: "\\#!syntax: typewriter\n", kind: "syntax", desc: "Typewriter layout (raw Enter/Space emit)" },
-	{ label: "\\#!syntax: newline=ignore, space=emit", insert: "\\#!syntax: newline=ignore, space=emit\n", kind: "syntax", desc: "Absorb raw newlines, emit spaces" },
-	{ label: "\\#!syntax: newline=emit, space=ignore", insert: "\\#!syntax: newline=emit, space=ignore\n", kind: "syntax", desc: "Emit newlines as Enter, absorb raw spaces" },
-	{ label: "\\#!syntax: newline=ignore", insert: "\\#!syntax: newline=ignore\n", kind: "syntax", desc: "Layout config: ignore raw newlines" },
-	{ label: "\\#!syntax: space=emit", insert: "\\#!syntax: space=emit\n", kind: "syntax", desc: "Layout config: emit raw space keystrokes" },
-	{ label: "\\#!syntax: newline=emit", insert: "\\#!syntax: newline=emit\n", kind: "syntax", desc: "Layout config: emit raw Enter keystrokes" },
-	{ label: "\\#!syntax: space=ignore", insert: "\\#!syntax: space=ignore\n", kind: "syntax", desc: "Layout config: ignore raw spaces and tabs" }
-];
-
-// 3. Special Escape Sequences per spec/dsl.md §2
-export const ESCAPE_CANDIDATES: InspectorCandidate[] = [
-	{ label: "\\#", insert: "\\# ", kind: "escape", desc: "Single-line comment (or literal hash)" },
-	{ label: "\\\\", insert: "\\\\", kind: "escape", desc: "Literal backslash character" },
-	{ label: "\\{", insert: "\\{", kind: "escape", desc: "Literal open brace character" },
-	{ label: "\\}", insert: "\\}", kind: "escape", desc: "Literal close brace character" },
-	{ label: "\\$", insert: "\\$", kind: "escape", desc: "Literal dollar character" }
-];
-
-// 4. Mouse buttons dictionary
-export const MOUSE_BUTTON_CANDIDATES: InspectorCandidate[] = [
-	{ label: "L", insert: "L", kind: "btn", desc: "Left mouse button (primary)" },
-	{ label: "R", insert: "R", kind: "btn", desc: "Right mouse button (context menu)" },
-	{ label: "M", insert: "M", kind: "btn", desc: "Middle mouse button (wheel click)" },
-	{ label: "B", insert: "B", kind: "btn", desc: "Back mouse button (X1 / browser back)" },
-	{ label: "F", insert: "F", kind: "btn", desc: "Forward mouse button (X2 / browser forward)" }
-];
-
-// 5. Key names dictionary inside holds and combinations
-export const KEY_NAME_CANDIDATES: InspectorCandidate[] = [
-	{ label: "ctrl", insert: "ctrl", kind: "key", desc: "Control modifier (aliases: control, lctrl, rctrl)" },
-	{ label: "shift", insert: "shift", kind: "key", desc: "Shift modifier (alias: lshift)" },
-	{ label: "alt", insert: "alt", kind: "key", desc: "Alt / Option modifier (aliases: opt, option, lalt)" },
-	{ label: "gui", insert: "gui", kind: "key", desc: "GUI / Win / Cmd (aliases: win, cmd, command)" },
-	{ label: "enter", insert: "enter", kind: "key", desc: "Return / Enter key (alias: return)" },
-	{ label: "return", insert: "return", kind: "key", desc: "Alias for enter" },
-	{ label: "esc", insert: "esc", kind: "key", desc: "Escape key (alias: escape)" },
-	{ label: "escape", insert: "escape", kind: "key", desc: "Alias for esc" },
-	{ label: "tab", insert: "tab", kind: "key", desc: "Tab key" },
-	{ label: "space", insert: "space", kind: "key", desc: "Spacebar" },
-	{ label: "bs", insert: "bs", kind: "key", desc: "Backspace key (alias: backspace)" },
-	{ label: "del", insert: "del", kind: "key", desc: "Delete key (alias: delete)" },
-	{ label: "home", insert: "home", kind: "key", desc: "Home key" },
-	{ label: "end", insert: "end", kind: "key", desc: "End key" },
-	{ label: "pgup", insert: "pgup", kind: "key", desc: "Page Up key (alias: pageup)" },
-	{ label: "pgdn", insert: "pgdn", kind: "key", desc: "Page Down key (alias: pagedown)" },
-	{ label: "up", insert: "up", kind: "key", desc: "Arrow Up key" },
-	{ label: "down", insert: "down", kind: "key", desc: "Arrow Down key" },
-	{ label: "left", insert: "left", kind: "key", desc: "Arrow Left key" },
-	{ label: "right", insert: "right", kind: "key", desc: "Arrow Right key" },
-	{ label: "f1", insert: "f1", kind: "key", desc: "Function key F1" },
-	{ label: "f5", insert: "f5", kind: "key", desc: "Function key F5 (Refresh)" },
-	{ label: "f12", insert: "f12", kind: "key", desc: "Function key F12 (DevTools)" }
-];
-
-// 6. Namespaces and extension calls
-export const NAMESPACE_CANDIDATES: InspectorCandidate[] = [
-	{ label: "sys", insert: "sys", kind: "ns", desc: "System control & heap diagnostic namespace" },
-	{ label: "net", insert: "net", kind: "ns", desc: "Network Protocol v1 broadcast messaging" },
-	{ label: "img", insert: "img", kind: "ns", desc: "Vision & pixel processing telemetry" }
-];
-
-export const EXT_FUNCTION_CANDIDATES: InspectorCandidate[] = [
-	{ label: "sys.free", insert: "sys.free", kind: "cmd", desc: "Query device available heap RAM in bytes -> $ret" },
-	{ label: "net.send", insert: "net.send}{sync}", kind: "cmd", desc: "Broadcast message tag to companion hosts" },
-	{ label: "img.snap", insert: "img.snap}{0, 0, 100, 100}", kind: "cmd", desc: "Capture screen rectangle -> snapshot Handle in $ret" },
-	{ label: "img.at", insert: "img.at}{$s}{0, 0}", kind: "cmd", desc: "Sample 24-bit RGB pixel color from snapshot" },
-	{ label: "img.diff", insert: "img.diff}{$a}{$b}{16}", kind: "cmd", desc: "Compare snapshots and count differing pixels" },
-	{ label: "img.watch", insert: "img.watch}{ready}{400, 200}{50, 10000}", kind: "cmd", desc: "Continuous telemetry stream pushing to $slot.img.<name>.val" },
-	{ label: "img.unwatch", insert: "img.unwatch}{ready}", kind: "cmd", desc: "Cancel active telemetry stream subscription" }
-];
-
-// 7. Predicate Operators and Logic Blocks per spec/dsl.md §8
-export const PREDICATE_OP_CANDIDATES: InspectorCandidate[] = [
-	{ label: "=", insert: "=", kind: "op", desc: "Equal comparison operator" },
-	{ label: "!=", insert: "!=", kind: "op", desc: "Not equal comparison operator" },
-	{ label: "<", insert: "<", kind: "op", desc: "Less than comparison operator" },
-	{ label: "<=", insert: "<=", kind: "op", desc: "Less than or equal operator" },
-	{ label: ">", insert: ">", kind: "op", desc: "Greater than comparison operator" },
-	{ label: ">=", insert: ">=", kind: "op", desc: "Greater than or equal operator" }
-];
-
-export const PREDICATE_LOGIC_CANDIDATES: InspectorCandidate[] = [
-	{ label: "\\all", insert: "\\all{ {$x, >=, 0}, {$x, <=, 100} }", kind: "cmd", desc: "Conjunction AND logic block" },
-	{ label: "\\any", insert: "\\any{ {$err, !=, 0}, {$timeout, =, 1} }", kind: "cmd", desc: "Disjunction OR logic block" }
-];
+export type { CandidateKind, InspectorCandidate, BlockRule, MultiBlockSignature };
+export {
+	COMMAND_CANDIDATES,
+	SYNTAX_CANDIDATES,
+	ESCAPE_CANDIDATES,
+	MOUSE_BUTTON_CANDIDATES,
+	KEY_NAME_CANDIDATES,
+	NAMESPACE_CANDIDATES,
+	EXT_FUNCTION_CANDIDATES,
+	PREDICATE_LOGIC_CANDIDATES,
+	PREDICATE_OP_CANDIDATES,
+	MULTI_BLOCK_SIGNATURES
+};
 
 export interface BracketCheckResult {
 	balanced: boolean;
@@ -207,14 +57,84 @@ export interface DetectionResult {
 }
 
 export interface BraceFrame {
+	char: "{" | "[";
+	line: number;
 	openIndex: number;
 	cmd: string;
+	cmdStart: number;
 	argIndex: number;
+	context: string;
 	isBracket: boolean;
 	macroName?: string;
 	repCount?: string;
 	callTarget?: string;
 	isVerbatimText?: boolean;
+	hasThrottle?: boolean;
+}
+
+export function getNextRequiredBlock(
+	cmd: string,
+	argIndex: number,
+	isBracket: boolean,
+	hasThrottle?: boolean
+): BlockRule | null {
+	const sig = MULTI_BLOCK_SIGNATURES[cmd];
+	if (!sig) return null;
+
+	if (cmd === "\\def") {
+		// arg 0 is {name}. Whether next is [argc] or {body}, the mandatory block is {body}.
+		// If isBracket is true ([argc]), next mandatory block is {body}.
+		// If argIndex >= 1 and not bracket, {body} is completed.
+		if (isBracket || argIndex === 0) {
+			return { name: "body", kind: "brace", required: true };
+		}
+		return null;
+	}
+
+	if (cmd === "\\guarded") {
+		if (isBracket) {
+			return { name: "predicate", kind: "brace", required: true };
+		}
+		const eff = hasThrottle ? argIndex - 1 : argIndex;
+		if (eff === 0) {
+			return { name: "body", kind: "brace", required: true };
+		}
+		return null;
+	}
+
+	// For \if, \rep, \set, \add, \sub, \pixelrect:
+	// block 0 closes -> block 1 is required
+	if (argIndex === 0 && sig.rules.length > 1 && sig.rules[1].required) {
+		return sig.rules[1];
+	}
+
+	return null;
+}
+
+export function skipWhitespaceAndComments(text: string, fromIndex: number): number {
+	let idx = fromIndex;
+	const len = text.length;
+	while (idx < len) {
+		const c = text[idx];
+		if (c === " " || c === "\t" || c === "\r" || c === "\n") {
+			idx++;
+			continue;
+		}
+		// Comment \# to newline
+		if (c === "\\" && text[idx + 1] === "#") {
+			const nl = text.indexOf("\n", idx);
+			if (nl === -1) return len;
+			idx = nl + 1;
+			continue;
+		}
+		// Line continuation \ + newline
+		if (c === "\\" && (text[idx + 1] === "\n" || (text[idx + 1] === "\r" && text[idx + 2] === "\n"))) {
+			idx += (text[idx + 1] === "\r" ? 3 : 2);
+			continue;
+		}
+		break;
+	}
+	return idx;
 }
 
 export const STRUCTURAL_COMMANDS = new Set([
@@ -245,20 +165,6 @@ export function getUserMacroNames(text: string): Set<string> {
 	}
 	return set;
 }
-
-// Lone keys & consumer commands per spec/dsl.md §5.1 & §5.2.
-// These never accept trailing brace/bracket groups; bare braces after them are literal text.
-const LONE_KEY_NAMES = new Set([
-	"enter", "return", "esc", "escape", "tab", "space", "bs", "backspace", "del", "delete",
-	"home", "end", "pgup", "pageup", "pgdn", "pagedown", "up", "down", "left", "right",
-	"f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
-	"f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20", "f21", "f22", "f23", "f24",
-	"ctrl", "control", "lctrl", "rctrl", "shift", "lshift", "rshift", "alt", "opt", "option", "lalt", "ralt",
-	"gui", "win", "cmd", "command", "rgui",
-	"capslock", "numlock", "scrolllock", "printscreen", "pause", "menu", "application", "insert",
-	"minus", "equals",
-	"mute", "volup", "voldown", "media_next", "media_prev", "media_play", "media_pause", "media_stop"
-]);
 
 function isKeyCommand(name: string): boolean {
 	const low = name.toLowerCase();
@@ -320,6 +226,20 @@ function findPrecedingCommand(
 	return { cmd, argIndex, cmdStart, isKey };
 }
 
+export interface TransitionScope {
+	cmd: string;
+	awaiting: string;
+	gapStart: number;
+	gapEnd: number;
+	line: number;
+}
+
+export interface IncompleteStatement {
+	cmd: string;
+	missing: string;
+	line: number;
+}
+
 interface ScanResult {
 	cursorStack: BraceFrame[];
 	depthAtCursor: number;
@@ -327,6 +247,8 @@ interface ScanResult {
 	firstUnmatchedClose: { char: "}" | "]"; line: number } | null;
 	syntaxError: { msg: string; line: number } | null;
 	unclosedVerbatim: { line: number; index: number } | null;
+	cursorTransition: TransitionScope | null;
+	firstIncompleteStatement: IncompleteStatement | null;
 }
 
 /**
@@ -346,6 +268,8 @@ function scanBraces(text: string, cursor?: number): ScanResult {
 	let firstUnmatchedClose: { char: "}" | "]"; line: number } | null = null;
 	let syntaxError: { msg: string; line: number } | null = null;
 	let unclosedVerbatim: { line: number; index: number } | null = null;
+	let cursorTransition: TransitionScope | null = null;
+	let firstIncompleteStatement: IncompleteStatement | null = null;
 
 	while (i < len) {
 		if (i >= cur && !cursorCaptured) {
@@ -458,10 +382,11 @@ function scanBraces(text: string, cursor?: number): ScanResult {
 				}
 			}
 
+			const hasThrottle = (cmd === "\\guarded" && cmdStart >= 0 && /\\guarded\s*\[/.test(text.slice(cmdStart, i)));
+
 			if (cmd === "\\if") {
 				context = argIndex === 0 ? "\\if (Condition)" : (argIndex === 1 ? "\\if (Then-branch)" : "\\if (Else-branch)");
 			} else if (cmd === "\\guarded") {
-				const hasThrottle = cmdStart >= 0 && /\\guarded\s*\[/.test(text.slice(cmdStart, i));
 				const eff = hasThrottle ? argIndex - 1 : argIndex;
 				context = isBracket ? "\\guarded [throttle]" : (eff === 0 ? "\\guarded (Invariant)" : (eff === 1 ? "\\guarded (Body)" : "\\guarded (Abort-handler)"));
 			} else if (cmd === "\\rep") {
@@ -517,12 +442,14 @@ function scanBraces(text: string, cursor?: number): ScanResult {
 				line: currentLine,
 				openIndex: i,
 				cmd,
+				cmdStart,
 				argIndex,
 				context,
 				isBracket,
 				macroName,
 				repCount,
-				callTarget
+				callTarget,
+				hasThrottle
 			});
 		} else if (ch === "}" || ch === "]") {
 			const expected = ch === "}" ? "{" : "[";
@@ -532,6 +459,33 @@ function scanBraces(text: string, cursor?: number): ScanResult {
 					firstUnmatchedClose = { char: ch, line: currentLine };
 				}
 				stack.pop();
+
+				// Statement completeness & transition scope detection
+				const req = getNextRequiredBlock(top.cmd, top.argIndex, top.isBracket, top.hasThrottle);
+				if (req) {
+					const gapStart = i + 1;
+					const nextNonWs = skipWhitespaceAndComments(text, gapStart);
+					const nextCh = nextNonWs < len ? text[nextNonWs] : null;
+					const isPresent = nextCh === "{" || (top.cmd === "\\def" && nextCh === "[");
+
+					if (!isPresent && !firstIncompleteStatement) {
+						firstIncompleteStatement = {
+							cmd: top.cmd,
+							missing: req.name,
+							line: top.line
+						};
+					}
+
+					if (cur >= gapStart && cur <= nextNonWs && !cursorTransition) {
+						cursorTransition = {
+							cmd: top.cmd,
+							awaiting: req.name,
+							gapStart,
+							gapEnd: nextNonWs,
+							line: top.line
+						};
+					}
+				}
 			} else if (!firstUnmatchedClose) {
 				firstUnmatchedClose = { char: ch, line: currentLine };
 			}
@@ -551,7 +505,9 @@ function scanBraces(text: string, cursor?: number): ScanResult {
 		stackAtEnd: stack,
 		firstUnmatchedClose,
 		syntaxError,
-		unclosedVerbatim
+		unclosedVerbatim,
+		cursorTransition,
+		firstIncompleteStatement
 	};
 }
 
@@ -596,24 +552,38 @@ export function checkBracketBalance(text: string, cursor?: number): BracketCheck
 		};
 	}
 
-	if (scan.stackAtEnd.length > 0) {
-		const first = scan.stackAtEnd[0];
+	const inc = scan.firstIncompleteStatement;
+	const unclosed = scan.stackAtEnd.length > 0 ? scan.stackAtEnd[0] : null;
+
+	if (inc && (!unclosed || inc.line <= unclosed.line)) {
+		return {
+			balanced: false,
+			depth: scan.depthAtCursor,
+			statusText: `⚠️ Incomplete statement: ${inc.cmd} requires {${inc.missing}}`,
+			statusType: "warning",
+			unclosedLine: inc.line,
+			firstUnclosedLine: inc.line,
+			firstUnclosedContext: inc.cmd
+		};
+	}
+
+	if (unclosed) {
 		const total = scan.stackAtEnd.length + (scan.unclosedVerbatim ? 1 : 0);
-		const ctxDesc = first.context && first.context !== "scope" ? ` (${first.context})` : "";
+		const ctxDesc = unclosed.context && unclosed.context !== "scope" ? ` (${unclosed.context})` : "";
 		const statusText = total > 1
-			? `⚠️ First unclosed ${first.char} at line ${first.line}${ctxDesc} (${total} unclosed in total)`
-			: `⚠️ Unclosed ${first.char} at line ${first.line}${ctxDesc}`;
+			? `⚠️ First unclosed ${unclosed.char} at line ${unclosed.line}${ctxDesc} (${total} unclosed in total)`
+			: `⚠️ Unclosed ${unclosed.char} at line ${unclosed.line}${ctxDesc}`;
 
 		return {
 			balanced: false,
 			depth: scan.depthAtCursor,
 			statusText,
 			statusType: "warning",
-			firstUnclosedLine: first.line,
-			firstUnclosedChar: first.char,
-			firstUnclosedContext: first.context,
-			unclosedLine: first.line,
-			unclosedChar: first.char,
+			firstUnclosedLine: unclosed.line,
+			firstUnclosedChar: unclosed.char,
+			firstUnclosedContext: unclosed.context,
+			unclosedLine: unclosed.line,
+			unclosedChar: unclosed.char,
 			unclosedCount: total
 		};
 	}
@@ -624,6 +594,23 @@ export function checkBracketBalance(text: string, cursor?: number): BracketCheck
 		statusText: `✓ Braces: Balanced (depth ${scan.depthAtCursor})`,
 		statusType: "balanced"
 	};
+}
+
+/**
+ * Determines whether the cursor is located inside a verbatim text block (\text{}...\endtext{}).
+ * Per spec/dsl.md §5.6, payload characters emit literal keystrokes and all commands, comments,
+ * escapes, and variable sigils are treated as verbatim payload text.
+ */
+export function isInsideVerbatim(text: string, cursor: number): boolean {
+	const lastTextOpen = text.lastIndexOf("\\text{}", cursor);
+	if (lastTextOpen === -1 || cursor < lastTextOpen + 7) {
+		return false;
+	}
+	const nextTextClose = text.indexOf("\\endtext{}", lastTextOpen + 7);
+	if (nextTextClose === -1) {
+		return true;
+	}
+	return cursor < nextTextClose;
 }
 
 /**
@@ -645,19 +632,26 @@ export function detectStructuralScope(text: string, cursor: number): string {
 		return "Scope: Layout Preamble";
 	}
 
-	const lastTextOpen = text.lastIndexOf("\\text{}", cursor);
-	if (lastTextOpen !== -1 && cursor >= lastTextOpen + 7) {
-		const nextTextClose = text.indexOf("\\endtext{}", lastTextOpen + 7);
-		if (nextTextClose === -1 || cursor < nextTextClose) {
-			return "Scope: Verbatim Text (\\text)";
-		}
+	if (isInsideVerbatim(text, cursor)) {
+		return "Scope: Verbatim Text (\\text)";
 	}
 
-	const stack = getBraceStack(text, cursor);
+	const scan = scanBraces(text, cursor);
+	const stack = scan.cursorStack;
+
+	if (lineText.trimStart().startsWith("\\#")) {
+		return "Scope: Comment";
+	}
+
+	if (scan.cursorTransition) {
+		const transitionSegment = `${scan.cursorTransition.cmd} (awaiting {${scan.cursorTransition.awaiting}})`;
+		const segments = stack.map((frame, idx) => formatFrameScope(frame, idx === stack.length - 1));
+		return segments.length > 0
+			? `Scope: ${[...segments, transitionSegment].join(" > ")}`
+			: `Scope: ${transitionSegment}`;
+	}
+
 	if (stack.length === 0) {
-		if (lineText.trimStart().startsWith("\\#")) {
-			return "Scope: Comment";
-		}
 		return "Scope: Document Root";
 	}
 
@@ -702,9 +696,57 @@ function formatFrameScope(frame: BraceFrame, isLeaf: boolean): string {
 	return frame.context || (frame.isBracket ? "Decorator" : "Block");
 }
 
+function getAllVariableCandidates(text: string, isDelimited = false): InspectorCandidate[] {
+	const declaredVars = Array.from(text.matchAll(/(?:\\set|\\pixelrect|\\add|\\sub)\{([a-zA-Z][a-zA-Z0-9_]*)\}/g))
+		.map(m => m[1]);
+	const referencedVars = Array.from(text.matchAll(/(?:\$|\$\{)([a-zA-Z][a-zA-Z0-9_]*)/g))
+		.map(m => m[1])
+		.filter(v => v !== "ret" && v !== "err" && v !== "timeout" && !v.startsWith("slot"));
+	const uniqueUserVars = Array.from(new Set([...declaredVars, ...referencedVars]));
+
+	const systemCandidates: InspectorCandidate[] = [
+		{ label: "$ret", insert: isDelimited ? "${ret}" : "$ret", kind: "var", desc: "System return value / Handle ID of latest \\call" },
+		{ label: "$err", insert: isDelimited ? "${err}" : "$err", kind: "var", desc: "System error code (0 = ERR_OK, 1..8 errors)" },
+		{ label: "$timeout", insert: isDelimited ? "${timeout}" : "$timeout", kind: "var", desc: "Wait timeout flag (0 = arrived, 1 = timeout)" },
+		{ label: "$slot.net.msg.val", insert: isDelimited ? "${slot.net.msg.val}" : "$slot.net.msg.val", kind: "slot", desc: "Network message arrival receptor slot" },
+		{ label: "$slot.img.ready.val", insert: isDelimited ? "${slot.img.ready.val}" : "$slot.img.ready.val", kind: "slot", desc: "Vision stream arrival receptor slot" }
+	];
+
+	const userVarCandidates: InspectorCandidate[] = uniqueUserVars.map(v => ({
+		label: `$${v}`,
+		insert: isDelimited ? `\${${v}}` : `$${v}`,
+		kind: "var",
+		desc: `User variable '${v}' (general register)`
+	}));
+
+	return [...systemCandidates, ...userVarCandidates];
+}
+
 export function detectToken(text: string, cursor: number): DetectionResult | null {
 	const lineStart = text.lastIndexOf("\n", cursor - 1) + 1;
 	const lineBefore = text.slice(lineStart, cursor);
+
+	// 0. Inside verbatim text blocks (\text{}...\endtext{}), all escapes, variables,
+	// comments, and regular commands are suppressed per spec/dsl.md §5.6.
+	// The ONLY valid syntax construct is the block terminator \endtext{}.
+	if (isInsideVerbatim(text, cursor)) {
+		const endtextMatch = lineBefore.match(/(?:^|[^\\])(\\[a-zA-Z0-9_]*)$/);
+		if (endtextMatch) {
+			const rawToken = endtextMatch[1];
+			const tokenStart = cursor - rawToken.length;
+			const tokenEnd = cursor;
+			const cand = COMMAND_CANDIDATES.find(c => c.label === "\\endtext");
+			const matches = (cand && "\\endtext".startsWith(rawToken)) ? [cand] : [];
+			return {
+				context: "Verbatim Block Terminator",
+				rawToken,
+				tokenStart,
+				tokenEnd,
+				matches
+			};
+		}
+		return null;
+	}
 
 	// 1. Special Escapes: \\, \{, \}, \$
 	const escMatch = lineBefore.match(/\\[\\{}$]$/);
@@ -784,30 +826,7 @@ export function detectToken(text: string, cursor: number): DetectionResult | nul
 		const tokenStart = cursor - varMatch[0].length;
 		const tokenEnd = cursor;
 
-		// Extract dynamic user variables declared in the script
-		const declaredVars = Array.from(text.matchAll(/(?:\\set|\\pixelrect|\\add|\\sub)\{([a-zA-Z][a-zA-Z0-9_]*)\}/g))
-			.map(m => m[1]);
-		const referencedVars = Array.from(text.matchAll(/(?:\$|\$\{)([a-zA-Z][a-zA-Z0-9_]*)/g))
-			.map(m => m[1])
-			.filter(v => v !== "ret" && v !== "err" && v !== "timeout" && !v.startsWith("slot"));
-		const uniqueUserVars = Array.from(new Set([...declaredVars, ...referencedVars]));
-
-		const systemCandidates: InspectorCandidate[] = [
-			{ label: "$ret", insert: isDelimited ? "${ret}" : "$ret", kind: "var", desc: "System return value / Handle ID of latest \\call" },
-			{ label: "$err", insert: isDelimited ? "${err}" : "$err", kind: "var", desc: "System error code (0 = ERR_OK, 1..8 errors)" },
-			{ label: "$timeout", insert: isDelimited ? "${timeout}" : "$timeout", kind: "var", desc: "Wait timeout flag (0 = arrived, 1 = timeout)" },
-			{ label: "$slot.net.msg.val", insert: isDelimited ? "${slot.net.msg.val}" : "$slot.net.msg.val", kind: "slot", desc: "Network message arrival receptor slot" },
-			{ label: "$slot.img.ready.val", insert: isDelimited ? "${slot.img.ready.val}" : "$slot.img.ready.val", kind: "slot", desc: "Vision stream arrival receptor slot" }
-		];
-
-		const userVarCandidates: InspectorCandidate[] = uniqueUserVars.map(v => ({
-			label: `$${v}`,
-			insert: isDelimited ? `\${${v}}` : `$${v}`,
-			kind: "var",
-			desc: `User variable '${v}' (general register)`
-		}));
-
-		const allVars = [...systemCandidates, ...userVarCandidates];
+		const allVars = getAllVariableCandidates(text, isDelimited);
 		const matches = allVars.filter(v => {
 			if (!prefix) return true;
 			const clean = v.label.replace(/^\$/, "").toLowerCase();
@@ -823,7 +842,264 @@ export function detectToken(text: string, cursor: number): DetectionResult | nul
 		};
 	}
 
-	// 5. General Command / Key / Macro / Combo starting with \
+	// 5. Context: Inside curly braces {...}
+	const stack = getBraceStack(text, cursor);
+	if (stack.length > 0) {
+		const current = stack[stack.length - 1];
+		const parent = stack.length >= 2 ? stack[stack.length - 2] : null;
+
+		// 5a. Mouse click / holds: \click, \mdown, \mup
+		if ((current.cmd === "\\click" || current.cmd === "\\mdown" || current.cmd === "\\mup") && current.argIndex === 0) {
+			const content = text.slice(current.openIndex + 1, cursor);
+			const commaIdx = content.indexOf(",");
+			if (commaIdx === -1) {
+				const leadingSpaces = content.length - content.trimStart().length;
+				const argPrefix = content.trim().toLowerCase().replace(/^\\/, "");
+				const tokenStart = current.openIndex + 1 + leadingSpaces;
+				const tokenEnd = cursor;
+				const matches = MOUSE_BUTTON_CANDIDATES.filter(b => !argPrefix || b.label.toLowerCase().startsWith(argPrefix));
+				return {
+					context: "Mouse Button",
+					rawToken: argPrefix || "{btn}",
+					tokenStart,
+					tokenEnd,
+					matches
+				};
+			}
+			// After comma: click count
+			const countSegment = content.slice(commaIdx + 1);
+			const leadingSpaces = countSegment.length - countSegment.trimStart().length;
+			const countPrefix = countSegment.trim();
+			return {
+				context: "Click Count",
+				rawToken: countPrefix || "{count}",
+				tokenStart: current.openIndex + 1 + commaIdx + 1 + leadingSpaces,
+				tokenEnd: cursor,
+				matches: []
+			};
+		}
+
+		// 5b. Key holds: \kdown, \kup
+		if (current.cmd === "\\kdown" || current.cmd === "\\kup") {
+			const content = text.slice(current.openIndex + 1, cursor);
+			const plusIdx = content.lastIndexOf("+");
+			const segment = plusIdx !== -1 ? content.slice(plusIdx + 1) : content;
+			const leadingSpaces = segment.length - segment.trimStart().length;
+			const keyPrefix = segment.trim().toLowerCase().replace(/^\\/, "");
+			const tokenStart = (plusIdx !== -1 ? current.openIndex + 1 + plusIdx + 1 : current.openIndex + 1) + leadingSpaces;
+			const tokenEnd = cursor;
+			const matches = KEY_NAME_CANDIDATES.filter(k => !keyPrefix || k.label.toLowerCase().startsWith(keyPrefix));
+			return {
+				context: "Key / Modifier",
+				rawToken: keyPrefix || "{key}",
+				tokenStart,
+				tokenEnd,
+				matches
+			};
+		}
+
+		// 5c. Namespace: \use
+		if (current.cmd === "\\use" && current.argIndex === 0) {
+			const content = text.slice(current.openIndex + 1, cursor);
+			const leadingSpaces = content.length - content.trimStart().length;
+			const argPrefix = content.trim().toLowerCase().replace(/^\\/, "");
+			const tokenStart = current.openIndex + 1 + leadingSpaces;
+			const tokenEnd = cursor;
+			const matches = NAMESPACE_CANDIDATES.filter(n => !argPrefix || n.label.toLowerCase().startsWith(argPrefix));
+			return {
+				context: "Namespace",
+				rawToken: argPrefix || "{ns}",
+				tokenStart,
+				tokenEnd,
+				matches
+			};
+		}
+
+		// 5d. Extension call: \call
+		if (current.cmd === "\\call" && current.argIndex === 0) {
+			const content = text.slice(current.openIndex + 1, cursor);
+			const leadingSpaces = content.length - content.trimStart().length;
+			const argPrefix = content.trim().toLowerCase().replace(/^\\/, "");
+			const tokenStart = current.openIndex + 1 + leadingSpaces;
+			const tokenEnd = cursor;
+			const matches = EXT_FUNCTION_CANDIDATES.filter(f => !argPrefix || f.label.toLowerCase().startsWith(argPrefix));
+			return {
+				context: "Extension Call",
+				rawToken: argPrefix || "{ns.fn}",
+				tokenStart,
+				tokenEnd,
+				matches
+			};
+		}
+
+		// 5e. Predicate Triplet: {lhs, op, rhs} in \if, \guarded, \all, \any
+		const isTriplet = current.context === "Predicate Triplet" || (
+			parent && (
+				(parent.cmd === "\\if" && parent.argIndex === 0) ||
+				(parent.cmd === "\\guarded" && (parent.argIndex === 0 || parent.context?.includes("Invariant"))) ||
+				parent.cmd === "\\all" ||
+				parent.cmd === "\\any"
+			) && (!current.cmd || current.cmd === "")
+		);
+
+		if (isTriplet) {
+			const tripletContent = text.slice(current.openIndex + 1, cursor);
+			const parts = tripletContent.split(",");
+
+			if (parts.length === 1) {
+				// LHS Position
+				const lhsSegment = parts[0];
+				const leadingSpaces = lhsSegment.length - lhsSegment.trimStart().length;
+				const lhsPrefix = lhsSegment.trim().toLowerCase();
+				const tokenStart = current.openIndex + 1 + leadingSpaces;
+				const tokenEnd = cursor;
+				const allVars = getAllVariableCandidates(text, false);
+				const matches = allVars.filter(v => {
+					if (!lhsPrefix) return true;
+					const clean = v.label.replace(/^\$/, "").toLowerCase();
+					return clean.startsWith(lhsPrefix) || v.label.toLowerCase().startsWith(lhsPrefix);
+				});
+				return {
+					context: "Predicate Operand",
+					rawToken: lhsSegment.trim() || "{lhs}",
+					tokenStart,
+					tokenEnd,
+					matches
+				};
+			}
+
+			if (parts.length === 2) {
+				// Operator Position
+				const opSegment = parts[1];
+				const leadingSpaces = opSegment.length - opSegment.trimStart().length;
+				const opPrefix = opSegment.trim().toLowerCase();
+				const firstCommaPos = current.openIndex + 1 + parts[0].length;
+				const tokenStart = firstCommaPos + 1 + leadingSpaces;
+				const tokenEnd = cursor;
+				const matches = PREDICATE_OP_CANDIDATES.filter(o => !opPrefix || o.label.startsWith(opPrefix));
+				return {
+					context: "Predicate Operator",
+					rawToken: opPrefix || "{op}",
+					tokenStart,
+					tokenEnd,
+					matches
+				};
+			}
+
+			if (parts.length === 3) {
+				// RHS Position
+				const rhsSegment = parts[2];
+				const leadingSpaces = rhsSegment.length - rhsSegment.trimStart().length;
+				const rhsPrefix = rhsSegment.trim().toLowerCase();
+				const secondCommaPos = current.openIndex + 1 + parts[0].length + 1 + parts[1].length;
+				const tokenStart = secondCommaPos + 1 + leadingSpaces;
+				const tokenEnd = cursor;
+				const allVars = getAllVariableCandidates(text, false);
+				const matches = allVars.filter(v => {
+					if (!rhsPrefix) return true;
+					const clean = v.label.replace(/^\$/, "").toLowerCase();
+					return clean.startsWith(rhsPrefix) || v.label.toLowerCase().startsWith(rhsPrefix);
+				});
+				return {
+					context: "Predicate Operand",
+					rawToken: rhsSegment.trim() || "{rhs}",
+					tokenStart,
+					tokenEnd,
+					matches
+				};
+			}
+		}
+
+		// 5f. Condition block directly under \if, \guarded, \all, \any
+		const isDirectCondition = (current.cmd === "\\if" && current.argIndex === 0) ||
+			(current.cmd === "\\guarded" && (current.argIndex === 0 || current.context?.includes("Invariant"))) ||
+			current.cmd === "\\all" || current.cmd === "\\any";
+
+		if (isDirectCondition) {
+			const cmdMatch = lineBefore.match(/\\([a-zA-Z0-9_]*)$/);
+			if (cmdMatch) {
+				const rawToken = cmdMatch[0];
+				const prefix = cmdMatch[1].toLowerCase();
+				const tokenStart = cursor - rawToken.length;
+				const tokenEnd = cursor;
+				const matches = PREDICATE_LOGIC_CANDIDATES.filter(c =>
+					!prefix || c.label.toLowerCase().startsWith(rawToken.toLowerCase()) || c.label.replace(/^\\/, "").toLowerCase().startsWith(prefix)
+				);
+				return {
+					context: "Predicate Condition",
+					rawToken,
+					tokenStart,
+					tokenEnd,
+					matches
+				};
+			}
+
+			const content = text.slice(current.openIndex + 1, cursor);
+			const leadingSpaces = content.length - content.trimStart().length;
+			const argPrefix = content.trim().toLowerCase();
+			const tokenStart = current.openIndex + 1 + leadingSpaces;
+			const tokenEnd = cursor;
+
+			const tripletTemplate: InspectorCandidate = {
+				label: "{}",
+				insert: "{ $ret, =, 0 }",
+				kind: "op",
+				desc: "Comparison triplet {lhs, op, rhs}"
+			};
+			const isLogicCmd = current.cmd === "\\all" || current.cmd === "\\any";
+			const pool = isLogicCmd ? [tripletTemplate] : [...PREDICATE_LOGIC_CANDIDATES, tripletTemplate];
+			const matches = pool.filter(c => !argPrefix || c.label.toLowerCase().startsWith(argPrefix) || c.label.replace(/^\\/, "").toLowerCase().startsWith(argPrefix));
+			return {
+				context: "Predicate Condition",
+				rawToken: argPrefix || "{cond}",
+				tokenStart,
+				tokenEnd,
+				matches
+			};
+		}
+
+		// 5g. Argument Packs: \move, \rgb, \call
+		if (current.cmd === "\\move") {
+			const content = text.slice(current.openIndex + 1, cursor);
+			const parts = content.split(",");
+			const isDx = parts.length === 1;
+			return {
+				context: isDx ? "Move X (dx)" : "Move Y (dy)",
+				rawToken: (isDx ? parts[0] : parts[1]).trim() || (isDx ? "{dx}" : "{dy}"),
+				tokenStart: current.openIndex + 1,
+				tokenEnd: cursor,
+				matches: []
+			};
+		}
+
+		if (current.cmd === "\\rgb") {
+			const content = text.slice(current.openIndex + 1, cursor);
+			const parts = content.split(",");
+			const idx = parts.length;
+			const label = idx === 1 ? "RGB Red" : (idx === 2 ? "RGB Green" : "RGB Blue");
+			return {
+				context: label,
+				rawToken: parts[idx - 1].trim() || (idx === 1 ? "{r}" : (idx === 2 ? "{g}" : "{b}")),
+				tokenStart: current.openIndex + 1,
+				tokenEnd: cursor,
+				matches: []
+			};
+		}
+
+		if (current.cmd === "\\call" && current.argIndex >= 1) {
+			const content = text.slice(current.openIndex + 1, cursor);
+			const target = current.callTarget || "extension";
+			return {
+				context: `Call Args (${target})`,
+				rawToken: content.trim() || "{args}",
+				tokenStart: current.openIndex + 1,
+				tokenEnd: cursor,
+				matches: []
+			};
+		}
+	}
+
+	// 6. General Command / Key / Macro / Combo starting with \ (Valid in CodeBlocks and Document Root)
 	const cmdMatch = lineBefore.match(/\\([a-zA-Z0-9_+]*)$/);
 	if (cmdMatch) {
 		const rawToken = cmdMatch[0];
@@ -871,130 +1147,25 @@ export function detectToken(text: string, cursor: number): DetectionResult | nul
 		};
 	}
 
-	// 6. Context: Inside curly braces {...}
-	const stack = getBraceStack(text, cursor);
-	if (stack.length > 0) {
-		const current = stack[stack.length - 1];
-		const parent = stack.length >= 2 ? stack[stack.length - 2] : null;
-
-		// 6a. Mouse click / holds: \click, \mdown, \mup
-		if ((current.cmd === "\\click" || current.cmd === "\\mdown" || current.cmd === "\\mup") && current.argIndex === 0) {
-			const content = text.slice(current.openIndex + 1, cursor);
-			const commaIdx = content.indexOf(",");
-			if (commaIdx === -1) {
-				const leadingSpaces = content.length - content.trimStart().length;
-				const argPrefix = content.trim().toLowerCase();
-				const tokenStart = current.openIndex + 1 + leadingSpaces;
-				const tokenEnd = cursor;
-				const matches = MOUSE_BUTTON_CANDIDATES.filter(b => !argPrefix || b.label.toLowerCase().startsWith(argPrefix));
-				return {
-					context: "Mouse Button",
-					rawToken: argPrefix || "{btn}",
-					tokenStart,
-					tokenEnd,
-					matches
-				};
-			}
-		}
-
-		// 6b. Key holds: \kdown, \kup
-		if (current.cmd === "\\kdown" || current.cmd === "\\kup") {
-			const content = text.slice(current.openIndex + 1, cursor);
-			const plusIdx = content.lastIndexOf("+");
-			const segment = plusIdx !== -1 ? content.slice(plusIdx + 1) : content;
-			const leadingSpaces = segment.length - segment.trimStart().length;
-			const keyPrefix = segment.trim().toLowerCase();
-			const tokenStart = (plusIdx !== -1 ? current.openIndex + 1 + plusIdx + 1 : current.openIndex + 1) + leadingSpaces;
-			const tokenEnd = cursor;
-			const matches = KEY_NAME_CANDIDATES.filter(k => !keyPrefix || k.label.toLowerCase().startsWith(keyPrefix));
-			return {
-				context: "Key / Modifier",
-				rawToken: keyPrefix || "{key}",
-				tokenStart,
-				tokenEnd,
-				matches
-			};
-		}
-
-		// 6c. Namespace: \use
-		if (current.cmd === "\\use" && current.argIndex === 0) {
-			const content = text.slice(current.openIndex + 1, cursor);
-			const leadingSpaces = content.length - content.trimStart().length;
-			const argPrefix = content.trim().toLowerCase();
-			const tokenStart = current.openIndex + 1 + leadingSpaces;
-			const tokenEnd = cursor;
-			const matches = NAMESPACE_CANDIDATES.filter(n => !argPrefix || n.label.toLowerCase().startsWith(argPrefix));
-			return {
-				context: "Namespace",
-				rawToken: argPrefix || "{ns}",
-				tokenStart,
-				tokenEnd,
-				matches
-			};
-		}
-
-		// 6d. Extension call: \call
-		if (current.cmd === "\\call" && current.argIndex === 0) {
-			const content = text.slice(current.openIndex + 1, cursor);
-			const leadingSpaces = content.length - content.trimStart().length;
-			const argPrefix = content.trim().toLowerCase();
-			const tokenStart = current.openIndex + 1 + leadingSpaces;
-			const tokenEnd = cursor;
-			const matches = EXT_FUNCTION_CANDIDATES.filter(f => !argPrefix || f.label.toLowerCase().startsWith(argPrefix));
-			return {
-				context: "Extension Call",
-				rawToken: argPrefix || "{ns.fn}",
-				tokenStart,
-				tokenEnd,
-				matches
-			};
-		}
-
-		// 6e. Predicate / Comparison Operators in \if or \guarded
-		const isIfOrGuarded = current.cmd === "\\if" || current.cmd === "\\guarded" ||
-			(parent && (parent.cmd === "\\if" || parent.cmd === "\\guarded") && parent.argIndex === 0);
-
-		if (isIfOrGuarded) {
-			// Check if inside inner triplet e.g. \if{ {$x, 
-			if (parent && (parent.cmd === "\\if" || parent.cmd === "\\guarded")) {
-				const tripletContent = text.slice(current.openIndex + 1, cursor);
-				const parts = tripletContent.split(",");
-				if (parts.length === 2) {
-					const opSegment = parts[1];
-					const leadingSpaces = opSegment.length - opSegment.trimStart().length;
-					const opPrefix = opSegment.trim().toLowerCase();
-					const firstCommaPos = current.openIndex + 1 + parts[0].length;
-					const tokenStart = firstCommaPos + 1 + leadingSpaces;
-					const tokenEnd = cursor;
-					const matches = PREDICATE_OP_CANDIDATES.filter(o => !opPrefix || o.label.startsWith(opPrefix));
-					return {
-						context: "Predicate Operator",
-						rawToken: opPrefix || "{op}",
-						tokenStart,
-						tokenEnd,
-						matches
-					};
+	// 7. Transition Scope Completion: awaiting subsequent mandatory block
+	const scan = scanBraces(text, cursor);
+	if (scan.cursorTransition) {
+		const { cmd, awaiting } = scan.cursorTransition;
+		const templateInsert = (awaiting === "value" || awaiting === "var") ? "{}" : "{\n  \n}";
+		return {
+			context: `Awaiting {${awaiting}}`,
+			rawToken: `{${awaiting}}`,
+			tokenStart: cursor,
+			tokenEnd: cursor,
+			matches: [
+				{
+					label: "{}",
+					insert: templateInsert,
+					kind: "syntax",
+					desc: `Code block {${awaiting}} for ${cmd}`
 				}
-			}
-
-			// Directly inside condition block
-			if (current.argIndex === 0) {
-				const content = text.slice(current.openIndex + 1, cursor);
-				const leadingSpaces = content.length - content.trimStart().length;
-				const argPrefix = content.trim().toLowerCase();
-				const tokenStart = current.openIndex + 1 + leadingSpaces;
-				const tokenEnd = cursor;
-				const combined = [...PREDICATE_LOGIC_CANDIDATES, ...PREDICATE_OP_CANDIDATES];
-				const matches = combined.filter(c => !argPrefix || c.label.toLowerCase().startsWith(argPrefix) || c.label.replace(/^\\/, "").toLowerCase().startsWith(argPrefix));
-				return {
-					context: "Predicate Condition",
-					rawToken: argPrefix || "{cond}",
-					tokenStart,
-					tokenEnd,
-					matches
-				};
-			}
-		}
+			]
+		};
 	}
 
 	return null;
