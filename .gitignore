@@ -15,6 +15,8 @@ __pycache__/
 venv/
 
 # ── Build & tool artifacts ──
+dist/
+build/
 mpy-cross
 *.uf2
 .circup*

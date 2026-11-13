@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  test-python:
+    name: Python Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install pytest circup mpy-cross numpy
+
+      - name: Run unit test suite
+        run: |
+          pytest tests/unit/
+
+  test-web:
+    name: Web Studio & E2E Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: "9"
+
+      - name: Install web dependencies
+        working-directory: web
+        run: |
+          pnpm install
+
+      - name: Run web unit & token inspector tests
+        working-directory: web
+        run: |
+          pnpm test
+
+      - name: Build web bundle & check budget
+        working-directory: web
+        run: |
+          pnpm build
+          pnpm run check
+
+  release:
+    name: Build & Publish Release
+    needs: [test-python, test-web]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: "9"
+
+      - name: Install packaging dependencies
+        run: |
+          pip install circup mpy-cross
+          cd web && pnpm install
+
+      - name: Build drop-in release package
+        run: |
+          python3 tools/deploy.py --package ${{ github.ref_name }} --output-dir dist
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          generate_release_notes: true

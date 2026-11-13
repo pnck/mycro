@@ -1,215 +1,76 @@
 # ROADMAP — MYCRO Evolution Plan
 
-> Current state, bug details, and capability research conclusions: see [AGENTS.md](AGENTS.md).
-> Target hardware: ESP32-S3 **with PSRAM** (≥8MB PSRAM recommended — the vision phase needs large buffers); runtime CircuitPython 10.x, library list in requirements-device.txt (per-device version snapshots are kept out of the repo, in private memory).
-> **Architectural discipline (always in effect)**: the compiler/VM/protocol layers must not import any runtime-specific modules; all hardware interaction goes through the HIDProvider abstraction — this carries a possible MicroPython migration in Phase 3 and is also the mock point for unit tests.
+> Operational manual & runtime architecture: see [AGENTS.md](AGENTS.md).  
+> **Architectural discipline**: The compiler, virtual machine, and wire protocol remain strictly runtime-agnostic; all physical hardware interactions funnel through the `HIDProvider` abstraction.
 
 ---
 
-## Phase 1 — Foundation Rework
+## 1. Macro DSL
 
-**Goal**: formalize the skeleton + fix critical bugs + asyncio-ify. No new features.
+The domain-specific language designed for expressing hardware-level input automation, physical timing, and reactive logic with zero host software footprint.
 
-### 1.1 Formalization baseline ✅
-- [x] Repo structure: `src/` (CIRCUITPY layout: code.py / lib/macro.py / index.html), `tests/`, `tools/deploy.sh`
-- [x] **HID abstraction layer**: `macro.py`'s hardware dependencies funneled into a HIDProvider interface (keyboard/layout/mouse operations + Keycode table), decoupled from adafruit_hid
-- [x] CPython unit-test baseline: mock HIDProvider, 100% of compiler/VM logic covered on PC
-- [x] Deploy script: rsync to the CIRCUITPY mount point + version-pinned `circup install` (`requirements-device.txt`)
-
-### 1.2 Critical bug fixes ✅
-- [x] B1: enforce the nesting depth limit (`_cmd_rep` carries a depth counter, compile error over 2 levels)
-- [x] B2: `execute()` wrapped in try/finally; every exception path releases all keys/buttons
-- [x] B3: input decoding chain converged — `htmldecode` removed; `urldecode` kept with a note on the pinned library dependency
-- [x] B4: docs aligned with code (bytecode cap 4096, nesting levels, index.html cheat sheet)
-- [x] B5: dead code removed (`_emit_i8`; unreachable OP_CHAR fallback now raises explicitly)
-
-### 1.3 DSL v2 syntax overhaul ✅
-
-**Lexer layer**
-- [x] Line continuation: `\` + newline (LF/CRLF) → drop the newline (no Enter emitted), so long macros can be wrapped into logical blocks
-- [x] Comments: `\#` to end of line (consumes the newline, no Enter)
-- [x] Fixed `_read_braces` depth counting: skips `\{` `\}` `\\` escapes
-
-**Command semantics layer**
-- [x] Split `\delay`'s dual semantics: `\delay{t}` = sleep once (OP_SLEEP); new `\pace{t}` = set the interval after subsequent actions (OP_PACE)
-- [ ] Argument-style unification audit: `\kdown{ctrl}` brace style vs `\ctrl+c` chained style (minor; decided together with later structural capabilities)
-
-**Bytecode format reserve**
-- [x] Bytecode gains a version header (MAGIC 0xA5 + VERSION 2); LOOP's len becomes live semantics (bounds check + count=0 skips the body)
-
-### 1.4 asyncio-ification ✅
-- [x] Main loop `asyncio.run()`: HTTP `server.poll()` as one task, macro execution as another
-- [x] VM: `execute()` is `async def`; all internal `time.sleep` became `await asyncio.sleep`
-- [x] New `/macro/abort` → `task.cancel()`; `/macro/status` query; HTTP stays responsive during macro execution
-- [x] Raw socket listener stub task (port 7373, fully exception-isolated); stub verified running on device; live-traffic stability lands with Phase 2 (#10775)
-- [x] Bearer token auth (`MYCRO_TOKEN` via settings.toml; unset = dev mode)
-
-**Acceptance status**
-- ✅ All P0 bugs have unit tests, all green
-- ✅ DSL v2: index.html example macros pinned by regression tests; new lexer/semantics features each have unit tests
-- ✅ On-device validation passed (user-confirmed 2026-10-04): deploy, runtime WiFi connect, HTTP service, macro execution/abort
+### Milestones & Status
+- [x] **v1 Baseline**: Verbatim typewriter keystroke stream, basic delays (`\delay`), and single-level repetition loops (`\rep`).
+- [x] **v2 Control Flow**: Line continuations (`\`), line comments (`\#`), split single-shot sleep (`\delay`) vs cadence pacing (`\pace`), and nested repetition loops (depth &le; 4).
+- [x] **v3 Programmable Extensions**:
+  - Compile-time macro expansion (`\def`).
+  - 32 integer registers (`\set`, `\add`), legacy conditional branches (`\ifnum`), and register value typing (`\typenum`).
+  - External namespace dependency declarations (`\use`) and extension invocations (`\call`).
+  - Asynchronous named signal reception (`\wait`) with slot payload projection.
+- [x] **v4 Structured Logic & Layout**:
+  - Preamble syntax layout directives (`\#!syntax: typewriter|free`) suppressing unwanted whitespace events.
+  - Verbatim text blocks (`\text{}...\endtext{}`) immune to bracket balancing and command collisions.
+  - Structured predicate grammar: `\if{ {left, op, right} }` with composite `\all{...}` / `\any{...}` logic (deprecating `\ifnum`).
+  - Subtraction arithmetic (`\sub`) and uniform handle fault codes (`$err`).
+  - USB Consumer Control media keys (HID Usage Page 0x0C).
+  - Flat iterative guarded blocks (`\guarded`) for deterministic exit handling.
 
 ---
 
-## DSL v3 — Syntax Extension (finalized; all stages landed before Phase 2)
+## 2. Bytecode VM & Runtime Engine
 
-> The normative surface specification lives in [spec/dsl.md](spec/dsl.md); this section is the historical record of the design decisions.
+The microcontroller execution engine, decoupled from host operating systems and physical hardware providers via the `HIDProvider` abstraction.
 
-### Core rules
-1. **Value-position interpolation**: `$name` interpolation only takes effect in **value positions** (each command's parameter list declares its types explicitly); in code-body positions (the bodies of `\rep`/`\def`/`\ifnum`) and in plain text, `$` is always a literal character
-2. Within a value position, `$name` matches `[a-z0-9_.]` greedily; `${name}` delimits explicitly; a literal `$` is written `\$`
-3. **Dual-semantics split**: `$name` (value position) = integer semantics (counts/ms/keycodes/coordinates/comparands); `\val{name}` (text position) = renders the decimal digit key sequence
-4. `\def` parameters `#1`–`#9` are pure textual single-pass substitution, expanded first; semantics are uniquely determined by the landing site
-5. Built-in command names are ≥2 letters (single letters permanently reserved for bare keys)
-6. Values not decidable at compile time → emit runtime-evaluated instructions (value position tag=reg / text position OP_TYPEREG / slot positions desugared to READSLOT)
-
-### Type system (the extensibility foundation)
-- Variables are physically **i32** only, with three semantic roles: numbers / packed small values (color, keycode, etc.) / object handles
-- **Semantic types hang on ext function signatures** (the ns registry is precise to parameter types/return type/produced-slot contract), checked at compile time, erased at runtime
-- Large objects live in the **runtime object table + i32 handles** (tpl, conn, etc.); handles and numbers cannot be mixed arithmetically (static check)
-- Bytecode physical tags are always just imm/reg/str — semantic types never enter the bytecode — **a future new type = registering a new signature + new ext functions, zero syntax growth**
-- Domain predicates (e.g. color tolerance comparison) are always ext functions returning i32 to `$ret`; branching always goes through `\ifnum`
-
-### Stage A — User macros (pure compile-time, bytecode unchanged) ✅
-- [x] `\def{name}[argc]{body}` (argc 0–9); a `\name` call takes argc brace groups; resolution priority: built-in commands → user macros → key names
-- [x] Constraints: top-level only, define-before-use, no redefinition, no clash with built-ins/key names; circular references / wrong argc → compile error; expansion depth bounded by MAX_MACRO_EXPAND
-
-### Stage B — Variables / conditionals / rendering (bytecode v3) ✅
-- [x] 16 i32 registers (zeroed at execution start), `\set{x}{i32}` / `\add{x}{i32}`; `0x` hex literals supported
-- [x] Special read-only: `$ret` (0xFF), `$timeout` (0xFE); signal slots `$ns.field` (READSLOT)
-- [x] `\ifnum{$a}{op}{b}{then}[{else}]` (op ∈ `= != < <= > >=`; left operand must be a variable, right operand i32 or `$var`; compiles to forward BRA/JMP, zero runtime stack growth)
-- [x] `\val{name}` (OP_TYPEREG; counts as one pacing action; the argument must be defined, else compile error)
-- [x] Static checks: reading before `\set` is an error (conservative lexical-order judgement); `\call` arguments checked against the function signature
-- [x] All value positions accept `$var` interpreted per the position's type (incl. `\kdown{$k}` with a register keycode)
-
-### Bytecode v3 ✅
-- [x] Header: MAGIC(0xA5) + VERSION(3) + string table (u8 count; u8 len + bytes; signal/ns/fn/template names, deduplicated)
-- [x] New opcodes: 0x20 SET, 0x21 ADD (reg, i32); 0x22 BRA (cc, reg, i32, off16), 0x23 JMP (off16); 0x28 READSLOT (reg, sig, field); 0x29 WAIT (sig, timeout_ms u32, 0 = wait forever); 0x2A CALL_EXT (ns, fn, argc, typed args); 0x2B TYPEREG (reg)
-- [x] Typed-operand rework: MMOVE / SLEEP / PACE / MCLICK.count numeric operands gain a tag prefix (0=imm, 1=reg); tag=0 is wire-identical to v2
-
-### Stage C — Waiting / runtime extension (syntax and VM landed; net/img semantics arrive with the phases) ✅
-- [x] `\wait{signal}` / `\wait{signal}{sec}`: suspend the coroutine by name (asyncio.Event); runtime event sources register signals and write payload slots; timeout writes `$timeout`; abort can interrupt
-- [x] `\use{ns}`: compile-time dependency declaration checked against the runtime namespace table; missing = compile error; emits no bytecode
-- [x] `\call{ns.fn}{arg}...`: return value written to `$ret`, structured output written to `$ns.*` slots; the `sys` namespace is registered as minimal validation (`sys.free`); `net` with Phase 2, `img` with Phase 3
-- [x] Runtime registry (`src/lib/runtime.py`): unified registration and lookup of namespaces/signatures/signals/slots; platform wiring in code.py, fakes in tests
-- [x] Two-pass compiler: Pass 1 collects top-level `\def` (build the table, check circular references) and `\use` (check namespaces); Pass 2 does expansion + variable allocation + static checks; argument parsing upgraded to descriptors (imm/reg/str); shared deduplicated string table
-- [x] Decoupled nesting limits: MAX_RUNTIME_NEST = 8, MAX_MACRO_EXPAND = 16; compiler nesting is iterative (explicit heap stack, no Python recursion) — CircuitPython's pystack is only a few KB, so nesting depth is bounded by bytecode size, not call frames
-
-### Boundaries
-- Variables are i32 only; strings are not first-class (strings pass opaquely via the string table / signal slots)
-- No general expressions / multiplication / division (`\set`/`\add` cover counting; complex math sinks into ext functions; the interpreter's own internals are not bound by this)
-- User macros are compile-time expansion only (no runtime subroutines)
-- BRA/JMP are forward-only (no `\while`); no else-if syntax (nest `\ifnum` instead)
-- `\val` is decimal only
-- Constructor sugar (e.g. `\rgb{r,g,b}`) is **NOT in v3**; arrives as v3.1/v4 with Phase 3's img namespace
-
-### Scheduling
-- **Stages A, B, C**: all landed before Phase 2 (as planned); the `\call` argument convention feeds into Phase 2 protocol design
-- **Stage C namespaces**: `sys` minimal validation done; `net` semantics with Phase 2, `img` semantics with Phase 3
-
-### Future Evolution: DSL v3.1 / v4 Planning (Layout Pragmas & Whitespace Semantics)
-- **The Core Problem**: In v1/v2, macros were "typewriter-first" (verbatim keystroke streams with escape commands). In v3+, macros became "programming language-first" (`\set`, `\ifnum`, `\use`, `\call`, `\wait`). Formatting structured code requires both horizontal indentation and vertical line breaks. Under typewriter lexing, these emit unwanted `KEY_SPACE` and `KEY_ENTER` events to the host machine unless each line is ended with a trailing `\` line continuation.
-- **Deconstructing the Design Space**:
-  - *Why naive line heuristics fail*: Rules like "lines starting with `\` swallow newlines" break common patterns (e.g. typing macros starting with `\pace{}` or using `\rep{}`).
-  - *Why "trailing enter only" is incomplete*: If only newlines are suppressed but indentation spaces still emit `KEY_SPACE`, indented code still corrupts target OS input. Whitespace must be governed as a cohesive two-dimensional layout model (spaces + tabs + newlines).
-  - *Why generic imports must not switch modes*: Importing a runtime extension like `\use{img}` must never implicitly alter lexing rules (avoids action-at-a-distance).
-- **Directive Taxonomy: Compiler Pragma (`\pragma`) vs Namespace Overload (`\use`)**:
-  - **Option A (Recommended: Dedicated `\pragma{...}`)**:
-    Clean separation of architectural concerns:
-    - `\use{ns}` — Declares *runtime extension dependencies* (`sys`, `net`, `img`), resolved against the runtime registry in `runtime.py`.
-    - `\pragma{...}` — Declares *compile-time frontend options*, processed strictly by the compiler lexer; completely unknown to the runtime and VM.
-  - **Option B (Namespaced `\use{syntax.*}`)**:
-    Reuses the existing `\use` token by partitioning namespaces into runtime extensions vs compiler directives (e.g. `\use{syntax.layout.free}`). Preserves single-brace syntax at the cost of conflating capability imports with lexer configurations.
-- **Settled Semantic Model: Explicit Layout Dialects**:
-  - **Baseline: `typewriter` (default, 100% backward-compatible)**:
-    - Whitespace outside command braces emits HID events (` ` → Space, `\n` → Enter).
-    - Multi-line statements in logic macros require trailing `\` line continuations.
-  - **Structured Code: `\pragma{layout: free}` (or `\use{syntax.layout.free}`)**:
-    - **Structural Whitespace**: Inter-token spaces, tabs, and newlines outside string literals emit zero HID events. Arbitrary indentation and line breaks are valid.
-    - **Explicit Text Emission**: Text output must be declared explicitly via `\type{hello}` or quoted strings `"hello"` (which desugar to `\type{hello}`). Bare unquoted text at top-level is rejected at compile time to catch syntax typos early.
-    - **Natural Delimitation**: Commands and statements span across lines naturally without trailing `\`.
-- **Comparative Example (Structured Mode)**:
-  ```dsl
-  \pragma{layout: free}
-  \use{img}
-
-  \def{ensure_ready}[1]{
-      \call{img.snap}{#1}
-      \ifnum{$ret > 0}{
-          \type{admin}
-          \enter
-          \delay{200}
-      }
-  }
-  ```
-- **Microcontroller Feasibility & Bounded Resource Proof**:
-  - In `src/lib/macro.py`, free-layout lexing is a single boolean flag (`self.free_layout`). Skipping `c in ' \t\r\n'` is O(1) in time and memory, requires zero AST allocation, and adds fewer than 20 lines to the streaming compiler.
-  - Bytecode output is identical to v3; the VM opcode set (`OP_PRESS`, `OP_TYPE`, etc.) and execution loop are completely untouched.
-- **Discipline & Freeze**: DSL v3 remains strictly frozen in its landed state (minor fixes only; trailing `\` in snippets remains standard for v3). This pragma mechanism is scheduled for the next major DSL evolution (v3.1 / v4).
+### Milestones & Status
+- [x] **v1 Foundation & HID Abstraction**: Decoupled compiler and virtual machine from platform libraries via the `HIDProvider` interface; cooperative non-blocking asyncio main loop.
+- [x] **v2 Safe Execution Model**: Guaranteed hardware release on error or abort (keyboard keys, mouse buttons); forward jump support.
+- [x] **v3 Register Machine & Machine Protocol**:
+  - 32 general-purpose i32 registers and dedicated status registers (`$ret`, `$timeout`).
+  - Uniform typed operand encoding (immediate, register, string).
+  - High-speed raw TCP message channel (`:7373`, protocol v1) with framed binary transport and reverse requests.
+  - Centralized runtime registry mediating register writes, signals, and slots.
+- [x] **v4 Guarded Execution & Telemetry**:
+  - Typed register write mediation with handle resource lifecycle management and `$err` fault dispatch.
+  - Single-point scalar telemetry projection (`$slot.img.<name>.val`).
+  - Modularized streaming compiler with bounded memory and zero Python recursion.
 
 ---
 
-## Phase 2 — Network Message Protocol
+## 3. Web Studio & Tooling
 
-**Goal**: unified message semantics across HTTP (human/debug) and a raw TCP machine channel, supporting remote orchestration, status push, and future vision event streams.
+The zero-install authoring, telemetry, and diagnostics environment served directly from microcontroller RAM.
 
-### 2.1 Encoding selection ✅
-- [x] JSON selected (ADR-1 in docs/protocol.md): neither CircuitPython bundle ships a msgpack library, so msgpack would mean an unpinned vendored codec; on-device benchmark (ESP32-S3, CP 10.3.0): 0.42 ms / 416 B churn for an 89 B envelope, 3.27 ms / 2.5 KB for a 1.2 KB macro-submit envelope — far below macro-execution timescales; bulk binary bypasses JSON via binary frames
-- [x] Wire format settled: u32 LE frame header (bit31 kind, 8 KB caps) + fixed-length auth prologue (magic + version + SHA-256 token digest); codec landed in `lib/codec.py`
-
-### 2.2 Protocol implementation ✅
-- [x] Message envelope: `{v, type, id, ts, payload}` (v = protocol version)
-- [x] First batch of types: `macro.submit` / `macro.status` / `macro.abort` / `macro.result` / `device.info` / `event.push` + `net.msg` (inbound event / outbound macro push for the DSL `net` namespace)
-- [x] Raw socket frame format: u32 LE length prefix (bit31 kind) + envelope body
-- [x] REST stays as the human/debug channel; the machine channel is raw TCP only (single-channel decision: no WebSocket/SSE — pushes broadcast on the same authenticated stream)
-- [x] Fill Phase 1's socket stub into a full codec + dispatcher
-
-**Acceptance status** (on-device, user-confirmed 2026-10-05)
-- ✅ Dual-end suite 35/35 (token configured) + all manual checks: mouse moved by event-driven slots, clean serial, PC2 web UI responsive throughout
-- ✅ `macro.submit` behaves identically over HTTP and raw TCP (suite E-group)
-- ✅ Reference client `tools/client.py` runs end to end; `docs/protocol.md` is the normative third-party reference
-- ✅ Hardware lessons landed: CP socket API surface (`recv_into` only, EAGAIN/ENOTCONN probing), no bytearray slice deletion, `hashlib.new()` factory, `traceback.print_exception`, SO_REUSEADDR for listener survival across soft reboots, `\wait` next-fire semantics pinned by suite D-group
-
-**Phase 2 closed.**
+### Milestones & Status
+- [x] **Web Studio Core**: Single-file bundled Web IDE served over device HTTP with zero external dependencies.
+- [x] **Preset & Execution Management**: Live macro execution, compile disassembly preview, abort control, and local JSON preset export/import.
+- [x] **Language Support (LSP) & Token Inspector**:
+  - Real-time syntax highlighting and spec-aligned bracket depth validation.
+  - Dynamic token inspector and context-aware candidate completion dictionary.
+- [x] **Interactive Quick Manual**: Searchable DSL documentation drawer with live parameter assembly forms and 1-click snippet insertion.
+- [x] **Pixel Assist & Visual Telemetry**:
+  - Live workspace overlay with 11&times;11 pixel loupe and crosshairs.
+  - Real-time coordinate sampling, color format conversion (Hex/RGB/DSL), and 1-click macro snippet generation.
+  - OBS Studio companion provider (`obs/obs_mycro.py`) streaming native frames over local TCP.
 
 ---
 
-## Phase 3 — Onboard Image Recognition
+## Future Directions
 
-**Goal**: pixel/template matching MVP first; CNN decisions driven by measured data.
+The next phase of MYCRO advances the boundary between host environments and microcontroller execution:
 
-### 3.1 Pre-validation & platform decision (finish before writing any vision code)
-
-**Principle: verify before migrating — no research on unselected platforms; MVP code is only written on the decided platform.**
-
-- [x] **Dual benchmarks in parallel**:
-  - CP side: row-conv NCC verified on-device with exact argmax (80x60/T=16 = 573 ms … 160x120/T=32 = 6872 ms; ingest 6 ms) — template matching feasible on CP (`tests/device/bench_device.py`)
-  - MP side: **MicroPython spike** — still open, now scoped to the 3.3 CNN question only (template matching no longer needs it)
-- [x] Image source decision: **(A) host screenshots over the network, captured by an OBS script** (obspython; PNG → Pillow decode in-script → raw pixels over kind-1 frames; see docs/protocol.md ADR-2). `espcamera` rejected: an HID dongle points at a screen with a camera only in toy setups
-- [x] Measure PSRAM heap with large buffers: peak ~160 KB used of ~7.5 MB free at 160x120 float frames — no constraint
-- [ ] **Platform decision ADR**: template matching stays on CP (ADR-2 landed); the CNN leg of the decision rides on the MP spike above
-
-### 3.2 Exact pixel matching (landed 2026-10-13)
-- [x] Snapshot-centric img namespace: `img.snap{rect}` / `img.at{$s}{point}` / `img.diff{$a}{$b}{tol}` — the snapshot is the only entity; handles follow the register-ownership model (overwrite releases, `\set` moves, exit frees)
-- [x] VM register-write mediation + middleware handle discipline + compiler constraint-only type environment — normative: [spec/vm.md](spec/vm.md)
-- [x] Capture provider protocol (`img.frame` with rect/points/w+h selectors) over the Phase 2 channel; OBS script (`obs/obs_mycro.py`) full-capability; `tests/device/reference_provider.py` + devicetest G-group e2e
-
-### 3.3 Template matching + CNN (one discussion; trigger: field results show exact matching is insufficient)
-- Opening question: the matching-target problem — where does "what a monster is" come from: grabbed pixel templates vs a classifier's learned knowledge (decides grab-style UX vs model pipeline)
-- `imgmatch.py` (row-conv NCC) is landed and on-device-verified but deliberately unwired; ROI windowed search + stride are the planned speed levers (bench numbers in docs/protocol.md ADR-2)
-- CNN leg: MP spike (microlite+esp-nn) / CP micro-forward-pass / dual-chip ESP-DL per the settled research; host-side recognition is fallback-only (anti-cheat exposure)
-
-**Acceptance**
-- MVP: screenshot → match → trigger macro end-to-end latency is measurable (target < 500ms, revised after measurement)
-- CNN: the chosen task (fixed UI-element classification) meets accuracy/latency targets, or produce a formal decision record for the host-side approach
-
----
-
-## Cross-phase items (ongoing)
-
-- **Version management**: the library list and compatibility constraints (e.g. the form_data no-decode assumption) live in the repo; per-device firmware/library version snapshots live in private memory, not the repo; library upgrades must re-verify the decoding behavior
-- **On-device regression**: run on-device regression at the end of each Phase; no phase counts as done without hardware validation
-- **Documentation sync**: update AGENTS.md at the end of each Phase (architecture changes, new opcodes, protocol summary)
-- **Risks & mitigations**:
-  - CircuitPython asyncio + raw TCP stability (#10775) → early on-device validation in 1.4; fallback is the proven HTTP channel
-  - PSRAM large-buffer behavior differences → measure first in 3.1
+- **Host-Device Interoperability & Vision Feedback**:
+  - Advancing bidirectional perception mechanisms between the host operating environment and MYCRO (including closed-loop visual feedback and image recognition workflows).
+  - Streamlining low-latency telemetry channels for reactive event delivery.
+- **Physical Peripheral Integration**:
+  - Deepening microcontroller physical hardware interactions and native hardware-level event triggering.
+  - Exposing on-device peripheral states directly into the reactive DSL signal and slot system.

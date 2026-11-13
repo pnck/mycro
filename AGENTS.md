@@ -61,21 +61,21 @@ Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`
 **Auth**: once `MYCRO_TOKEN` is set in settings.toml, all endpoints except `/` require `Authorization: Bearer <token>`; unset = dev mode (serial warning).
 **Input decoding**: the frontend uses `encodeURIComponent` + `x-www-form-urlencoded`; `form_data` does **NOT** URL-decode (verified against the pinned library source), so code.py runs a manual `urldecode` — library upgrades must re-verify this assumption.
 
-## 3. Macro DSL Syntax (v3 landed)
+## 3. Macro DSL Syntax (v4 landed)
 
 **Normative reference: [spec/dsl.md](spec/dsl.md)** (document model, value/variable/slot rules, \def, \ifnum, extension calls, registered namespaces, boundaries, version history). Summary:
 
 - Text types verbatim ASCII; `\` escapes + line continuation + `\#` comments; special keys/combos/mouse; `\delay`/`\pace`; `\rep{N}{body}` (nest ≤4)
-- v3 structure: `\def` compile-time user macros (#1–#9 textual substitution); 32 i32 registers with `\set`/`\add`; `$ret`/`$timeout` read-only; signal slots `$sig.field` (split at LAST dot); `\ifnum` forward-only branches; `\typenum` decimal render; `\use`/`\call`/`\wait` runtime extension
+- v4 structure: `\#!syntax: typewriter|free` pragmas; `\text{}...\endtext{}` verbatim text blocks; structured predicates `\if{ {left, op, right} }` with `\all`/`\any`; consumer control media keys (HID page 0x0C); flat iterative guarded blocks `\guarded`; 32 i32 registers with `\set`/`\add`/`\sub`; `$ret`/`$err`/`$timeout` read-only; signal slots `$sig.field`; `\typenum` decimal render; `\use`/`\call`/`\wait` runtime extension
 - `$` interpolation only in value positions (literal elsewhere); greedy `[a-z0-9_.]`, `${name}` delimits
 - Direction rule: macro-initiated request/response = `\call`; world-initiated events = signals + `\wait`; slots are never a return channel
-- img exact pixel family: `img.snap{rect}` → handle, `img.at{$s}{point}` → packed color, `img.diff{$a}{$b}{tol}` → count; `\rect{\row{0xRRGGBB,…},…}` pixel literals compile into the middleware const store and materialize as snap handles via `sys.const`; handles per spec/vm.md ownership
+- img exact pixel & telemetry family: `img.snap{rect}` → handle, `img.at{$s}{point}` → packed color, `img.diff{$a}{$b}{tol}` → count; scalar telemetry `img.watch`/`img.unwatch` → `$slot.img.<name>.val`; `\pixelrect` literals compile into middleware const store; handles per spec/vm.md ownership
 
 ## 4. Bytecode & VM
 
 **Normative reference: [spec/vm.md](spec/vm.md)** (container format, full opcode table, execution semantics, register-write mediation, middleware type/handle discipline, version history). Summary:
 
-- Register machine, `MAX_REGS`=32 i32 registers (profile constant; u8 addressing ceiling 256), 0xFE=`$timeout` / 0xFF=`$ret`; zeroed at execution start
+- Register machine, `MAX_REGS`=32 i32 registers (profile constant; u8 addressing ceiling 256), 0xFD=`$err` / 0xFE=`$timeout` / 0xFF=`$ret`; zeroed at execution start
 - typed operands = tag(0=imm/1=reg/2=str) + payload; physical tags stay at three forever; semantic types are a compile-time constraint system (copy-only type environment), erased at runtime
 - every register write is mediated by `runtime.reg_write(dst, src)`; handle resources live in the middleware and are released on overwrite/move/exit
 - compile/execute separation (`/compile` previews the disassembly); loops/ifs are pure ip jumps with zero runtime stack growth; execute's finally releases keys/buttons AND handles on every exit path; the compiler nests via an explicit heap stack (no Python recursion — the device pystack is only a few KB, so nesting depth is bounded by bytecode size, not call frames)
