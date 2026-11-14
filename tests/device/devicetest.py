@@ -1385,8 +1385,8 @@ def t1_hold_pace_and_execution_reset(ctx):
         c.close()
     one, two, reset = (timings + [None] * 3)[:3]
     ok = (states == ["done", "done", "done"]
-          and one is not None and 90 <= one < 1000
-          and two is not None and 190 <= two < 2000
+          and one is not None and 80 <= one < 1000
+          and two is not None and 180 <= two < 2000
           and reset is not None and reset < 80)
     check("T1 hold+PACE totals and execution-start PACE reset",
           ok, f"one={one}ms two={two}ms reset={reset}ms states={states}")

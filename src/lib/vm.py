@@ -932,8 +932,10 @@ class VM:
                                             for s in guard_slots[:guard_depth]
                                         )
                                         dt = min(rem_timeout, slice_quantum)
+                                        signaled = False
                                         try:
                                             await asyncio.wait_for(ev.wait(), dt / 1000.0)
+                                            signaled = True
                                         except _TimeoutError:
                                             pass
                                         now = get_now_ms()
@@ -944,7 +946,11 @@ class VM:
                                             slot = guard_slots[i]
                                             throttle_ms = slot[0]
                                             last_check_ms = slot[1]
-                                            if throttle_ms == 0 or (now - last_check_ms) >= throttle_ms:
+                                            if (
+                                                signaled
+                                                or throttle_ms == 0
+                                                or (now - last_check_ms) >= throttle_ms
+                                            ):
                                                 slot[1] = now
                                                 if not eval_guard_pred(slot[4]):
                                                     runtime.remove_waiter(sig, field, ev)
