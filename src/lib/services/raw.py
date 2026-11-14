@@ -19,9 +19,9 @@ from keymap import BTN_ALL
 
 
 DEFAULT_RAW_PORT = 7373
-MAX_CLIENTS = 4
-OUTBOX_CAP = 16
-AUTH_DEADLINE_S = 5.0
+MAX_CLIENTS = 2       # authed raw clients; extras are rejected at auth time
+OUTBOX_CAP = 32       # per-client queued push frames; beyond this the peer is not reading
+AUTH_DEADLINE_S = 5   # a connection must complete the auth prologue within this
 
 
 def get_raw_port():
