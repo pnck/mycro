@@ -260,28 +260,52 @@ class SyntaxMixin:
     @staticmethod
     def _substitute(body, args, name, pos):
         """Single-pass replacement of #1..#9 with args; ## -> literal '#'.
+        Lexical DFA state machine isolates comments (\\#) so that any '#1'
+        inside a line comment is treated as comment text, never as a macro parameter.
         Substituted text is NOT rescanned."""
+        STATE_TEXT = 0
+        STATE_COMMENT = 1
+
+        state = STATE_TEXT
         out = []
         i = 0
-        while i < len(body):
+        n = len(body)
+        while i < n:
             ch = body[i]
-            if ch == "#" and i + 1 < len(body):
-                nxt = body[i + 1]
-                if nxt == "#":
-                    out.append("#")
+            if state == STATE_TEXT:
+                # Check for comment transition: \#
+                if ch == "\\" and i + 1 < n and body[i + 1] == "#":
+                    out.append("\\#")
+                    i += 2
+                    state = STATE_COMMENT
+                    continue
+                # Preserve escaped backslash or braces
+                if ch == "\\" and i + 1 < n and body[i + 1] in "\\{}":
+                    out.append(body[i : i + 2])
                     i += 2
                     continue
-                if nxt.isdigit() and nxt != "0":
-                    idx = int(nxt) - 1
-                    if idx >= len(args):
-                        raise MacroError(
-                            f"macro {name}: #{nxt} used but only {len(args)} arg(s)", pos
-                        )
-                    out.append(args[idx])
-                    i += 2
-                    continue
-            out.append(ch)
-            i += 1
+                if ch == "#" and i + 1 < n:
+                    nxt = body[i + 1]
+                    if nxt == "#":
+                        out.append("#")
+                        i += 2
+                        continue
+                    if nxt.isdigit() and nxt != "0":
+                        idx = int(nxt) - 1
+                        if idx >= len(args):
+                            raise MacroError(
+                                f"macro {name}: #{nxt} used but only {len(args)} arg(s)", pos
+                            )
+                        out.append(args[idx])
+                        i += 2
+                        continue
+                out.append(ch)
+                i += 1
+            else:  # STATE_COMMENT
+                out.append(ch)
+                if ch in "\r\n":
+                    state = STATE_TEXT
+                i += 1
         return "".join(out)
 
     def _cmd_def(self, pos):

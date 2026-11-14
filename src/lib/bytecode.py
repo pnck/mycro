@@ -4,6 +4,8 @@
 import keymap
 from keymap import (
     ENTER, ESCAPE, BACKSPACE, TAB, SPACE, MINUS, EQUALS, DELETE,
+    LEFT_BRACKET, RIGHT_BRACKET, BACKSLASH, SEMICOLON, QUOTE, GRAVE_ACCENT,
+    COMMA, PERIOD, SLASH,
     RIGHT_ARROW, LEFT_ARROW, DOWN_ARROW, UP_ARROW,
     PAGE_UP, PAGE_DOWN, HOME, END, INSERT, CAPS_LOCK,
     PRINT_SCREEN, SCROLL_LOCK, PAUSE, APPLICATION,
@@ -135,6 +137,17 @@ KEYS = {
     "delete": DELETE,
     "minus": MINUS,
     "equal": EQUALS,
+    # Punctuation / Symbols (HID Page 0x07)
+    "bracketleft": LEFT_BRACKET,
+    "bracketright": RIGHT_BRACKET,
+    "backslash": BACKSLASH,
+    "semicolon": SEMICOLON,
+    "quote": QUOTE,
+    "grave": GRAVE_ACCENT,
+    "comma": COMMA,
+    "period": PERIOD,
+    "dot": PERIOD,
+    "slash": SLASH,
     # Navigation
     "up": UP_ARROW,
     "down": DOWN_ARROW,

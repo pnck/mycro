@@ -190,11 +190,12 @@ The close `}` of a `CodeBlock` ends that block. An open `{` encountered at a tex
 ### 5.1 Keyboard Operations and Chording
 
 ```ebnf
-KeyStmt      ::= SpecialKey | KeyCombo | KeyHold | KeyRelease
+KeyStmt      ::= SpecialKey | KeyCombo | KeyHold | KeyRelease | KeyTap
 SpecialKey   ::= "\" KeyName
 KeyCombo     ::= "\" KeyName ("+" ComboKeyName)+
 KeyHold      ::= "\kdown" "{" [ComboPayload] "}"
 KeyRelease   ::= "\kup" "{" [ComboPayload] "}"
+KeyTap       ::= "\tap" "{" ComboPayload "}"
 ComboPayload ::= ComboKeyName ("+" ComboKeyName)*
 ComboKeyName ::= KeyName | Digit
 KeyName      ::= [a-zA-Z] [a-zA-Z0-9_]*
@@ -215,6 +216,15 @@ Digit        ::= "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
 | | `minus` | — | `0x2D` | Main keyboard `-` / `_` |
 | | `equal` | — | `0x2E` | Main keyboard `=` / `+` |
 | | `plus` | — | `0x2E` with Shift | Main keyboard `+` |
+| Punctuation | `bracketleft` | — | `0x2F` | `[` / `{` |
+| | `bracketright` | — | `0x30` | `]` / `}` |
+| | `backslash` | — | `0x31` | `\` / `|` |
+| | `semicolon` | — | `0x33` | `;` / `:` |
+| | `quote` | — | `0x34` | `'` / `"` |
+| | `grave` | — | `0x35` | `` ` `` / `~` |
+| | `comma` | — | `0x36` | `,` / `<` |
+| | `period` | `dot` | `0x37` | `.` / `>` |
+| | `slash` | — | `0x38` | `/` / `?` |
 | Navigation | `ins` | `insert` | `0x49` | Insert |
 | | `del` | `delete` | `0x4C` | Forward Delete |
 | | `home` | — | `0x4A` | Home |
@@ -264,6 +274,7 @@ A lone key command lowers to one action:
 
 - `\kdown{combo}` emits the forward `KEY_DOWN` sequence; an empty `\kdown{}` emits no instructions because no keys are selected.
 - `\kup{combo}` emits the reverse `KEY_UP` sequence; an empty `\kup{}` releases all keyboard keys because no subset is selected.
+- `\tap{key}` or `\tap{combo}` explicitly executes a tap sequence: a lone key lowers to `CHAR` (printable) or `KEY` held for `click_hold_ms`; a combination lowers to the forward `KEY_DOWN` sequence, `SLEEP click_hold_ms`, and reverse `KEY_UP`.
 - In every keyboard hold/release payload, including a lone `0` and combinations containing `0`, `0` denotes the main-row zero key (usage `0x27`). It is not a release-all alias.
 
 Combination expansion preserves duplicates and source order. For example, `\a+A` produces `[a, shift, a]` down, one hold, and the reverse sequence up. Host treatment of repeated assertions of the same usage is platform-dependent.

@@ -845,14 +845,14 @@ def _img_watch(name, x, y, interval_ms, duration_ms):
 def _img_unwatch(name):
     async def run():
         sig_name = "img." + name
-        _active_watches.pop(name, None)
-        runtime.unregister_signal(sig_name)
         c = _img_client
         if c is not None and c.alive and c.authed:
             try:
                 await _img_request("img.unwatch", {"name": name})
             except Exception as e:
                 print("img.unwatch warning:", e)
+        _active_watches.pop(name, None)
+        runtime.unregister_signal(sig_name)
         return 0, ERR_OK
     return run()
 

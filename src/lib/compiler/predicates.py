@@ -333,12 +333,6 @@ class PredicateMixin:
         if inner is not None:
             if inner.startswith("slot."):
                 slot_name = inner[5:]
-            elif "." in inner:
-                slot_name = inner
-            else:
-                slot_name = None
-
-            if slot_name is not None:
                 sig, sep, field = slot_name.rpartition(".")
                 if not sep or not sig or not field:
                     raise MacroError(f"Invalid slot reference: {s}", pos)
@@ -347,6 +341,10 @@ class PredicateMixin:
                 sig_idx = self._str_idx(sig, pos)
                 field_idx = self._str_idx(field, pos)
                 return (GUARD_TAG_SLOT, bytes([sig_idx, field_idx]))
+            elif "." in inner:
+                raise MacroError(
+                    f"variable names cannot contain '.'; use $slot.{inner} for slots", pos
+                )
             else:
                 # Variable reference
                 reg = self._var_reg(inner, pos)

@@ -430,8 +430,9 @@ class ActionsMixin:
         else:
             name = s[1:].strip()
 
-        if name.startswith("slot."):
-            name = name[5:]
+        if not name.startswith("slot."):
+            raise MacroError(f"wait target must be a slot reference ($slot.<sig>.<field>): {s}", pos)
+        name = name[5:]
 
         if "." not in name:
             raise MacroError(f"wait target must be a slot reference ($slot.<sig>.<field>): {s}", pos)
@@ -466,6 +467,52 @@ class ActionsMixin:
             raise MacroError(f"rep nesting exceeds {MAX_RUNTIME_NEST} levels", pos)
         self._nest_into(body, "rep body", ("rep", count))
 
+    def _cmd_tap(self, pos):
+        r"""\tap{key} or \tap{combo} — single key or combination tap."""
+        arg = self._read_braces()
+        if arg is None:
+            raise MacroError("tap requires {key}", self._pos)
+        arg = arg.strip()
+        if not arg:
+            raise MacroError("tap requires non-empty {key}", pos)
+        if arg.startswith("$"):
+            raise MacroError("tap takes a key name, not a variable", pos)
+        tokens = [t.strip() for t in arg.split("+")]
+        if any(not t for t in tokens):
+            raise MacroError("Expected key after +", pos)
+        if len(tokens) > MAX_COMBO_KEYS:
+            raise MacroError(
+                f"key combination exceeds MAX_COMBO_KEYS={MAX_COMBO_KEYS}", pos
+            )
+        if len(tokens) == 1:
+            tok = tokens[0]
+            if len(tok) == 1:
+                if ("a" <= tok <= "z") or ("A" <= tok <= "Z") or ("0" <= tok <= "9"):
+                    self._emit(OP_CHAR, ord(tok))
+                    return
+            low = tok.lower()
+            if low in _PRINTABLE_LONE_KEYS:
+                self._emit(OP_CHAR, _PRINTABLE_LONE_KEYS[low])
+                return
+            if low in self.KEYS:
+                self._emit(OP_KEY, self.KEYS[low])
+                return
+            raise MacroError(f"Unknown key: {tok}", pos)
+
+        # Combination lowering: forward KEY_DOWN, SLEEP click_hold_ms, reverse KEY_UP
+        K = []
+        for tok in tokens:
+            K.extend(self._resolve_combo_key(tok, pos))
+        for kc in K:
+            self._emit(OP_KEY_DOWN)
+            self._emit_typed((TAG_IMM, kc))
+        if self._click_hold_ms > 0:
+            self._emit(OP_SLEEP)
+            self._emit_typed((TAG_IMM, self._click_hold_ms), 2)
+        for kc in reversed(K):
+            self._emit(OP_KEY_UP)
+            self._emit_typed((TAG_IMM, kc))
+
     def _cmd_kdown(self, pos):
         arg = self._read_braces()
         if arg is None:
@@ -484,8 +531,6 @@ class ActionsMixin:
             )
         K = []
         for t in tokens:
-            if t.startswith("\\"):
-                t = t[1:].strip()
             K.extend(self._resolve_combo_key(t, pos))
         for kc in K:
             self._emit(OP_KEY_DOWN)
@@ -511,8 +556,6 @@ class ActionsMixin:
             )
         K = []
         for t in tokens:
-            if t.startswith("\\"):
-                t = t[1:].strip()
             K.extend(self._resolve_combo_key(t, pos))
         for kc in reversed(K):
             self._emit(OP_KEY_UP)

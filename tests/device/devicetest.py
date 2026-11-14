@@ -1175,6 +1175,31 @@ def g11_img_out_of_bounds_rect(ctx):
     c.close()
 
 
+IMG_WATCH_TELEMETRY = (
+    "\\#!syntax: free\n"
+    "\\use{img}\\use{net}\n"
+    "\\call{img.watch}{btn}{10,8}{50ms,10s}\n"
+    "\\wait[5s]{$slot.img.btn.val}\n"
+    "\\if{ {$slot.img.btn.val, =, 0x466E96} }{\n"
+    "  \\call{net.send}{watch_ok}\n"
+    "}{\n"
+    "  \\call{net.send}{watch_wrong}\n"
+    "}\n"
+    "\\call{img.unwatch}{btn}\n"
+)
+
+
+def g12_img_watch_telemetry_flow(ctx):
+    """End-to-end watch telemetry: register watch point, receive push event,
+    wake wait on slot, evaluate color value, and clean unwatch (harmless network loopback only)."""
+    _ensure_provider(ctx)
+    tags, res = submit_tag_sequence(ctx, IMG_WATCH_TELEMETRY, timeout=10)
+    check("G12 img.watch telemetry -> event.push -> slot wait -> unwatch",
+          tags == ["watch_ok"] and res is not None
+          and res["payload"]["state"] == "done",
+          str(tags))
+
+
 # --- V/H/R/T/I: v4 conformance on the device ---
 
 
@@ -1513,7 +1538,8 @@ def main(argv=None):
              g5_img_diff, g6_handle_overwrite_reuse, g7_capture_passthrough,
              g7b_preview_rejections, g7c_preview_busy_conflict,
              g8_pixelrect_literal, g9_stream_throughput, g10_snap_pool_exhaustion,
-             g11_img_out_of_bounds_rect, h2_shared_handle_lifecycle,
+             g11_img_out_of_bounds_rect, g12_img_watch_telemetry_flow,
+             h2_shared_handle_lifecycle,
              h3_abort_releases_handle_pool, i1_multichunk_snapshot]
     if not args.skip_slow:
         cases.append(a4_slow_auth_deadline)

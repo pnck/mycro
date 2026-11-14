@@ -519,6 +519,24 @@ def handle(s, env):
         send_error(s, rid, "field", "%s: %s" % (type(e).__name__, e))
 
 
+def _get_source_dimensions():
+    """Query dimensions of active capture source without taking a screenshot."""
+    if not source_name:
+        raise ImgFail("no capture source configured in OBS script settings")
+    with _cap_lock:
+        src = obs.obs_get_source_by_name(source_name)
+        if src is None:
+            raise ImgFail("capture source %r not found (was it renamed or deleted?)" % source_name)
+        try:
+            w = obs.obs_source_get_width(src) if hasattr(obs, "obs_source_get_width") else 0
+            h = obs.obs_source_get_height(src) if hasattr(obs, "obs_source_get_height") else 0
+            if w <= 0 or h <= 0:
+                raise ImgFail("source %r has no video output or dimensions are 0x0" % source_name)
+            return w, h
+        finally:
+            obs.obs_source_release(src)
+
+
 def handle_watch(s, rid, p):
     name = p.get("name")
     if not isinstance(name, str) or not name:
@@ -528,8 +546,7 @@ def handle_watch(s, rid, p):
     duration_ms = int(p.get("duration_ms"))
     if x < 0 or y < 0 or interval_ms <= 0 or duration_ms <= 0:
         raise ImgField("invalid watch parameters")
-    im = capture()
-    W, H = im.size
+    W, H = _get_source_dimensions()
     if x >= W or y >= H:
         raise ImgBounds("point (%d,%d) outside source bounds (%dx%d)" % (x, y, W, H))
     prev_stop = _watches.pop(name, None)
@@ -546,11 +563,17 @@ def handle_watch(s, rid, p):
             if time.monotonic() >= deadline:
                 break
             try:
+                if w_stop.is_set():
+                    break
                 im_curr = capture()
+                if w_stop.is_set():
+                    break
                 c_w, c_h = im_curr.size
                 if 0 <= wx < c_w and 0 <= wy < c_h:
                     r, g, b = im_curr.load()[wx, wy][:3]
                     val = (r << 16) | (g << 8) | b
+                    if w_stop.is_set():
+                        break
                     send_env(s, "event.push", 0, {
                         "name": "img." + w_name,
                         "fields": {"val": val},

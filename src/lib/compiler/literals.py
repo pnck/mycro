@@ -97,7 +97,7 @@ class LiteralMixin:
 
     def _var_reg(self, name, pos, reserved=()):
         """Resolve a bare variable name to a register (read access).
-        Signal slots ($sig.field) emit a READSLOT into a temp register."""
+        Signal slots ($slot.<sig>.<field>) emit a READSLOT into a temp register."""
         if name == "ret":
             return REG_RET
         if name == "timeout":
@@ -105,11 +105,8 @@ class LiteralMixin:
         if name == "err":
             return REG_ERR
         if name.startswith("slot."):
-            name = name[5:]
-        if "." in name:
-            # $sig.field — signal names may themselves contain dots
-            # (net.msg), so split at the LAST dot
-            sig, sep, field = name.rpartition(".")
+            slot_name = name[5:]
+            sig, sep, field = slot_name.rpartition(".")
             if not sep or not sig or not field:
                 raise MacroError(f"Invalid slot reference: {name}", pos)
             ns = sig.split(".")[0]
@@ -119,6 +116,10 @@ class LiteralMixin:
                 OP_READSLOT, reg, self._str_idx(sig, pos), self._str_idx(field, pos)
             )
             return reg
+        if "." in name:
+            raise MacroError(
+                f"variable names cannot contain '.'; use $slot.{name} for slots", pos
+            )
         if name not in self._vars:
             raise MacroError(f"Undefined variable: {name}", pos)
         return self._vars[name]
