@@ -119,11 +119,11 @@ async function main() {
 			(() => {
 				const drawer = document.getElementById('manualDrawer');
 				const backdrop = document.getElementById('manualDrawerBackdrop');
-				const backdropStyle = window.getComputedStyle(backdrop);
+				const backdropStyle = backdrop ? window.getComputedStyle(backdrop) : null;
 				return {
 					isOpen: drawer.classList.contains('open'),
-					backdropDisplay: backdropStyle.display,
-					backdropPointerEvents: backdropStyle.pointerEvents
+					backdropDisplay: backdropStyle?.display,
+					backdropPointerEvents: backdropStyle?.pointerEvents ?? "none"
 				};
 			})()
 		`);
@@ -367,6 +367,29 @@ async function main() {
 			">=",
 			"\\if{ {$x, >="
 		);
+
+		console.log("\n--- TEST 6: Clickable Section Cross-References ---");
+		const xrefResult = await evaluate(`
+			(() => {
+				const link = document.querySelector('.manual-xref-link');
+				if (!link) return { found: false };
+				const secName = link.getAttribute('data-section');
+				link.click();
+				const targetSec = Array.from(document.querySelectorAll('.manual-section')).find(s => {
+					return s.querySelector('.manual-section-name')?.textContent?.trim() === secName;
+				});
+				return {
+					found: true,
+					secName,
+					isTargetOpen: targetSec && !targetSec.classList.contains('collapsed'),
+					hasHighlight: targetSec && targetSec.classList.contains('manual-section-highlight')
+				};
+			})()
+		`);
+		console.log("Xref click result:", xrefResult);
+		if (!xrefResult.found) throw new Error("No .manual-xref-link found in manual content!");
+		if (!xrefResult.isTargetOpen) throw new Error(`Target section '${xrefResult.secName}' failed to open upon clicking cross-reference link!`);
+		console.log(`✓ Requirement 6: Cross-reference link opens and highlights '${xrefResult.secName}'.`);
 
 		console.log("\n=================================");
 		console.log("ALL REQUIREMENTS VERIFIED IN E2E!");

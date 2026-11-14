@@ -19,9 +19,10 @@
 			<span class="macro-preset-sep"></span>
 			<button type="button" id="macroExportBtn">Export</button>
 			<button type="button" id="macroImportBtn">Import</button>
+			<button type="button" id="macroFormatBtn" title="Format Macro (Shift+Alt+F)">Format</button>
 			<input type="file" id="macroImportFile" accept=".json,application/json" style="display:none">
 			<span class="macro-preset-sep"></span>
-			<button type="button" id="openManualBtn" class="manual-btn-toggle" title="Open Quick Manual (DSL v4)">📖 Manual</button>
+			<button type="button" id="openManualBtn" title="Open Quick Manual (DSL v4)">Manual</button>
 		</div>
 		<div id="macroEditorContainer" class="macro-editor-wrapper"></div>
 		<textarea id="macroCode" name="code" style="display:none"></textarea>
@@ -71,36 +72,33 @@
 
 	<details style="margin:8px 0 16px 0;font-size:12px;color:#57606a">
 		<summary style="cursor:pointer;user-select:none;font-weight:600">OBS Capture Script Setup Guide</summary>
-		<p style="margin:4px 0 6px 0">The OBS script streams native-resolution screen frames to MYCRO (:7373) for Pixel Assist and <code>img.*</code> macro operations.</p>
-		<table>
-			<tr><th>Step</th><th>Instructions</th></tr>
-			<tr><td>1. Obtain script</td><td><a href="/obs/obs_mycro.py" download="obs_mycro.py">Download <code>obs_mycro.py</code></a> or copy from the device USB drive (<code>/obs/obs_mycro.py</code>).</td></tr>
-			<tr><td>2. Python environment</td><td>In OBS Studio: <strong>Tools &rarr; Scripts &rarr; Python Settings</strong>. Configure a 64-bit Python 3.10+ path with Pillow (<code>pip install pillow</code>).</td></tr>
-			<tr><td>3. Load script</td><td>Under <strong>Scripts</strong> tab, click <strong>+</strong> and select <code>obs_mycro.py</code>.</td></tr>
-			<tr><td>4. Connect</td><td>Enter your MYCRO device IP (and token if set), then click <strong>Connect</strong> to establish session.</td></tr>
-		</table>
+		<p style="margin:4px 0 6px 0">Streams screen frames to MYCRO (:7373) for Pixel Assist and <code>img.*</code> operations.</p>
+		<ol style="margin:4px 0;padding-left:18px">
+			<li><a href="/obs/obs_mycro.py" download="obs_mycro.py">Download <code>obs_mycro.py</code></a> (or copy from USB drive).</li>
+			<li>In OBS: <strong>Tools &rarr; Scripts &rarr; Python Settings</strong> (Python 3.10+, <code>pip install pillow</code>).</li>
+			<li>Under <strong>Scripts</strong> tab, click <strong>+</strong>, select <code>obs_mycro.py</code>, enter IP, and connect.</li>
+		</ol>
 	</details>
 
-	<!-- Standalone Pixel Assist Overlay Workspace -->
 	<div id="paOverlay">
 		<div id="paTopBar">
 			<div style="display:flex;align-items:center;gap:12px">
 				<button type="button" id="paCloseBtn" class="pa-btn pa-btn-danger">Close (Esc)</button>
 				<span style="font-weight:600;font-size:14px;letter-spacing:0.3px">Pixel Assist</span>
 				<span id="paResBadge" class="pa-badge" style="display:none">0×0</span>
-				<button type="button" id="paShieldWarning" class="pa-badge pa-badge-warn" style="display:none;cursor:pointer;border:1px solid #d4a72c" title="Click for details on browser canvas noise">Anti-Fingerprint Active</button>
-				<a href="/obs/obs_mycro.py" download="obs_mycro.py" class="pa-btn" style="padding:4px 8px;font-size:12px" title="Download OBS capture script">OBS Script</a>
+				<button type="button" id="paShieldWarning" class="pa-badge pa-badge-warn" style="display:none;cursor:pointer" title="Click for details on browser canvas noise">Anti-Fingerprint Active</button>
+				<a href="/obs/obs_mycro.py" download="obs_mycro.py" class="pa-btn pa-btn-sm" title="Download OBS capture script">OBS Script</a>
 			</div>
 			<div style="display:flex;align-items:center;gap:10px">
-				<span id="paCaptureStatus" style="font-size:12px;color:#57606a"></span>
+				<span id="paCaptureStatus"></span>
 				<button type="button" id="paCaptureBtn" class="pa-btn pa-btn-primary">Capture Screen</button>
 				<div class="pa-toggle-group">
 					<button type="button" id="paModePoint" class="pa-toggle-btn active">Point</button>
 					<button type="button" id="paModeRegion" class="pa-toggle-btn">Region</button>
 				</div>
 				<div style="display:flex;align-items:center;gap:4px">
-					<button type="button" id="paZoomOutBtn" class="pa-btn" style="padding:4px 8px;font-size:12px" title="Zoom Out">−</button>
-					<select id="paZoomSelect" style="background:#ffffff;color:#24292f;border:1px solid #d0d7de;border-radius:4px;padding:3px 6px;font-size:12px;font-weight:500;min-width:76px;text-align:center">
+					<button type="button" id="paZoomOutBtn" class="pa-btn pa-btn-sm" title="Zoom Out">−</button>
+					<select id="paZoomSelect" class="pa-zoom-select">
 						<option id="paZoomCustomOpt" value="custom" style="display:none">100%</option>
 						<option value="fit">Fit</option>
 						<option value="0.25">25%</option>
@@ -111,9 +109,9 @@
 						<option value="8">800%</option>
 						<option value="16">1600%</option>
 					</select>
-					<button type="button" id="paZoomInBtn" class="pa-btn" style="padding:4px 8px;font-size:12px" title="Zoom In">+</button>
-					<button type="button" id="paZoomFitBtn" class="pa-btn" style="padding:4px 8px;font-size:12px" title="Fit to Viewport">Fit</button>
-					<button type="button" id="paGridToggleBtn" class="pa-btn" style="padding:4px 8px;font-size:12px;font-weight:600" title="Toggle Pixel Grid (auto-activates at 400%+ zoom)">Grid</button>
+					<button type="button" id="paZoomInBtn" class="pa-btn pa-btn-sm" title="Zoom In">+</button>
+					<button type="button" id="paZoomFitBtn" class="pa-btn pa-btn-sm" title="Fit to Viewport">Fit</button>
+					<button type="button" id="paGridToggleBtn" class="pa-btn pa-btn-sm" style="font-weight:600" title="Toggle Pixel Grid (auto-activates at 400%+ zoom)">Grid</button>
 				</div>
 			</div>
 		</div>
@@ -137,54 +135,50 @@
 					</defs>
 					<rect id="paPixelGridRect" x="0" y="0" width="100%" height="100%" fill="url(#paPixelGridPattern)" style="display:none;pointer-events:none;"></rect>
 					<g id="paSvgSelectionGroup" style="display:none">
-						<rect id="paSvgBoxBody" x="0" y="0" width="0" height="0" fill="rgba(9, 105, 218, 0.1)"></rect>
-						<rect id="paSvgBox" x="0" y="0" width="0" height="0" fill="none" stroke="#0969da" stroke-width="1.5" style="pointer-events:none;"></rect>
-						<rect id="paSvgBoxOuter" x="0" y="0" width="0" height="0" fill="none" stroke="#ffffff" stroke-width="1" stroke-dasharray="3,3" style="pointer-events:none;"></rect>
+						<rect id="paSvgBoxBody" x="0" y="0" width="0" height="0"></rect>
+						<rect id="paSvgBox" x="0" y="0" width="0" height="0"></rect>
+						<rect id="paSvgBoxOuter" x="0" y="0" width="0" height="0"></rect>
 						<g id="paSvgHandles" style="display:none">
-							<rect class="pa-handle" data-handle="nw" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
-							<rect class="pa-handle" data-handle="n" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
-							<rect class="pa-handle" data-handle="ne" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
-							<rect class="pa-handle" data-handle="e" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
-							<rect class="pa-handle" data-handle="se" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
-							<rect class="pa-handle" data-handle="s" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
-							<rect class="pa-handle" data-handle="sw" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
-							<rect class="pa-handle" data-handle="w" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="nw" width="7" height="7"></rect>
+							<rect class="pa-handle" data-handle="n" width="7" height="7"></rect>
+							<rect class="pa-handle" data-handle="ne" width="7" height="7"></rect>
+							<rect class="pa-handle" data-handle="e" width="7" height="7"></rect>
+							<rect class="pa-handle" data-handle="se" width="7" height="7"></rect>
+							<rect class="pa-handle" data-handle="s" width="7" height="7"></rect>
+							<rect class="pa-handle" data-handle="sw" width="7" height="7"></rect>
+							<rect class="pa-handle" data-handle="w" width="7" height="7"></rect>
 						</g>
 					</g>
 				</svg>
 			</div>
 		</div>
 
-		<!-- Anti-Fingerprint Noise Blocking Modal -->
-		<div id="paShieldModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.65);z-index:10005;align-items:center;justify-content:center;">
+		<div id="paShieldModal" style="display:none">
 			<div class="pa-shield-card">
-				<h4 style="margin:0 0 12px 0;display:flex;align-items:center;gap:8px;color:#cf222e;font-size:16px;font-weight:600">
-					Canvas Noise Detected — Color Picker Blocked
-				</h4>
-				<p style="font-size:13px;line-height:1.5;margin-bottom:12px;color:#57606a">
+				<h4>Canvas Noise Detected — Color Picker Blocked</h4>
+				<p class="pa-shield-desc">
 					Your browser or an active extension (e.g. Brave Shields, CanvasBlocker, Firefox <code>privacy.resistFingerprinting</code>) is modifying canvas pixel data on readout.
 				</p>
-				<div style="background:#ffebe9;border:1px solid #ff8182;border-radius:6px;padding:12px;font-size:12px;line-height:1.5;margin-bottom:14px">
-					<strong style="color:#cf222e">Why sampling is completely blocked:</strong>
-					<p style="margin:4px 0 0 0;color:#57606a">
-						MYCRO macros execute conditional color checks (e.g. <code>\ifnum{$ret}{=}{0xRRGGBB}</code>) requiring exact 24-bit RGB values. Random noise injection corrupts sampled pixel channels, which causes macros to fail on hardware.
+				<div class="pa-shield-box">
+					<strong>Why sampling is completely blocked:</strong>
+					<p>
+						MYCRO macros execute conditional color checks (e.g. <code>\if{ {$ret, =, 0xRRGGBB} }</code>) requiring exact 24-bit RGB values. Random noise injection corrupts sampled pixel channels, which causes macros to fail on hardware.
 					</p>
 				</div>
-				<div style="font-size:12px;margin-bottom:16px;color:#57606a;line-height:1.5">
-					<strong style="color:#24292f">How to unblock:</strong>
-					<p style="margin:4px 0 0 0">
+				<div class="pa-shield-action">
+					<strong>How to unblock:</strong>
+					<p>
 						Disable canvas fingerprinting protection for this origin/IP in your browser shield settings, then click <strong>Re-test &amp; Unlock</strong>.
 					</p>
 				</div>
-				<div id="paShieldModalResult" style="display:none;margin-bottom:14px;padding:8px 12px;border-radius:5px;font-size:12px;font-weight:600"></div>
-				<div style="display:flex;justify-content:flex-end;gap:10px">
+				<div id="paShieldModalResult" style="display:none"></div>
+				<div class="pa-shield-footer">
 					<button type="button" id="paExitShieldModalBtn" class="pa-btn pa-btn-danger">Exit Pixel Assist</button>
 					<button type="button" id="paRetestShieldBtn" class="pa-btn pa-btn-primary">Re-test &amp; Unlock</button>
 				</div>
 			</div>
 		</div>
 
-		<!-- Floating Inspector HUD -->
 		<div id="paInspector" style="display:none">
 			<div style="display:flex;justify-content:space-between;align-items:center">
 				<span class="pa-panel-title">Pixel Loupe (11×11)</span>
@@ -203,36 +197,35 @@
 				<div class="pa-panel-title">Inspection Values (Pinned)</div>
 				<div style="display:flex;flex-direction:column;gap:5px">
 					<div class="pa-data-row">
-						<span style="color:#57606a">Coordinate:</span>
-						<span id="paCoordText" style="color:#24292f">X: 0, Y: 0</span>
+						<span>Coordinate:</span>
+						<span id="paCoordText">X: 0, Y: 0</span>
 						<button type="button" class="pa-copy-btn" id="paCopyCoordBtn" title="Copy coordinate (Shortcut: X)">Copy <kbd>X</kbd></button>
 					</div>
 					<div class="pa-data-row">
-						<span style="color:#57606a">Hex (DSL):</span>
-						<span id="paHexDslText" style="color:#24292f">0x000000</span>
+						<span>Hex (DSL):</span>
+						<span id="paHexDslText">0x000000</span>
 						<button type="button" class="pa-copy-btn" id="paCopyHexDslBtn" title="Copy DSL hex color (Shortcut: C)">Copy <kbd>C</kbd></button>
 					</div>
 					<div class="pa-data-row">
-						<span style="color:#57606a">Hex (CSS):</span>
-						<span id="paHexCssText" style="color:#24292f">#000000</span>
+						<span>Hex (CSS):</span>
+						<span id="paHexCssText">#000000</span>
 						<button type="button" class="pa-copy-btn" id="paCopyHexCssBtn" title="Copy CSS hex color">Copy</button>
 					</div>
 					<div class="pa-data-row">
-						<span style="color:#57606a">RGB:</span>
-						<span id="paRgbText" style="color:#24292f">rgb(0, 0, 0)</span>
+						<span>RGB:</span>
+						<span id="paRgbText">rgb(0, 0, 0)</span>
 						<button type="button" class="pa-copy-btn" id="paCopyRgbBtn" title="Copy RGB color">Copy</button>
 					</div>
 				</div>
 			</div>
 
-			<!-- Region controls (visible in Region Mode) -->
 			<div id="paRegionControls" style="display:none">
 				<div class="pa-panel-title">Region Bounds</div>
-				<div style="grid-template-columns:1fr 1fr;display:grid;gap:6px;font-size:12px">
-					<label style="color:#57606a">X: <input type="number" id="paInX" min="0" style="width:65px;background:#ffffff;color:#24292f;border:1px solid #d0d7de;border-radius:3px;padding:2px 4px"></label>
-					<label style="color:#57606a">Y: <input type="number" id="paInY" min="0" style="width:65px;background:#ffffff;color:#24292f;border:1px solid #d0d7de;border-radius:3px;padding:2px 4px"></label>
-					<label style="color:#57606a">W: <input type="number" id="paInW" min="1" max="128" style="width:65px;background:#ffffff;color:#24292f;border:1px solid #d0d7de;border-radius:3px;padding:2px 4px"></label>
-					<label style="color:#57606a">H: <input type="number" id="paInH" min="1" max="128" style="width:65px;background:#ffffff;color:#24292f;border:1px solid #d0d7de;border-radius:3px;padding:2px 4px"></label>
+				<div class="pa-bounds-grid">
+					<label>X: <input type="number" id="paInX" min="0" class="pa-bound-input"></label>
+					<label>Y: <input type="number" id="paInY" min="0" class="pa-bound-input"></label>
+					<label>W: <input type="number" id="paInW" min="1" max="128" class="pa-bound-input"></label>
+					<label>H: <input type="number" id="paInH" min="1" max="128" class="pa-bound-input"></label>
 				</div>
 				<div id="paRegionSwatches" style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap"></div>
 			</div>
@@ -248,12 +241,10 @@
 		</div>
 	</div>
 
-	<!-- Interactive Quick Manual Slide-over Drawer -->
-	<div id="manualDrawerBackdrop" class="manual-drawer-backdrop" style="display:none"></div>
 	<aside id="manualDrawer" class="manual-drawer" aria-label="Interactive Quick Manual">
 		<div class="manual-drawer-header">
 			<div class="manual-drawer-title-row">
-				<h3 class="manual-drawer-title">📖 MYCRO DSL Manual</h3>
+				<h3 class="manual-drawer-title">MYCRO DSL Manual</h3>
 				<button type="button" id="closeManualBtn" class="manual-drawer-close" title="Close Manual (Esc)">✕</button>
 			</div>
 			<p class="manual-drawer-desc">Click any command badge or snippet to insert at cursor.</p>
@@ -267,21 +258,15 @@
 				<button type="button" id="manualCollapseAllBtn" class="manual-action-link">Collapse All</button>
 			</div>
 		</div>
-		<!-- Live Token Inspector & Candidates Dictionary -->
 		<div id="manualLiveInspector" class="manual-live-inspector">
-			<!-- Permanent Structural Status Bar (Scope & Bracket Balance) -->
-			<div class="inspector-status-bar" id="inspectorStatusBar">
+			<div class="inspector-status-bar">
 				<div class="inspector-scope-wrapper">
-					<span class="inspector-scope-icon">📍</span>
 					<span class="inspector-scope-label" id="inspectorScope">Scope: Document Root</span>
 				</div>
-				<div class="inspector-bracket-wrapper">
-					<span class="inspector-bracket-status bracket-balanced" id="inspectorBracketStatus">✓ Braces: Balanced (depth 0)</span>
-				</div>
+				<span class="inspector-bracket-status bracket-balanced" id="inspectorBracketStatus">✓ Braces: Balanced (depth 0)</span>
 			</div>
 
-			<!-- Lexical Candidates Panel (Commands, Keys, Variables, Slots) -->
-			<div class="inspector-lexical-panel" id="inspectorLexicalPanel">
+			<div class="inspector-lexical-panel">
 				<div class="inspector-header">
 					<div class="inspector-status-left">
 						<span class="inspector-dot"></span>
@@ -290,16 +275,13 @@
 					</div>
 					<span class="inspector-match-count" id="inspectorMatchCount"></span>
 				</div>
-				<div class="inspector-candidates-body" id="inspectorCandidatesBody">
-					<span class="inspector-idle-guide">💡 Live Inspector Ready: Type <code>\</code> for commands, <code>$</code> for variables/slots, or edit inside <code>{...}</code></span>
-				</div>
+				<div class="inspector-candidates-body" id="inspectorCandidatesBody"></div>
 			</div>
 		</div>
 		<div class="manual-drawer-body" id="manualDrawerContent"></div>
 	</aside>
 
-	<!-- Floating Quick Manual Button -->
-	<button type="button" id="floatingManualBtn" class="manual-floating-tab" title="Quick Manual (DSL v4)">📖 Manual</button>
+	<button type="button" id="floatingManualBtn" class="manual-floating-tab" title="Quick Manual (DSL v4)">Manual</button>
 
 	<script type="module" src="/src/main.ts"></script>
 </body>

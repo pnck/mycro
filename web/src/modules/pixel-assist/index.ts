@@ -654,6 +654,24 @@ export function initPixelAssist(): void {
 		} catch {}
 	}
 
+	function getActivePixel(): [number, number, number] {
+		const tx = mode === "point" ? point.x : region.x + (region.w >> 1);
+		const ty = mode === "point" ? point.y : region.y + (region.h >> 1);
+		return getPixel(tx, ty);
+	}
+
+	function getActiveCoords(): string {
+		return mode === "point" ? `${point.x},${point.y}` : `${region.x},${region.y},${region.w},${region.h}`;
+	}
+
+	function setCaptureStatus(text: string, type: "ok" | "err" | "info"): void {
+		if (!paCaptureStatus) return;
+		paCaptureStatus.textContent = text;
+		const c = type === "ok" ? "#1a7f37;#dafbe1;#4ac26b" : (type === "err" ? "#cf222e;#ffebe9;#ff8182" : "#0969da;#ddf4ff;#54aeff");
+		const [fg, bg, bd] = c.split(";");
+		paCaptureStatus.style.cssText = `font-size:12px;color:${fg};background:${bg};border:1px solid ${bd};border-radius:4px;padding:2px 8px;`;
+	}
+
 	function onKeyDown(e: KeyboardEvent) {
 		if (!isOverlayOpen || shieldBlocked) return;
 		const target = e.target as HTMLElement | null;
@@ -677,15 +695,12 @@ export function initPixelAssist(): void {
 
 		const key = e.key.toLowerCase();
 		if (key === "c" && !e.metaKey && !e.ctrlKey) {
-			const targetX = mode === "point" ? point.x : region.x + (region.w >> 1);
-			const targetY = mode === "point" ? point.y : region.y + (region.h >> 1);
-			const [r, g, b] = getPixel(targetX, targetY);
+			const [r, g, b] = getActivePixel();
 			copyText("0x" + toHex(r, g, b));
 			flashKeyActive(paCopyHexDslBtn);
 			e.preventDefault();
 		} else if (key === "x" && !e.metaKey && !e.ctrlKey) {
-			const coords = mode === "point" ? `${point.x},${point.y}` : `${region.x},${region.y},${region.w},${region.h}`;
-			copyText(coords);
+			copyText(getActiveCoords());
 			flashKeyActive(paCopyCoordBtn);
 			e.preventDefault();
 		} else if (key === "s" && !e.metaKey && !e.ctrlKey) {
@@ -724,31 +739,28 @@ export function initPixelAssist(): void {
 		}
 	}
 
-	function attachOverlayListeners() {
-		window.addEventListener("keydown", onKeyDown);
-		window.addEventListener("keyup", onKeyUp);
-		window.addEventListener("resize", onResize);
+	const vpEvents: [string, any, any?][] = [
+		["pointerdown", onViewportPointerDown],
+		["pointermove", onViewportPointerMove],
+		["pointerup", onViewportPointerUp],
+		["pointercancel", onViewportPointerCancel],
+		["pointerleave", onViewportPointerLeave],
+		["wheel", onViewportWheel, { passive: false }]
+	];
+	const winEvents: [string, any][] = [
+		["keydown", onKeyDown],
+		["keyup", onKeyUp],
+		["resize", onResize]
+	];
 
-		paViewport.addEventListener("pointerdown", onViewportPointerDown);
-		paViewport.addEventListener("pointermove", onViewportPointerMove);
-		paViewport.addEventListener("pointerup", onViewportPointerUp);
-		paViewport.addEventListener("pointercancel", onViewportPointerCancel);
-		paViewport.addEventListener("pointerleave", onViewportPointerLeave);
-		paViewport.addEventListener("wheel", onViewportWheel, { passive: false });
+	function attachOverlayListeners() {
+		for (const [e, fn, opt] of vpEvents) paViewport.addEventListener(e, fn, opt);
+		for (const [e, fn] of winEvents) window.addEventListener(e, fn);
 	}
 
 	function detachOverlayListeners() {
-		window.removeEventListener("keydown", onKeyDown);
-		window.removeEventListener("keyup", onKeyUp);
-		window.removeEventListener("resize", onResize);
-
-		paViewport.removeEventListener("pointerdown", onViewportPointerDown);
-		paViewport.removeEventListener("pointermove", onViewportPointerMove);
-		paViewport.removeEventListener("pointerup", onViewportPointerUp);
-		paViewport.removeEventListener("pointercancel", onViewportPointerCancel);
-		paViewport.removeEventListener("pointerleave", onViewportPointerLeave);
-		paViewport.removeEventListener("wheel", onViewportWheel);
-
+		for (const [e, fn] of vpEvents) paViewport.removeEventListener(e, fn);
+		for (const [e, fn] of winEvents) window.removeEventListener(e, fn);
 		activeDrag = null;
 		isSpaceDown = false;
 		paViewport.classList.remove("pa-pan-ready", "pa-panning");
@@ -833,36 +845,17 @@ export function initPixelAssist(): void {
 	});
 
 	// Copy & Snippet Action Listeners
-	paCopyCoordBtn?.addEventListener("click", () => {
-		const coords = mode === "point" ? `${point.x},${point.y}` : `${region.x},${region.y},${region.w},${region.h}`;
-		copyText(coords);
-		flashKeyActive(paCopyCoordBtn);
-	});
-	paCopyHexDslBtn?.addEventListener("click", () => {
-		const targetX = mode === "point" ? point.x : region.x + (region.w >> 1);
-		const targetY = mode === "point" ? point.y : region.y + (region.h >> 1);
-		const [r, g, b] = getPixel(targetX, targetY);
-		copyText("0x" + toHex(r, g, b));
-		flashKeyActive(paCopyHexDslBtn);
-	});
-	paCopyHexCssBtn?.addEventListener("click", () => {
-		const targetX = mode === "point" ? point.x : region.x + (region.w >> 1);
-		const targetY = mode === "point" ? point.y : region.y + (region.h >> 1);
-		const [r, g, b] = getPixel(targetX, targetY);
-		copyText("#" + toHex(r, g, b));
-		flashKeyActive(paCopyHexCssBtn);
-	});
-	paCopyRgbBtn?.addEventListener("click", () => {
-		const targetX = mode === "point" ? point.x : region.x + (region.w >> 1);
-		const targetY = mode === "point" ? point.y : region.y + (region.h >> 1);
-		const [r, g, b] = getPixel(targetX, targetY);
-		copyText(`rgb(${r}, ${g}, ${b})`);
-		flashKeyActive(paCopyRgbBtn);
-	});
-	paCopySnippetBtn?.addEventListener("click", () => {
-		copyText(paSnippetBox.value);
-		flashKeyActive(paCopySnippetBtn);
-	});
+	function bindCopy(btn: HTMLElement | null, fn: () => string) {
+		btn?.addEventListener("click", () => {
+			copyText(fn());
+			flashKeyActive(btn);
+		});
+	}
+	bindCopy(paCopyCoordBtn, getActiveCoords);
+	bindCopy(paCopyHexDslBtn, () => "0x" + toHex(...getActivePixel()));
+	bindCopy(paCopyHexCssBtn, () => "#" + toHex(...getActivePixel()));
+	bindCopy(paCopyRgbBtn, () => { const [r, g, b] = getActivePixel(); return `rgb(${r}, ${g}, ${b})`; });
+	bindCopy(paCopySnippetBtn, () => paSnippetBox.value);
 
 	paInsertSnippetBtn?.addEventListener("click", () => {
 		const snip = paSnippetBox.value;
@@ -931,11 +924,7 @@ export function initPixelAssist(): void {
 			renderSelection();
 			renderPinned();
 
-			if (paCaptureStatus) {
-				paCaptureStatus.textContent = `Ready (${img.width}×${img.height})`;
-				paCaptureStatus.style.cssText =
-					"font-size:12px;color:#1a7f37;background:#dafbe1;border:1px solid #4ac26b;border-radius:4px;padding:2px 8px;";
-			}
+			setCaptureStatus(`Ready (${img.width}×${img.height})`, "ok");
 			if (paMainStatus) {
 				paMainStatus.textContent = `${sourceLabel}: ${img.width}×${img.height}`;
 				paMainStatus.style.color = "#57606a";
@@ -947,11 +936,7 @@ export function initPixelAssist(): void {
 		};
 		loadedImg.onerror = () => {
 			URL.revokeObjectURL(url);
-			if (paCaptureStatus) {
-				paCaptureStatus.textContent = "Failed to decode image";
-				paCaptureStatus.style.cssText =
-					"font-size:12px;color:#cf222e;background:#ffebe9;border:1px solid #ff8182;border-radius:4px;padding:2px 8px;";
-			}
+			setCaptureStatus("Failed to decode image", "err");
 			if (paCaptureBtn) paCaptureBtn.disabled = false;
 			if (paCapturePromptBtn) paCapturePromptBtn.disabled = false;
 			isCapturing = false;
@@ -964,11 +949,7 @@ export function initPixelAssist(): void {
 		isCapturing = true;
 		if (paCaptureBtn) paCaptureBtn.disabled = true;
 		if (paCapturePromptBtn) paCapturePromptBtn.disabled = true;
-		if (paCaptureStatus) {
-			paCaptureStatus.textContent = "Requesting screen from capture provider...";
-			paCaptureStatus.style.cssText =
-				"font-size:12px;color:#0969da;background:#ddf4ff;border:1px solid #54aeff;border-radius:4px;padding:2px 8px;";
-		}
+		setCaptureStatus("Requesting screen from capture provider...", "info");
 
 		try {
 			const postRes = await fetch("/img/capture", {
@@ -980,11 +961,7 @@ export function initPixelAssist(): void {
 				throw new Error(txt || `Capture trigger HTTP ${postRes.status}`);
 			}
 		} catch (err: any) {
-			if (paCaptureStatus) {
-				paCaptureStatus.textContent = err.message || "Failed to trigger capture";
-				paCaptureStatus.style.cssText =
-					"font-size:12px;color:#cf222e;background:#ffebe9;border:1px solid #ff8182;border-radius:4px;padding:2px 8px;";
-			}
+			setCaptureStatus(err.message || "Failed to trigger capture", "err");
 			if (paCaptureBtn) paCaptureBtn.disabled = false;
 			if (paCapturePromptBtn) paCapturePromptBtn.disabled = false;
 			isCapturing = false;
@@ -1000,9 +977,7 @@ export function initPixelAssist(): void {
 				});
 				if (res.status === 200) {
 					const data = await res.json();
-					if (paCaptureStatus) {
-						paCaptureStatus.textContent = "Fetching direct frame from OBS...";
-					}
+					setCaptureStatus("Fetching direct frame from OBS...", "info");
 					const token = getToken();
 					const sig = hmacSha256Hex(token, data.nonce);
 					const directUrl = `${data.url}?type=png&nonce=${encodeURIComponent(data.nonce)}&sig=${encodeURIComponent(sig)}`;
@@ -1030,11 +1005,7 @@ export function initPixelAssist(): void {
 				}
 				setTimeout(poll, 300);
 			} catch (err: any) {
-				if (paCaptureStatus) {
-					paCaptureStatus.textContent = err.message || "Capture poll failed";
-					paCaptureStatus.style.cssText =
-						"font-size:12px;color:#cf222e;background:#ffebe9;border:1px solid #ff8182;border-radius:4px;padding:2px 8px;";
-				}
+				setCaptureStatus(err.message || "Capture poll failed", "err");
 				if (paCaptureBtn) paCaptureBtn.disabled = false;
 				if (paCapturePromptBtn) paCapturePromptBtn.disabled = false;
 				isCapturing = false;

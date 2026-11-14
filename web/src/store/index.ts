@@ -87,5 +87,6 @@ export const configStore = persistentMap<ConfigState>("mycro_config", {
 	holdMs: 10
 });
 
-export const activePresetStore = atom<string>("");
+export const activePresetStore = persistentAtom<string>("mycro_active_preset", "");
+export const workspaceStore = persistentAtom<string>("mycro_workspace_code", "");
 
