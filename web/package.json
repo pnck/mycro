@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "check": "node scripts/check.mjs",
-    "test": "node scripts/test-crypto.mjs && node --experimental-strip-types scripts/test-token-inspector.mjs",
+    "test": "node scripts/test-crypto.mjs && node --experimental-strip-types scripts/test-token-inspector.mjs && node --experimental-strip-types scripts/test-formatter.mjs",
     "test:inspector": "node --experimental-strip-types scripts/test-token-inspector.mjs",
     "test:e2e": "node scripts/test-manual-interactive.mjs"
   },

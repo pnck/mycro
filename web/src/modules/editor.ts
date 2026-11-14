@@ -5,6 +5,8 @@ import { indentGuides } from "prism-code-editor/guides";
 import { languages } from "prism-code-editor/prism";
 import { insertText } from "prism-code-editor/utils";
 import { isInsideVerbatim } from "./token-detector";
+import { formatMacroCode } from "./formatter";
+import { workspaceStore } from "../store";
 
 import "prism-code-editor/layout.css";
 import "prism-code-editor/scrollbar.css";
@@ -39,7 +41,7 @@ languages["mycro"] = {
 		greedy: true
 	},
 	"action-command": {
-		pattern: /\\(?:click|move|mouse|mclick|mdown|mup|kdown|kup|text|endtext|pixelrect|row|rgb|typenum|enter|esc|space|tab|backspace|up|down|left|right|delete|home|end|pageup|pagedown|capslock|f[1-9]|f1[0-9]|f2[0-4]|media_[a-z_]+|volume_up|volume_down|mute)\b/,
+		pattern: /\\(?:click|move|mdown|mup|kdown|kup|text|endtext|pixelrect|row|rgb|typenum|enter|esc|space|tab|backspace|up|down|left|right|delete|home|end|pageup|pagedown|capslock|f[1-9]|f1[0-9]|f2[0-4]|media_[a-z_]+|volup|voldn|mute)\b/,
 		greedy: true
 	},
 	"combo-command": {
@@ -86,16 +88,6 @@ export function insertTextAtCursor(snippet: string): void {
 	if (macroEditorInstance) {
 		insertText(macroEditorInstance, snippet);
 		macroEditorInstance.textarea.focus();
-	} else {
-		const codeEl = document.getElementById("macroCode") as HTMLTextAreaElement | null;
-		if (!codeEl) return;
-		const start = codeEl.selectionStart ?? codeEl.value.length;
-		const end = codeEl.selectionEnd ?? codeEl.value.length;
-		const val = codeEl.value;
-		codeEl.value = val.slice(0, start) + snippet + val.slice(end);
-		codeEl.selectionStart = codeEl.selectionEnd = start + snippet.length;
-		codeEl.focus();
-		codeEl.dispatchEvent(new Event("input", { bubbles: true }));
 	}
 }
 
@@ -108,14 +100,6 @@ export function replaceRangeInEditor(start: number, end: number, replacement: st
 		macroEditorInstance.textarea.setSelectionRange(start, end);
 		insertText(macroEditorInstance, replacement);
 		macroEditorInstance.textarea.focus();
-	} else {
-		const codeEl = document.getElementById("macroCode") as HTMLTextAreaElement | null;
-		if (!codeEl) return;
-		const val = codeEl.value;
-		codeEl.value = val.slice(0, start) + replacement + val.slice(end);
-		codeEl.selectionStart = codeEl.selectionEnd = start + replacement.length;
-		codeEl.focus();
-		codeEl.dispatchEvent(new Event("input", { bubbles: true }));
 	}
 }
 
@@ -124,7 +108,8 @@ export function initMacroEditor(): PrismEditor | null {
 	const codeEl = document.getElementById("macroCode") as HTMLTextAreaElement | null;
 	if (!container || !codeEl) return null;
 
-	const initialCode = codeEl.value || "";
+	const initialCode = codeEl.value || workspaceStore.get() || "";
+	codeEl.value = initialCode;
 
 	const editor = createEditor(
 		container,
@@ -141,6 +126,7 @@ export function initMacroEditor(): PrismEditor | null {
 					desc?.set?.call(codeEl, value);
 					codeEl.dispatchEvent(new Event("input", { bubbles: true }));
 				}
+				workspaceStore.set(value);
 			}
 		},
 		defaultCommands(),
@@ -178,11 +164,27 @@ export function initMacroEditor(): PrismEditor | null {
 			if (editor.value !== newVal) {
 				editor.setOptions({ value: newVal });
 			}
+			workspaceStore.set(newVal);
 		},
 		configurable: true
 	});
 
-	// Bind Ctrl+S / Cmd+S in the editor to save preset (NO execution shortcuts)
+	function triggerFormat() {
+		const current = editor.value;
+		const formatted = formatMacroCode(current);
+		if (formatted && formatted !== current) {
+			insertText(editor, formatted, 0, current.length);
+			codeEl.value = formatted;
+			codeEl.dispatchEvent(new Event("input", { bubbles: true }));
+		}
+	}
+
+	const formatBtn = document.getElementById("macroFormatBtn") as HTMLButtonElement | null;
+	if (formatBtn) {
+		formatBtn.addEventListener("click", triggerFormat);
+	}
+
+	// Bind Ctrl+S / Cmd+S in the editor to save preset, Shift+Alt+F to format
 	editor.textarea.addEventListener("keydown", (e: KeyboardEvent) => {
 		if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
 			e.preventDefault();
@@ -191,6 +193,10 @@ export function initMacroEditor(): PrismEditor | null {
 			if (saveBtn) {
 				saveBtn.click();
 			}
+		} else if (e.shiftKey && e.altKey && e.key.toLowerCase() === "f") {
+			e.preventDefault();
+			e.stopPropagation();
+			triggerFormat();
 		}
 	});
 

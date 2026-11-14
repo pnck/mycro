@@ -1,38 +1,11 @@
 import { getMacroEditor, replaceRangeInEditor } from "./editor";
+import { escapeHtml, escapeAttr } from "./manual";
 import {
 	detectToken,
 	checkBracketBalance,
 	detectStructuralScope,
-	CandidateKind,
-	InspectorCandidate,
-	DetectionResult,
-	BracketCheckResult,
-	COMMAND_CANDIDATES,
-	SYNTAX_CANDIDATES,
-	ESCAPE_CANDIDATES,
-	MOUSE_BUTTON_CANDIDATES,
-	KEY_NAME_CANDIDATES,
-	NAMESPACE_CANDIDATES,
-	EXT_FUNCTION_CANDIDATES,
-	PREDICATE_OP_CANDIDATES,
-	PREDICATE_LOGIC_CANDIDATES
+	type DetectionResult
 } from "./token-detector";
-
-export type { CandidateKind, InspectorCandidate, DetectionResult, BracketCheckResult };
-export {
-	detectToken,
-	checkBracketBalance,
-	detectStructuralScope,
-	COMMAND_CANDIDATES,
-	SYNTAX_CANDIDATES,
-	ESCAPE_CANDIDATES,
-	MOUSE_BUTTON_CANDIDATES,
-	KEY_NAME_CANDIDATES,
-	NAMESPACE_CANDIDATES,
-	EXT_FUNCTION_CANDIDATES,
-	PREDICATE_OP_CANDIDATES,
-	PREDICATE_LOGIC_CANDIDATES
-};
 
 export function initTokenInspector(): void {
 	const editor = getMacroEditor();
@@ -43,11 +16,6 @@ export function initTokenInspector(): void {
 
 	const container = document.getElementById("manualLiveInspector");
 	if (!container) return;
-
-	// Attach detector and balance checker to window for debug / testing
-	(window as any).detectToken = detectToken;
-	(window as any).checkBracketBalance = checkBracketBalance;
-	(window as any).detectStructuralScope = detectStructuralScope;
 
 	updateTokenInspector();
 
@@ -131,7 +99,7 @@ export function updateTokenInspector(): void {
 		if (bodyEl) {
 			bodyEl.innerHTML = `
 				<span class="inspector-idle-guide">
-					💡 Live Inspector Ready: Type <code>\\</code> for commands/syntax, <code>$</code> for variables/slots, or edit inside <code>{...}</code>
+					Live Inspector Ready: Type <code>\\</code> for commands/syntax, <code>$</code> for variables/slots, or edit inside <code>{...}</code>
 				</span>
 			`;
 		}
@@ -154,20 +122,4 @@ export function updateTokenInspector(): void {
 	}
 }
 
-function escapeHtml(str: string): string {
-	return str
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&#039;");
-}
 
-function escapeAttr(str: string): string {
-	return str
-		.replace(/&/g, "&amp;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&#039;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;");
-}

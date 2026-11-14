@@ -4,7 +4,9 @@ import {
 	detectToken,
 	checkBracketBalance,
 	detectStructuralScope,
-	isInsideVerbatim,
+	isInsideVerbatim
+} from "../src/modules/token-detector.ts";
+import {
 	COMMAND_CANDIDATES,
 	SYNTAX_CANDIDATES,
 	ESCAPE_CANDIDATES,
@@ -14,7 +16,7 @@ import {
 	EXT_FUNCTION_CANDIDATES,
 	PREDICATE_OP_CANDIDATES,
 	PREDICATE_LOGIC_CANDIDATES
-} from "../src/modules/token-detector.ts";
+} from "../src/modules/catalog.ts";
 
 console.log("=========================================");
 console.log("Running Token Inspector Comprehensive Suite");
@@ -385,10 +387,11 @@ test("12. Whole-document Bracket Balance & Depth (checkBracketBalance)", () => {
 	assert.equal(resClose.balanced, false);
 	assert.equal(resClose.statusType, "error");
 
-	const unmatchedCloseBracket = "\\click{L}]\n";
-	const resCloseBracket = checkBracketBalance(unmatchedCloseBracket);
-	assert.equal(resCloseBracket.balanced, false);
-	assert.equal(resCloseBracket.statusType, "error");
+	// 12f. Lone ']' is a literal OP_CHAR keystroke (not a syntax error)
+	const literalCloseBracket = "\\def{start_match}{\\pace{0.1s}]\\f8}";
+	const resCloseBracket = checkBracketBalance(literalCloseBracket);
+	assert.equal(resCloseBracket.balanced, true);
+	assert.equal(resCloseBracket.statusType, "balanced");
 
 	// 12g. Escaped braces and comments
 	const escaped = "\\# comment { and } [\n\\{literal\\}\n\\click{L}";
@@ -564,7 +567,7 @@ test("15. Target LSP Cases: \\a{\\b{, \\aa{\\bb{, \\if{{1, \\if{{1,, \\if{{1,=, 
 	assert.equal(detectStructuralScope("\\rgb{255, 128, 64}", 12), "Scope: \\rgb > Arg Pack {r, g, b}");
 
 	// 5d. Extension call arguments
-	const resCallArgs = detectToken("\\call{img.diff}{$a, $b, 16", 26);
+	const resCallArgs = detectToken("\\call{img.diff}{$a}{$b}{16", 26);
 	assert.equal(resCallArgs.context, "Call Args (img.diff)");
 	assert.equal(detectStructuralScope("\\call{img.snap}{0, 0, 10, 10}", 20), "Scope: \\call{img.snap} > Arg Pack {x, y, w, h}");
 
@@ -706,6 +709,35 @@ test("18. Verbatim Text Block (\\text{}) suppresses all commands, escapes, and v
 	const outsideTok = detectToken(script, outsideDelayPos);
 	assert.ok(outsideTok !== null);
 	assert.ok(outsideTok.matches.some(m => m.label === "\\delay"), "Outside verbatim \\delay must be offered");
+});
+
+// 19. Regression suite for Affine Lexical DFA and Page 0x07 candidates
+test("19. Affine Lexical DFA & Page 0x07 Candidate Inspection", () => {
+	// 19a. Literal bracket in macro body must be balanced (zero fake diagnostics)
+	const userMacroBracket = "\\def{start_match}{\\pace{0.1s}]\\f8}";
+	const resBracket = checkBracketBalance(userMacroBracket);
+	assert.equal(resBracket.balanced, true);
+	assert.equal(resBracket.depth, 0);
+	assert.equal(resBracket.statusType, "balanced");
+	assert.equal(resBracket.statusText, "✓ Braces: Balanced (depth 0)");
+
+	// 19b. \\tap command completion in COMMAND_CANDIDATES
+	const tapCand = COMMAND_CANDIDATES.find(c => c.label === "\\tap");
+	assert.ok(tapCand !== undefined, "\\tap must be present in COMMAND_CANDIDATES");
+	assert.equal(tapCand.insert, "\\tap{enter}");
+
+	// 19c. \\tap{bracket completion offers Page 0x07 brackets
+	const tapText = "\\tap{bracket";
+	const resTap = detectToken(tapText, tapText.length);
+	assert.ok(resTap !== null);
+	assert.equal(resTap.context, "Key / Modifier");
+	const tapLabels = resTap.matches.map(m => m.label);
+	assert.ok(tapLabels.includes("bracketleft"), "Must offer bracketleft");
+	assert.ok(tapLabels.includes("bracketright"), "Must offer bracketright");
+
+	// 19d. Signature hints for img.watch and img.diff
+	const watchScope = detectStructuralScope("\\call{img.watch}{hp}{100, 50}{50ms, 5s}", 25);
+	assert.ok(watchScope.includes("img.watch"), "Scope must reflect img.watch");
 });
 
 console.log(`\n=========================================`);
