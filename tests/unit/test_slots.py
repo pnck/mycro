@@ -12,7 +12,10 @@ Covers:
 import asyncio
 import pytest
 from mock_hid import MockHID
-from macro import Macro, MacroError, TAG_IMM, TAG_REG, OP_WAIT, OP_END, MAX_SLOTS, DEFAULT_WAIT_TIMEOUT_MS
+from macro import (
+    Macro, MacroError, TAG_IMM, TAG_REG, OP_WAIT, OP_END, MAX_SLOTS,
+    DEFAULT_WAIT_TIMEOUT_MS, OP_READSLOT, OP_ADD, OP_SET, OP_SLEEP
+)
 import keymap
 from runtime import Runtime
 from proto import Dispatcher
@@ -65,7 +68,7 @@ def run(text, rt=None, hid=None):
     rt = rt or make_runtime()
     m = Macro(hid, rt)
     prefix = ""
-    if ("$slot.go" in text or "$go." in text) and "\\use{go}" not in text:
+    if "$slot.go" in text and "\\use{go}" not in text:
         prefix += "\\use{go}"
     bc, err = m.compile(prefix + text)
     assert err is None, f"compile error: {err}"
@@ -185,7 +188,7 @@ def test_wait_suspends_and_wakes_on_projection():
     rt = make_runtime()
     hid = MockHID()
     m = Macro(hid, rt)
-    bc, err = m.compile(r"\use{go}\wait[500ms]{ $slot.go.val }\typenum{$timeout}\typenum{$go.val}")
+    bc, err = m.compile(r"\use{go}\wait[500ms]{ $slot.go.val }\typenum{$timeout}\typenum{$slot.go.val}")
     assert err is None
 
     async def scenario():
@@ -223,7 +226,7 @@ def test_slot_read_does_not_consume_latch():
     rt.fire_signal("go", {"val": 55})
     assert rt.slot_pending("go", "val") == 1
 
-    # Reading slot via $go.val does NOT consume latch
+    # Reading slot via $slot.go.val does NOT consume latch
     assert rt.read_slot("go", "val") == 55
     assert rt.slot_pending("go", "val") == 1
 
@@ -244,7 +247,7 @@ def test_multiple_projections_coalesce_pending():
     assert rt.slot_pending("go", "val") == 1
 
     # One wait consumes the single pending latch
-    hid = run(r"\wait[10ms]{ $slot.go.val }\typenum{$timeout}\typenum{$go.val}", rt=rt)
+    hid = run(r"\wait[10ms]{ $slot.go.val }\typenum{$timeout}\typenum{$slot.go.val}", rt=rt)
     assert ("kp", keymap.digit_keycode("0")) in hid.events
     assert ("kp", keymap.digit_keycode("3")) in hid.events
     assert rt.slot_pending("go", "val") == 0
@@ -298,3 +301,132 @@ def test_proto_push_rejects_when_slot_capacity_exhausted():
     assert resp["type"] == "error"
     assert resp["payload"]["code"] == "resource_exhausted"
     assert resp["payload"]["message"] == "slot capacity exhausted"
+
+
+# --- 5. Strict Slot Syntax & Dynamic Signal Registration ---
+
+def test_slot_syntax_rejects_bare_dotted_names():
+    # Bare dotted names without $slot. must be strictly rejected
+    err1 = compile_err(r"\use{go}\set{x}{$go.val}")
+    assert "variable names cannot contain '.'" in err1
+    assert "$slot.go.val" in err1
+
+    err2 = compile_err(r"\use{net}\if{ {$net.msg.val, =, 0} }{ a }")
+    assert "variable names cannot contain '.'" in err2
+
+    err3 = compile_err(r"\use{net}\guarded{ {$net.msg.val, =, 0} }{ a }")
+    assert "variable names cannot contain '.'" in err3
+
+    err4 = compile_err(r"\use{go}\wait{ $go.val }")
+    assert "wait target must be a slot reference" in err4
+
+
+def test_dynamic_signal_registration_and_slot_readback():
+    rt = Runtime()
+    rt.register_ns("dyn", {})
+    # Dynamically register a new signal after runtime init
+    rt.register_signal("dyn.status")
+
+    # Push event into the dynamic signal's slot
+    ok = rt.fire_signal("dyn.status", {"code": 200, "flag": 1})
+    assert ok is True
+    assert rt.read_slot("dyn.status", "code") == 200
+    assert rt.read_slot("dyn.status", "flag") == 1
+    assert rt.slot_pending("dyn.status", "code") == 1
+
+    # Read back via compiled script using $slot.dyn.status.code
+    m = Macro(MockHID(), rt)
+    bc, err = m.compile(r"\use{dyn}\wait[10ms]{$slot.dyn.status.code}\set{c}{$slot.dyn.status.code}")
+    assert err is None
+    asyncio.run(m.execute(bc))
+    assert m.last_regs[0] == 200
+    # Pending latch was consumed by wait
+    assert rt.slot_pending("dyn.status", "code") == 0
+    # Val remains intact
+    assert rt.read_slot("dyn.status", "code") == 200
+
+
+def test_use_top_level_only():
+    """spec/dsl.md §9.3: \\use directives are top-level only."""
+    assert "use only allowed at top level" in compile_err("\\rep{1}{\\use{sys}}")
+    assert "use only allowed at top level" in compile_err("\\if{ {1, =, 1} }{\\use{sys}}")
+    assert "use only allowed at top level" in compile_err("\\guarded{ {1, =, 1} }{\\use{sys}}")
+    assert "use only allowed at top level" in compile_err("\\def{mm}{\\use{sys}}\\mm")
+
+
+def test_use_idempotent_and_order_sensitive():
+    """spec/dsl.md §9.3: \\use is idempotent and order-sensitive."""
+    rt = Runtime()
+    rt.register_ns("sys", {"free": ([], "int", lambda: 1000)})
+    m = Macro(MockHID(), rt)
+    bc, err = m.compile("\\use{sys}\\use{sys}\\call{sys.free}")
+    assert err is None
+    bc2, err2 = m.compile("\\call{sys.free}\\use{sys}")
+    assert err2 is not None and "undeclared namespace: sys" in err2
+
+
+def test_slot_readslot_emission():
+    """spec/vm.md §3, §4: READSLOT desugars into distinct temp register before instruction."""
+    rt = Runtime()
+    rt.register_signal("go")
+    m = Macro(MockHID(), rt)
+    bc, err = m.compile("\\use{go}\\set{x}{0}\\add{x}{$slot.go.code}")
+    assert err is None
+    strs, code = header_strs(bc)
+    tail = bc[code:]
+    rs = tail.index(OP_READSLOT)
+    assert tail[rs + 1] == 1  # temp reg 1 (x holds reg 0)
+    assert tail[rs + 2] == strs.index("go")
+    assert tail[rs + 3] == strs.index("code")
+    assert rs < tail.index(OP_ADD)
+
+
+def test_slot_set_and_delay_emission_order():
+    """spec/vm.md §3: Slot operands desugar prior to instruction opcodes."""
+    rt = Runtime()
+    rt.register_signal("go")
+    m = Macro(MockHID(), rt)
+    bc, err = m.compile("\\use{go}\\set{x}{$slot.go.code}")
+    assert err is None
+    strs, code = header_strs(bc)
+    tail = bc[code:]
+    assert tail.index(OP_READSLOT) < tail.index(OP_SET)
+
+    bc2, err2 = m.compile("\\use{go}\\delay{$slot.go.t}")
+    assert err2 is None
+    tail2 = bc2[header_strs(bc2)[1]:]
+    assert tail2.index(OP_READSLOT) < tail2.index(OP_SLEEP)
+
+
+def test_slot_kdown_and_add_target_rejected():
+    """spec/dsl.md §5.1, §6.2: Slots cannot be used as key names or arithmetic lvalues."""
+    rt = Runtime()
+    rt.register_signal("go")
+    m = Macro(MockHID(), rt)
+    _, err1 = m.compile("\\use{go}\\kdown{$slot.go.k}")
+    assert "kdown/kup takes a key name, not a variable" in err1
+    _, err2 = m.compile("\\use{go}\\set{x}{0}\\add{$slot.go.f}{1}")
+    assert "signal slot" in err2
+
+
+def test_slot_multi_operand_execution():
+    """spec/dsl.md §6.5: Slots can be used in multiple compound and predicate positions."""
+    rt = Runtime()
+    rt.register_signal("go")
+    rt.fire_signal("go", {"x": 10, "y": 20, "a": 5, "b": 6})
+    hid = MockHID()
+    m = Macro(hid, rt)
+
+    # Move with two slot coordinates
+    bc, err = m.compile("\\use{go}\\move{$slot.go.x, $slot.go.y}")
+    assert err is None
+    asyncio.run(m.execute(bc))
+    assert ("mm", 10, 20) in hid.events
+
+    # Predicate with two slot operands
+    bc2, err2 = m.compile("\\use{go}\\if{ {$slot.go.a, <, $slot.go.b} }{\\tap{f1}}")
+    assert err2 is None
+    asyncio.run(m.execute(bc2))
+    assert ("kp", keymap.F1) in hid.events
+
+

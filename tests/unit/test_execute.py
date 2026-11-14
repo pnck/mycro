@@ -5,6 +5,7 @@ import asyncio
 import keymap
 from macro import Macro, MAGIC, VERSION, OP_LOOP, OP_LOOP_END, OP_CHAR, OP_END
 from mock_hid import MockHID
+from runtime import Runtime
 
 
 def run(text, hid=None, **kwargs):
@@ -320,4 +321,22 @@ def test_vm_class_direct_usage():
     assert ("kp", keymap.letter_keycode("z")) in hid.events
     dis = vm.disassemble(bc)
     assert "CHAR 'z'" in dis
+
+
+def test_run_call_async_fn_awaited():
+    """spec/vm.md §6.2 #5: Async extension callables are awaited during VM step."""
+    async def slow():
+        await asyncio.sleep(0.001)
+        return 42
+
+    rt = Runtime()
+    rt.register_ns("test", {"slow": ([], "int", slow)})
+    hid = MockHID()
+    m = Macro(hid, rt)
+    bc, err = m.compile("\\use{test}\\call{test.slow}\\typenum{$ret}")
+    assert err is None
+    asyncio.run(m.execute(bc))
+    assert ("kp", keymap.digit_keycode("4")) in hid.events
+    assert ("kp", keymap.digit_keycode("2")) in hid.events
+
 

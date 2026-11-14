@@ -1,7 +1,7 @@
 """Unit tests for Step 8: Static constructors and system intrinsic materialization.
 
 Tests normative specifications:
-- spec/dsl.md §6.4: Static Constructors (\\rgb, \\pixelrect, \\rect)
+- spec/dsl.md §6.4: Static Constructors (\\rgb, \\pixelrect)
 - spec/dsl.md §6.5: Parameter Categories and Lowering
 - spec/dsl.md §6.8: sys.const reservation
 - spec/runtime.md §3.1: sys.const intrinsic
@@ -421,3 +421,25 @@ class TestPixelRectLoweringAndExecution:
         assert regs2["$ret"] == 0
         assert regs2["$err"] == ERR_RESOURCE_EXHAUSTED
         assert rt._handle_seq == 2147483647
+
+    def test_pixelrect_sequential_const_id_in_macros(self):
+        """spec/dsl.md §6.4: Constant IDs start at zero and increase in encounter order after macro expansion."""
+        rt = make_test_runtime()
+        m = Macro(MockHID(), rt)
+        src = (
+            r"\def{emit_rects}{" "\n"
+            r"  \pixelrect{r1}{\row{0xFF0000}}" "\n"
+            r"  \pixelrect{r2}{\row{0x00FF00}}" "\n"
+            r"}" "\n"
+            r"\emit_rects" "\n"
+            r"\pixelrect{r3}{\row{0x0000FF}}" "\n"
+        )
+        bc, err = m.compile(src)
+        assert err is None
+        e0 = rt.const_entry(0)
+        e1 = rt.const_entry(1)
+        e2 = rt.const_entry(2)
+        assert e0["data"]["rgb"] == bytes([255, 0, 0])
+        assert e1["data"]["rgb"] == bytes([0, 255, 0])
+        assert e2["data"]["rgb"] == bytes([0, 0, 255])
+

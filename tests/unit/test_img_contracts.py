@@ -600,3 +600,134 @@ def test_img_watch_slot_scalar_execution():
     assert device.runtime._reg_handles == {}
     device.runtime.unregister_signal("img.mana")
 
+
+def test_img_watch_integrated_telemetry_flow():
+    """Integrated lifecycle test: macro executes watch -> provider push ->
+    wait wake -> slot evaluation -> unwatch ACK handshake."""
+    client = FakeClient()
+    device._img_client = client
+
+    m = device.Macro(device.hid, device.runtime)
+    dsl = (
+        r"\#!syntax: free" "\n"
+        r"\use{img}" "\n"
+        r"\call{img.watch}{target_btn}{500, 300}{50ms, 5s}" "\n"
+        r"\wait[2s]{$slot.img.target_btn.val}" "\n"
+        r"\if{ {$slot.img.target_btn.val, =, 0x0693E2} }{" "\n"
+        r"  \set{res}{1}" "\n"
+        r"}{" "\n"
+        r"  \set{res}{0}" "\n"
+        r"}" "\n"
+        r"\call{img.unwatch}{target_btn}" "\n"
+    )
+    bc, err = m.compile(dsl)
+    assert err is None
+
+    async def scenario():
+        # Start macro execution in background
+        task = asyncio.create_task(m.execute(bc))
+        await asyncio.sleep(0.01)
+
+        # 1. Provider receives img.watch
+        assert client.sent
+        watch_frame = client.sent.pop(0)
+        watch_env = device.codec.decode_envelope(watch_frame[4:])
+        assert watch_env["type"] == "img.watch"
+        assert watch_env["payload"]["name"] == "target_btn"
+
+        # 2. Provider replies img.watch.ok
+        device._img_resolve(client, {
+            "type": "img.watch.ok", "v": 1, "ts": 0, "id": watch_env["id"],
+            "payload": {"interval_ms": 50},
+        })
+        await asyncio.sleep(0.01)
+
+        # Macro is now suspended in \wait{$slot.img.target_btn.val}
+        assert device.runtime.has_signal("img.target_btn")
+        assert "target_btn" in device._active_watches
+
+        # 3. Provider pushes telemetry frame
+        push_env = {
+            "v": 1, "type": "event.push", "id": 0, "ts": 0,
+            "payload": {"name": "img.target_btn", "fields": {"val": 0x0693E2}},
+        }
+        resp = device.dispatcher.dispatch(push_env, device.proto_ctx)
+        assert resp["type"] == "event.push.ok"
+        await asyncio.sleep(0.01)
+
+        # 4. Macro woke up, matched color, set $res = 1, and issued img.unwatch
+        assert client.sent
+        unw_frame = client.sent.pop(0)
+        unw_env = device.codec.decode_envelope(unw_frame[4:])
+        assert unw_env["type"] == "img.unwatch"
+        assert unw_env["payload"]["name"] == "target_btn"
+
+        # 5. Provider acknowledges unwatch
+        device._img_resolve(client, {
+            "type": "img.unwatch.ok", "v": 1, "ts": 0, "id": unw_env["id"],
+            "payload": {},
+        })
+        await task
+
+        # Macro finished successfully with $res == 1 and signal cleaned up
+        assert m.last_regs[0] == 1  # $res
+        assert not device.runtime.has_signal("img.target_btn")
+        assert "target_btn" not in device._active_watches
+
+    _run(scenario())
+
+
+def test_img_watch_guard_abort_cleans_up_watches():
+    """When a guard aborts execution mid-macro, _run's finally block sends
+    unwatch for active subscriptions and clears signals without leaking."""
+    client = FakeClient()
+    device._img_client = client
+
+    m = device.Macro(device.hid, device.runtime)
+    # Guard invariant fails immediately inside the body
+    dsl = (
+        r"\#!syntax: free" "\n"
+        r"\use{img}" "\n"
+        r"\call{img.watch}{leak_test}{100, 100}{50ms, 5s}" "\n"
+        r"\set{flag}{0}" "\n"
+        r"\guarded{ {$flag, =, 1} }{" "\n"
+        r"  \wait[1s]{$slot.img.leak_test.val}" "\n"
+        r"}" "\n"
+    )
+    bc, err = m.compile(dsl)
+    assert err is None
+
+    async def scenario():
+        task = asyncio.create_task(device._run(bc))
+        await asyncio.sleep(0.01)
+
+        # 1. Resolve img.watch
+        assert client.sent
+        watch_frame = client.sent.pop(0)
+        watch_env = device.codec.decode_envelope(watch_frame[4:])
+        device._img_resolve(client, {
+            "type": "img.watch.ok", "v": 1, "ts": 0, "id": watch_env["id"],
+            "payload": {"interval_ms": 50},
+        })
+        await asyncio.sleep(0.01)
+
+        # 2. Guard aborted at tick 0 because flag == 0 != 1.
+        # Macro ended, finally triggered _img_unwatch_all -> issued img.unwatch
+        assert client.sent
+        unw_frame = client.sent.pop(0)
+        unw_env = device.codec.decode_envelope(unw_frame[4:])
+        assert unw_env["type"] == "img.unwatch"
+
+        device._img_resolve(client, {
+            "type": "img.unwatch.ok", "v": 1, "ts": 0, "id": unw_env["id"],
+            "payload": {},
+        })
+        await task
+
+        # Verified cleaned up
+        assert not device.runtime.has_signal("img.leak_test")
+        assert "leak_test" not in device._active_watches
+
+    _run(scenario())
+
+

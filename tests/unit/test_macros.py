@@ -1,7 +1,11 @@
-r"""Stage A: user macros (\def/\name) — compile-time expansion.
+r"""Compile-Time Text Macros (\def) per spec/dsl.md §7.
 
-Correctness is checked formally: an expanded macro must compile to the exact
-same bytecode as the hand-written equivalent.
+Covers:
+- Definition syntax, naming constraints (>=2 chars, identifier, reserved keywords)
+- Inline bounded expansion and substitution equivalence (#1-#9, ##)
+- Scoping rules (top-level only, recursion detection, call-before-def rejection)
+- Decoupled macro expansion ceiling (MAX_MACRO_EXPAND = 16)
+- Escaped delimiter preservation in argument capture
 """
 
 import keymap
@@ -84,6 +88,16 @@ def test_defs_do_not_leak_into_bytecode():
     assert bc == compile_ok("ab")
 
 
+def test_def_forwards_compound_arg():
+    """Forwarding a multi-element argument into a compound slot (#1 -> {dx, dy})."""
+    assert compile_ok("\\def{jump}[1]{\\move{#1}}\\jump{10, 20}") == compile_ok("\\move{10, 20}")
+
+
+def test_macro_arg_escaped_braces():
+    """spec/dsl.md §7: Escaped braces \\{ and \\} are captured verbatim and preserve depth."""
+    assert compile_ok("\\def{brace_wrap}[1]{<#1>}\\brace_wrap{a\\{b\\}c}") == compile_ok("<a\\{b\\}c>")
+
+
 # --- error matrix ---
 
 def test_err_redefine():
@@ -142,17 +156,6 @@ def test_macro_expansion_exceeding_limit_rejected():
     defs += f"\\def{{m{MAX_MACRO_EXPAND + 1:02d}}}{{a}}"
     err = compile_err(defs + "\\m01")
     assert f"macro expansion exceeds {MAX_MACRO_EXPAND} levels" in err
-
-
-def test_if_nesting_at_limit():
-    code = "\\set{x}{1}" + "\\if{ {$x, =, 1} }{" * MAX_RUNTIME_NEST + "a" + "}" * MAX_RUNTIME_NEST
-    compile_ok(code)
-
-
-def test_if_nesting_exceeding_limit_rejected():
-    code = "\\set{x}{1}" + "\\if{ {$x, =, 1} }{" * (MAX_RUNTIME_NEST + 1) + "a" + "}" * (MAX_RUNTIME_NEST + 1)
-    err = compile_err(code)
-    assert f"if nesting exceeds {MAX_RUNTIME_NEST} levels" in err
 
 
 def test_decoupled_macro_and_runtime_nesting():

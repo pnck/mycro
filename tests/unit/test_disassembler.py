@@ -164,13 +164,14 @@ def test_disassemble_readslot_and_wait():
     rt = make_test_runtime()
     m = Macro(MockHID(), runtime=rt)
     bc, err = m.compile(
-        "\\use{go}\\wait[5s]{$slot.go.status.ready}\\set{x}{$go.status.code}"
+        "\\use{go}\\wait[5s]{$slot.go.status.ready}\\set{x}{$slot.go.status.code}"
     )
     assert err is None
     dis = m.disassemble(bc)
     assert "WAIT $slot.go.status.ready 5000ms" in dis
     assert "READSLOT" in dis
-    assert "go.status.code" in dis
+    assert "go.status" in dis
+    assert "code" in dis
 
 
 def test_disassemble_call_ext_symbol_reflection():

@@ -120,6 +120,16 @@ def test_line_continuation_crlf():
     ])
 
 
+def test_line_continuation_cr():
+    """spec/dsl.md §2: \\ followed by bare CR is a line continuation and emits nothing."""
+    bc = compile_ok("ab\\\rcd")
+    assert bc == H + bytes([
+        OP_CHAR, ord("a"), OP_CHAR, ord("b"),
+        OP_CHAR, ord("c"), OP_CHAR, ord("d"),
+        OP_END,
+    ])
+
+
 def test_line_continuation_after_command():
     bc = compile_ok("\\enter\\\nabc")
     assert bc == H + bytes([
@@ -226,6 +236,13 @@ def test_mouse_commands():
     assert bc[len(H)] == OP_MMOVE
     bc = compile_ok("\\mdown{L}\\mup{L}")
     assert keymap.BTN_LEFT in bc
+
+
+def test_compound_arg_trailing_comma_rejected():
+    """spec/dsl.md §6.8: Compound groups reject empty elements and trailing commas."""
+    compile_err("\\move{10,}")
+    compile_err("\\move{10, 20,}")
+    compile_err("\\click{L,}")
 
 
 def test_mouse_side_buttons():
@@ -724,4 +741,85 @@ def test_free_mode_absorbed_whitespace_between_args():
         OP_CHAR, ord("a"), OP_CHAR, ord("b"), OP_LOOP_END,
         OP_END,
     ])
+
+
+def test_macro_def_with_comment_containing_hash_digit():
+    # Macro with argc=0 containing \#1 in comment must not raise arg error
+    text = (
+        "\\#!syntax: free\n"
+        "\\def{step_zero}[0]{\n"
+        "  \\# Step #1: prepare something\n"
+        "  \\enter\n"
+        "}\n"
+        "\\step_zero\n"
+    )
+    bc = compile_ok(text)
+    assert bc == H + bytes([OP_KEY, keymap.ENTER, OP_END])
+
+    # Macro with argc=1 containing \#2 in comment and #1 in code
+    text1 = (
+        "\\#!syntax: free\n"
+        "\\def{step_one}[1]{\n"
+        "  \\# Note: #2 is not used here\n"
+        "  \\delay{#1}\n"
+        "}\n"
+        "\\step_one{50ms}\n"
+    )
+    bc1 = compile_ok(text1)
+    assert bc1 == H + bytes([OP_SLEEP, 0, 50, 0, 0, 0, OP_END])
+
+
+def test_tap_single_keys_and_combos():
+    # Single key tap lowers to OP_KEY (enter) or OP_CHAR (printable)
+    bc1 = compile_ok("\\tap{enter}")
+    assert bc1 == H + bytes([OP_KEY, keymap.ENTER, OP_END])
+
+    bc2 = compile_ok("\\tap{a}")
+    assert bc2 == H + bytes([OP_CHAR, ord("a"), OP_END])
+
+    # Combo tap lowers to KEY_DOWN, SLEEP click_hold_ms, KEY_UP
+    bc3 = compile_ok("\\tap{ctrl+c}")
+    assert bc3 == H + bytes([
+        OP_KEY_DOWN, 0, keymap.CONTROL, 0, 0, 0,
+        OP_KEY_DOWN, 0, keymap.letter_keycode("c"), 0, 0, 0,
+        OP_SLEEP, 0, 10, 0, 0, 0,
+        OP_KEY_UP, 0, keymap.letter_keycode("c"), 0, 0, 0,
+        OP_KEY_UP, 0, keymap.CONTROL, 0, 0, 0,
+        OP_END,
+    ])
+
+    # Missing/empty key error
+    assert "tap requires non-empty {key}" in compile_err("\\tap{}")
+
+
+def test_punctuation_keys_canonical_names():
+    bc = compile_ok(
+        "\\tap{bracketleft}\\tap{bracketright}\\tap{backslash}"
+        "\\tap{semicolon}\\tap{quote}\\tap{grave}\\tap{comma}\\tap{period}\\tap{slash}"
+    )
+    assert bc == H + bytes([
+        OP_KEY, keymap.LEFT_BRACKET,
+        OP_KEY, keymap.RIGHT_BRACKET,
+        OP_KEY, keymap.BACKSLASH,
+        OP_KEY, keymap.SEMICOLON,
+        OP_KEY, keymap.QUOTE,
+        OP_KEY, keymap.GRAVE_ACCENT,
+        OP_KEY, keymap.COMMA,
+        OP_KEY, keymap.PERIOD,
+        OP_KEY, keymap.SLASH,
+        OP_END,
+    ])
+
+
+def test_kdown_kup_rejects_leading_backslash():
+    err1 = compile_err(r"\kdown{\ctrl}")
+    assert "Unknown key" in err1
+
+    err2 = compile_err(r"\kup{\ctrl}")
+    assert "Unknown key" in err2
+
+    err3 = compile_err(r"\tap{\ctrl}")
+    assert "Unknown key" in err3
+
+
 
