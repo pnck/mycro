@@ -52,6 +52,7 @@ The zero-install authoring, telemetry, and diagnostics environment served direct
 
 ### Milestones & Status
 - [x] **Web Studio Core**: Single-file bundled Web IDE served over device HTTP with zero external dependencies.
+- [x] **Network Discovery & mDNS**: RFC 6762 mDNS discovery (resolving to `http://mycro.local/`), canonical HTTP 302 redirection from raw IP, and configurable companion port (`:7373`).
 - [x] **Preset & Execution Management**: Live macro execution, compile disassembly preview, abort control, and local JSON preset export/import.
 - [x] **Language Support (LSP) & Token Inspector**:
   - Real-time syntax highlighting and spec-aligned bracket depth validation.

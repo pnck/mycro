@@ -1480,7 +1480,7 @@ Manual-observation checklist (cannot be automated):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("host")
-    ap.add_argument("--port", type=int, default=7373)
+    ap.add_argument("--port", type=int, default=int(os.environ.get("MYCRO_RAW_PORT", 7373)))
     ap.add_argument("--token", default=os.environ.get("MYCRO_TOKEN", ""))
     ap.add_argument("--idle-secs", type=float, default=10)
     ap.add_argument("--skip-slow", action="store_true")

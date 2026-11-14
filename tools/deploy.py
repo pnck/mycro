@@ -22,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = REPO_ROOT / "src"
 LIB_DIR = SRC_DIR / "lib"
 COMPILER_DIR = LIB_DIR / "compiler"
+SERVICES_DIR = LIB_DIR / "services"
 WEB_DIR = REPO_ROOT / "web"
 OBS_SCRIPT = REPO_ROOT / "obs" / "obs_mycro.py"
 REQ_DEVICE = REPO_ROOT / "requirements-device.txt"
@@ -151,7 +152,15 @@ def sync_core_files(target_dir: Path) -> list[str]:
             shutil.copy2(f, target_compiler / f.name)
             deployed.append(f"lib/compiler/{f.name}")
 
-    # 5. obs/obs_mycro.py
+    # 5. lib/services/*.py
+    if SERVICES_DIR.is_dir():
+        target_services = target_lib / "services"
+        target_services.mkdir(parents=True, exist_ok=True)
+        for f in SERVICES_DIR.glob("*.py"):
+            shutil.copy2(f, target_services / f.name)
+            deployed.append(f"lib/services/{f.name}")
+
+    # 6. obs/obs_mycro.py
     if OBS_SCRIPT.is_file():
         target_obs = target_dir / "obs"
         target_obs.mkdir(parents=True, exist_ok=True)
@@ -210,10 +219,17 @@ def deploy_to_device(target_dir: Path) -> None:
         append_lines.append(
             "\n# --- MYCRO ---\n# WiFi credentials use project-specific keys (NOT built-in CIRCUITPY_WIFI_*)\n"
         )
-    for key in ("MYCRO_WIFI_SSID", "MYCRO_WIFI_PASSWORD", "MYCRO_TOKEN"):
+    defaults = {
+        "MYCRO_WIFI_SSID": '""',
+        "MYCRO_WIFI_PASSWORD": '""',
+        "MYCRO_TOKEN": '""',
+        "MYCRO_HOSTNAME": '"mycro"',
+        "MYCRO_RAW_PORT": '"7373"',
+    }
+    for key, def_val in defaults.items():
         if not any(line.strip().startswith(key) for line in existing_content.splitlines()):
-            append_lines.append(f'{key} = ""')
-            log_success(f'settings.toml: appended {key} = "" (please configure)')
+            append_lines.append(f"{key} = {def_val}")
+            log_success(f"settings.toml: appended {key} = {def_val}")
 
     if append_lines:
         with settings_file.open("a", encoding="utf-8") as f:
@@ -259,6 +275,8 @@ def package_bundle(version: str, output_dir: Path) -> None:
             'MYCRO_WIFI_SSID = ""\n'
             'MYCRO_WIFI_PASSWORD = ""\n'
             'MYCRO_TOKEN = ""\n'
+            'MYCRO_HOSTNAME = "mycro"\n'
+            'MYCRO_RAW_PORT = "7373"\n'
         )
         deployed_files.append("settings.toml.example")
 

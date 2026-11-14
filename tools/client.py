@@ -123,7 +123,7 @@ def _parse_fields(pairs):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("host")
-    ap.add_argument("--port", type=int, default=DEFAULT_PORT)
+    ap.add_argument("--port", type=int, default=int(os.environ.get("MYCRO_RAW_PORT", DEFAULT_PORT)))
     ap.add_argument("--token", default=os.environ.get("MYCRO_TOKEN", ""))
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status")

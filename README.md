@@ -56,7 +56,7 @@ Write readable, expressive macros using a domain-specific language that compiles
 ---
 
 ### 2. Zero-Install Web Studio & Interactive Manual
-Connect to MYCRO over local WiFi. The device hosts a standalone, zero-install Web IDE directly from microcontroller RAM:
+Connect to MYCRO over local WiFi. The device hosts a standalone, zero-install Web IDE directly from microcontroller RAM, accessible at `http://mycro.local/`:
 
 ![MYCRO Web Editor](docs/images/web-editor.png)
 
@@ -114,9 +114,12 @@ Automate desktop tasks and games that require visual feedback without running in
    ```toml
    MYCRO_WIFI_SSID = "Your_WiFi_SSID"
    MYCRO_WIFI_PASSWORD = "Your_WiFi_Password"
-   MYCRO_TOKEN = ""  # Optional bearer token for security
+   MYCRO_HOSTNAME = "mycro"  # Optional: custom local name (resolves to http://mycro.local/)
+   MYCRO_TOKEN = ""          # Optional bearer token for security
    ```
-4. Eject the drive and reset the board. Once connected to WiFi, navigate to the device IP in your browser to launch the Web Studio.
+4. Eject the drive and reset the board. Once connected to WiFi, open `http://mycro.local/` in your browser to launch the Web Studio:
+   - **Local Domain Access**: MYCRO broadcasts itself via mDNS, so you can open `http://mycro.local/` directly without looking up DHCP leases or router tables. If you customized `MYCRO_HOSTNAME`, use `http://<your-hostname>.local/`.
+   - **Direct LAN IP Access**: You can also enter the device's assigned local IP address directly in your browser (printed to the USB serial console on boot). MYCRO will automatically redirect you to the local domain to keep your saved macros and workspace settings bound to a stable browser origin. If your local network isolates multicast DNS, append `?ip=1` (e.g. `http://192.168.1.50/?ip=1`) to remain on the direct IP.
 
 > **Developer Deploy**: Alternatively, clone this repository and run `python3 tools/deploy.py` (or `./tools/deploy.sh`) to sync changes directly to your mounted `CIRCUITPY` drive.
 
@@ -128,6 +131,7 @@ For detailed architectural and protocol specifications, refer to:
 
 - [DSL Specification (`spec/dsl.md`)](spec/dsl.md) — Normative syntax, semantics, and version history of the macro language.
 - [VM Specification (`spec/vm.md`)](spec/vm.md) — Opcode table, container binary layout, and execution model.
+- [Runtime Specification (`spec/runtime.md`)](spec/runtime.md) — Signal/slot projection, standard namespaces, and resource lifecycle.
 - [Machine Protocol v1 (`docs/protocol.md`)](docs/protocol.md) — Framed wire protocol, authentication prologue, and reverse frame streaming ADRs.
 - [Development Guide (`AGENTS.md`)](AGENTS.md) — Microcontroller runtime architecture, testing guidelines, and environment setup.
 

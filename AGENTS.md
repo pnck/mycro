@@ -9,14 +9,19 @@ See [ROADMAP.md](ROADMAP.md) for the evolution plan. **Architectural discipline:
 ```
 web/                  Modular Web UI source (TypeScript + CSS + Vite singlefile; build via pnpm build)
 src/
-├── code.py           → /code.py       Entry point: asyncio main loop (HTTP + macro task + raw stub)
+├── code.py           → /code.py       Entry point: lean composition root
 ├── index.html        (local single-file bundle from web/)
 ├── index.html.gz     → /index.html.gz Web UI (gzipped bundle deployed to device; served from RAM)
 └── lib/
-    ├── macro.py      → /lib/macro.py  Compiler + VM (pure Python, zero adafruit dependencies)
-    ├── keymap.py     → /lib/keymap.py HID usage ID constants (page 0x07)
+    ├── services/     → /lib/services/ Host & network service layer (network, http, raw, img, runner)
+    ├── compiler/     → /lib/compiler/ Pure Python macro compiler
+    ├── vm.py         → /lib/vm.py     Bytecode register VM
     ├── runtime.py    → /lib/runtime.py Runtime registry (namespaces/signals/slots)
-    ├── codec.py      → /lib/codec.py  Wire codec: frame packing/reassembly + auth header (pure Python)
+    ├── bytecode.py   → /lib/bytecode.py Opcode and register constants
+    ├── codec.py      → /lib/codec.py  Wire codec: frame packing/reassembly + auth header
+    ├── proto.py      → /lib/proto.py  Protocol v1 JSON envelope dispatcher
+    ├── macro.py      → /lib/macro.py  Compiler + VM facade
+    ├── keymap.py     → /lib/keymap.py HID usage ID constants (page 0x07)
     ├── imgmatch.py   → /lib/imgmatch.py Row-convolution NCC (landed but unwired until template matching enters P3)
     └── hid_adafruit.py → /lib/hid_adafruit.py  HIDProvider implementation on adafruit_hid
 spec/vm.md              NORMATIVE VM specification (bytecode/execution + macro middleware contract)
@@ -38,19 +43,21 @@ Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`
 **settings.toml keys (deploy.sh merges conservatively: existing vars untouched, missing ones appended empty)**:
 - `MYCRO_WIFI_SSID` / `MYCRO_WIFI_PASSWORD` — **deliberately NOT the built-in `CIRCUITPY_WIFI_*`**: the built-in keys make the supervisor connect WiFi before USB MSC initializes, so a network outage hangs the device at boot and takes away even the CIRCUITPY drive. We connect at runtime in code.py; on failure the device degrades to offline mode (USB/serial/HID all work)
 - `MYCRO_TOKEN` — Bearer token; empty/unset = dev mode (serial warning)
+- `MYCRO_HOSTNAME` — Hostname for RFC 6762 mDNS (default: `"mycro"`, resolves to `http://mycro.local/`; `.local` suffix normalized)
+- `MYCRO_RAW_PORT` — Raw TCP companion message channel port (default: `7373`)
 
 **HID abstraction layer**: `Macro(hid)`; provider interface = `key_press/key_release/keys_release_all/char_keycodes/mouse_press/mouse_release/mouse_move`. The device uses `hid_adafruit.py`; unit tests use `tests/mock_hid.py`; a future MicroPython migration only needs a new provider + the code.py platform layer.
 
 ## 2. System Architecture (asyncio)
 
-`asyncio.run()` main loop: first `_wifi_connect()` (runtime WiFi connect, 3 attempts with timeout; failure → offline-mode idle loop, USB/serial/HID unaffected — fix settings.toml and reset to retry), then `server.start()` and concurrent drivers:
-- **`_http_loop`**: `server.poll()` HTTP polling
+`asyncio.run()` main loop: first `setup_network()` (runtime WiFi connect + RFC 6762 mDNS registration, 3 attempts with timeout; failure → offline-mode idle loop, USB/serial/HID unaffected — fix settings.toml and reset to retry), then `http_server.start()` and concurrent drivers:
+- **`_http_loop`**: `http_server.poll()` HTTP polling
 - **Macro execution task**: `POST /macro` (or a `macro.submit` envelope) starts in the background via `asyncio.create_task` after compiling; HTTP stays responsive during execution
-- **`_raw_server`**: raw TCP message channel on `:7373` (protocol v1, [docs/protocol.md](docs/protocol.md)): fixed-length auth prologue (SHA-256 token digest), then framed JSON envelopes dispatched by `proto.py`. One round-robin task owns every connection (no per-connection tasks, no cross-task socket access); fully exception-isolated — CP espressif asyncio TCP has known risk #10775. Server pushes (`macro.result`) broadcast to all authed clients. A client announcing `img.hello` becomes the **capture provider**: `img.*` DSL calls send reverse requests over its connection (single in-flight, awaited via asyncio.Event); kind-1 frames are accepted only while a stream is armed, else `unsupported_kind`
+- **`raw_server.loop()`**: raw TCP message channel on `:7373` (configurable via `MYCRO_RAW_PORT`, protocol v1, [docs/protocol.md](docs/protocol.md)): fixed-length auth prologue (SHA-256 token digest), then framed JSON envelopes dispatched by `proto.py`. One round-robin task owns every connection (no per-connection tasks, no cross-task socket access); fully exception-isolated — CP espressif asyncio TCP has known risk #10775. Server pushes (`macro.result`) broadcast to all authed clients. A client announcing `img.hello` becomes the **capture provider**: `img.*` DSL calls send reverse requests over its connection (single in-flight, awaited via asyncio.Event); kind-1 frames are accepted only while a stream is armed, else `unsupported_kind`
 
 | Endpoint | Role |
 |---|---|
-| GET `/` | index.html |
+| GET `/` | index.html (serves Web UI; 302 redirects raw IP to `http://<hostname>.local/` unless `?ip=1`) |
 | POST `/macro` | Compile and start execution **in the background**; returns `Started: NB` immediately |
 | GET `/macro/status` | `idle` / `running` / `done` / `error <msg>` / `aborted` |
 | POST `/macro/abort` | `task.cancel()`; `execute()`'s finally guarantees all keys/buttons released |

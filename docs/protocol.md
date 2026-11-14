@@ -1,6 +1,6 @@
 # MYCRO Protocol v1
 
-This is the normative reference for the machine-facing socket protocol used by host companion programs over raw TCP port 7373. It provides the information needed to implement an independent client. HTTP REST endpoints remain the human/debug channel.
+This is the normative reference for the machine-facing socket protocol used by host companion programs over raw TCP port 7373 (default, configurable via `MYCRO_RAW_PORT`). It provides the information needed to implement an independent client. HTTP REST endpoints remain the human/debug channel.
 
 ## Frame layer
 
@@ -105,7 +105,7 @@ On-device and OBS measurements appear below. The message table defines `img.fram
 
 **Matching on the device.** The device hosts matching; the host is a thin capture-and-extract pipe in OBS's process. A separate host recognizer would be an anti-cheat liability on the controlled machine, while OBS is a mainstream whitelisted tool. The row-convolution NCC algorithm uses ulab and produced exact argmax hits on planted templates in on-device verification. CNN/YOLO-class recognition (ESP-DL/microlite custom firmware) is deferred to a Phase 3.1 platform spike.
 
-**Connection model: one client, reverse requests.** The OBS script is a persistent client of the device's :7373 listener using the same auth prologue. `img.*` requests flow device→script over that connection, and responses return with the request `id`. Symmetric envelope/frame rules reuse the existing listener, port, and protocol. Binary responses use kind-1 frames correlated by `stream_id` to their metadata envelope. Required `stream_id`, `chunks`, and `bytes` metadata describes the complete stream; `bytes` lets the receiver preallocate and place each chunk at its TCP-order offset, avoiding O(n²) append-growth copies. Completion requires exactly the declared chunk count and cumulative raw length, with either mismatch treated as a protocol error.
+**Connection model: one client, reverse requests.** The OBS script is a persistent client of the device's raw port listener (default :7373) using the same auth prologue. `img.*` requests flow device→script over that connection, and responses return with the request `id`. Symmetric envelope/frame rules reuse the existing listener, port, and protocol. Binary responses use kind-1 frames correlated by `stream_id` to their metadata envelope. Required `stream_id`, `chunks`, and `bytes` metadata describes the complete stream; `bytes` lets the receiver preallocate and place each chunk at its TCP-order offset, avoiding O(n²) append-growth copies. Completion requires exactly the declared chunk count and cumulative raw length, with either mismatch treated as a protocol error.
 
 **Coordinate space.** Coordinates are native source pixels, and pixel-exact paths use native resolution. Every `img.frame` response carries source-native `width`/`height`; Retina-class hosts capture at 2x logical size, providing more addressable pixels. A ~1512x982 logical window was verified to capture at 3024x1964. Normalized frame space was considered and shelved with template matching; a future P3 design will declare it explicitly.
 
@@ -116,7 +116,7 @@ On-device and OBS measurements appear below. The message table defines `img.fram
 **Pixel Assist: out-of-band ephemeral direct LAN preview.** Pixel Assist supports interactive whole-source inspection (zoomed 1000×+ for pixel-exact coordinate and color selection). The design preserves bit-exact RGB8 within the microcontroller's memory and throughput limits:
 
 - *Separate control and data planes*: Bridging a 2–3 MiB full-frame PNG across the ESP32-S3's single-threaded raw TCP stack (~120 KB/s) would take ~40 seconds, fragment into 1600+ TCP MSS packets, and exceed the device's 48 KiB stream budget (`spec/vm.md` Appendix A). The device therefore manages control signaling, while bulk data moves directly between browser PC3 and OBS PC2 over the LAN.
-- *Ephemeral server lifecycle*: In response to `img.arm_preview` on the existing :7373 connection, OBS binds an ephemeral socket to OS dynamic port `0.0.0.0:0` with a 5-second timeout and accepts exactly one inbound HTTP connection. This replaces permanent background servers and persistent listening ports.
+- *Ephemeral server lifecycle*: In response to `img.arm_preview` on the existing raw companion connection, OBS binds an ephemeral socket to OS dynamic port `0.0.0.0:0` with a 5-second timeout and accepts exactly one inbound HTTP connection. This replaces permanent background servers and persistent listening ports.
 - *Lazy capture*: Arming defers screenshot capture and frame-buffer allocation until an authenticated client connects. Disconnect or timeout ends the arm before image generation or buffering.
 - *HMAC-SHA256 asymmetric ticket distribution*:
   1. The MCU generates an ephemeral 16-byte random `nonce` (32 hex characters) and delivers it to OBS in `img.arm_preview`.

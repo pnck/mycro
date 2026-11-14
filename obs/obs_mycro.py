@@ -1,6 +1,6 @@
 """MYCRO capture provider script for OBS.
 
-A persistent CLIENT of the MYCRO device (:7373, protocol v1 — see
+A persistent CLIENT of the MYCRO device (default :7373, protocol v1 — see
 docs/protocol.md ADR-2). After the auth prologue it announces itself
 with an img.hello push, then serves reverse requests from the device.
 

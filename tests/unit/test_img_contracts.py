@@ -66,11 +66,37 @@ def _load_device_module():
     real_run = asyncio.run
     asyncio.run = lambda coro: coro.close()
     try:
-        path = os.path.join(SRC_ROOT, "code.py")
+        path = os.path.join(SRC_ROOT, "lib", "services", "img.py")
         spec = importlib.util.spec_from_file_location("mycro_device_under_test", path)
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
+
+        from macro import Macro
+        from mock_hid import MockHID
+        import codec
+        from services.raw import Client, RawServer, _now_ms
+        from services.runner import MacroRunner
+
+        module.Macro = Macro
+        module.hid = MockHID()
+        module.macro = Macro(module.hid, module.runtime)
+        module.codec = codec
+        module._Client = Client
+
+        runner = MacroRunner(module.macro)
+        raw_server = RawServer(None, module.runtime, runner)
+        img_provider = module.ImgProvider(module.runtime)
+        img_provider.register_namespaces()
+        runner.set_raw_server(raw_server)
+        runner.set_img_provider(img_provider)
+        img_provider.bind_raw_server(raw_server)
+
+        module.dispatcher = raw_server.dispatcher
+        module.proto_ctx = raw_server.proto_ctx
+        module._service = raw_server._service_client
+        module._now_ms = _now_ms
+        module._run = runner._run
     finally:
         asyncio.run = real_run
         for name, old in old_modules.items():
