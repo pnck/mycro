@@ -914,6 +914,9 @@ class VM:
                             check_guards()
 
                             if runtime.slot_pending(sig, field) == 1:
+                                for i in range(guard_depth):
+                                    if not eval_guard_pred(guard_slots[i][4]):
+                                        abort_guard(i)
                                 runtime.consume_slot_pending(sig, field)
                                 runtime.reg_write(REG_TIMEOUT, 0, None, False)
                                 regs[REG_TIMEOUT] = 0
@@ -932,31 +935,30 @@ class VM:
                                             for s in guard_slots[:guard_depth]
                                         )
                                         dt = min(rem_timeout, slice_quantum)
-                                        signaled = False
                                         try:
                                             await asyncio.wait_for(ev.wait(), dt / 1000.0)
-                                            signaled = True
                                         except _TimeoutError:
                                             pass
                                         now = get_now_ms()
                                         rem_timeout = max(0, timeout - (now - start_time))
 
-                                        # Slice wake-up: evaluate guards BEFORE arrival or timeout
+                                        # §6.2 #3-#4: Periodic slice wake-up evaluates guards when throttle elapsed
                                         for i in range(guard_depth):
                                             slot = guard_slots[i]
                                             throttle_ms = slot[0]
                                             last_check_ms = slot[1]
-                                            if (
-                                                signaled
-                                                or throttle_ms == 0
-                                                or (now - last_check_ms) >= throttle_ms
-                                            ):
+                                            if throttle_ms == 0 or (now - last_check_ms) >= throttle_ms:
                                                 slot[1] = now
                                                 if not eval_guard_pred(slot[4]):
                                                     runtime.remove_waiter(sig, field, ev)
                                                     abort_guard(i)
 
+                                        # §6.2 #4: Target arrival gatekeeper: active guards must evaluate true
                                         if runtime.slot_pending(sig, field) == 1:
+                                            for i in range(guard_depth):
+                                                if not eval_guard_pred(guard_slots[i][4]):
+                                                    runtime.remove_waiter(sig, field, ev)
+                                                    abort_guard(i)
                                             runtime.consume_slot_pending(sig, field)
                                             runtime.remove_waiter(sig, field, ev)
                                             runtime.reg_write(REG_TIMEOUT, 0, None, False)
@@ -966,6 +968,9 @@ class VM:
                                         if rem_timeout <= 0:
                                             runtime.remove_waiter(sig, field, ev)
                                             if runtime.slot_pending(sig, field) == 1:
+                                                for i in range(guard_depth):
+                                                    if not eval_guard_pred(guard_slots[i][4]):
+                                                        abort_guard(i)
                                                 runtime.consume_slot_pending(sig, field)
                                                 runtime.reg_write(REG_TIMEOUT, 0, None, False)
                                                 regs[REG_TIMEOUT] = 0

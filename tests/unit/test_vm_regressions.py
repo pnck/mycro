@@ -294,7 +294,9 @@ def test_guard_sleep_checks_below_and_at_exact_throttle(monkeypatch):
     assert sleeps == [10, 10]
 
 
-def test_guard_wait_does_not_poll_one_ms_before_throttle(monkeypatch):
+def test_guard_wait_target_arrival_with_violation_aborts_and_preserves_target(monkeypatch):
+    """spec/vm.md §6.2 #4 & devicetest.py R2: when target arrival and guard violation
+    share one projection, the guard must win without consuming the target."""
     now, _ = fake_clock(monkeypatch)
     runtime = Runtime()
     runtime.register_signal("net.msg")
@@ -311,7 +313,8 @@ def test_guard_wait_does_not_poll_one_ms_before_throttle(monkeypatch):
     wait = bytes([OP_WAIT, 0, 2]) + imm(20)
     bc = guarded_slot(10, wait + char("b"), char("a"))
     hid, runner = execute(bc, runtime=runtime)
-    assert typed_chars(hid) == "b"
+    assert typed_chars(hid) == "a"
+    assert runtime.slot_pending("net.msg", "target") == 1
     assert runner.last_regs[REG_ERR] == 0
 
 
