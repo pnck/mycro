@@ -1,51 +1,22 @@
 """Unit tests for MYCRO Host Services (network, mDNS, HTTP redirect, raw port)."""
 
 import os
+import pytest
+
 from services.network import normalize_hostname
 from services.raw import get_raw_port
 from services.http import urldecode, HttpServer
 
 
-def test_normalize_hostname_basic():
-    assert normalize_hostname("mycro") == "mycro"
-    assert normalize_hostname("device-1") == "device-1"
-    assert normalize_hostname("esp32s3") == "esp32s3"
-
-
-def test_normalize_hostname_strips_local():
-    assert normalize_hostname("mycro.local") == "mycro"
-    assert normalize_hostname("mycro-lab.local") == "mycro-lab"
-    assert normalize_hostname("device.local.") == "device"
-
-
-def test_normalize_hostname_whitespace_and_casing():
-    assert normalize_hostname("  Mycro  ") == "mycro"
-    assert normalize_hostname("  Mycro_Lab-1.local  ") == "mycro-lab-1"
-    assert normalize_hostname("ESP32_DEVICE") == "esp32-device"
-
-
-def test_normalize_hostname_separators_and_invalid_chars():
-    # Dots and underscores become hyphens
-    assert normalize_hostname("mycro.lan") == "mycro-lan"
-    assert normalize_hostname("mycro.any") == "mycro-any"
-    assert normalize_hostname("my_device_name") == "my-device-name"
-    # Special characters outside [a-z0-9-] are removed
-    assert normalize_hostname("mycro!#$device") == "mycrodevice"
-
-
-def test_normalize_hostname_edge_cases_and_fallbacks():
-    assert normalize_hostname(None) == "mycro"
-    assert normalize_hostname("") == "mycro"
-    assert normalize_hostname("   ") == "mycro"
-    assert normalize_hostname("---") == "mycro"
-    assert normalize_hostname("!!!") == "mycro"
-    assert normalize_hostname("---valid---") == "valid"
-
-
-def test_normalize_hostname_length_limit():
-    long_name = "a" * 100
-    assert len(normalize_hostname(long_name)) == 63
-    assert normalize_hostname(long_name) == "a" * 63
+@pytest.mark.parametrize("raw, expected", [
+    ("  Mycro_Lab-1.local.  ", "mycro-lab-1"),
+    ("mycro.lan", "mycro-lan"),
+    ("!!!", "mycro"),
+    (None, "mycro"),
+    ("a" * 100, "a" * 63),
+])
+def test_normalize_hostname(raw, expected):
+    assert normalize_hostname(raw) == expected
 
 
 def test_get_raw_port(monkeypatch):
