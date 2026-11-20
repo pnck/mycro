@@ -28,10 +28,12 @@ spec/vm.md              NORMATIVE VM specification (bytecode/execution + macro m
 spec/dsl.md             NORMATIVE DSL surface specification (syntax + semantics + version history)
 tests/
 ├── unit/               CPython pytest unit tests (MockHID; conftest puts src/lib on sys.path)
-├── device/             Real-device suites: devicetest.py (dual-end acceptance incl. img G-group) +
+├── device/             Real-device suites: devicetest.py (dual-end acceptance across 6 domains A–G) +
 │                       reference_provider.py (reference capture provider) + bench_device.py (NCC bench)
-└── obs/                obs_selftest.py: capture-script API chain in the real OBS-embedded Python
-obs/obs_mycro.py        OBS capture provider script: single img.frame verb with extraction selectors
+└── obs/                obstest.py (7-domain headless diagnostic suite) +
+                        full_link_test.py (Tk 9 closed-loop hardware GUI) +
+                        obs_selftest.py (capture API chain in OBS-embedded Python)
+obs/obs_mycro.py        OBS capture provider script: pure stdlib in-memory OBS-WS v5 client, rect/points extraction, preview, telemetry
 tools/deploy.sh         Deploy: CIRCUITPY=/mountpoint ./tools/deploy.sh (exact-set sync via on-device manifest + circup lib install)
 tools/client.py         Protocol v1 reference client (stdlib-only; executable spec for host companions)
 docs/protocol.md        Machine protocol v1: wire format + ADRs (normative client reference)
@@ -58,10 +60,10 @@ Device-only: `/settings.toml`, `/lib/adafruit_hid/`, `/lib/adafruit_httpserver/`
 | Endpoint | Role |
 |---|---|
 | GET `/` | index.html (serves Web UI; 302 redirects raw IP to `http://<hostname>.local/` unless `?ip=1`) |
-| POST `/macro` | Compile and start execution **in the background**; returns `Started: NB` immediately |
+| POST `/macro` | Compile and start execution **in the background** (optional `hold_ms` form field); returns `Started: NB` immediately |
 | GET `/macro/status` | `idle` / `running` / `done` / `error <msg>` / `aborted` |
 | POST `/macro/abort` | `task.cancel()`; `execute()`'s finally guarantees all keys/buttons released |
-| POST `/compile` | Compile only, returns the disassembly |
+| POST `/compile` | Compile only, returns the disassembly (optional `hold_ms` form field) |
 | POST/GET `/img/capture` | Pixel Assist: POST arms ephemeral direct preview via `img.arm_preview`, GET polls (204 pending / 200 JSON `{url, nonce}` for out-of-band direct LAN fetch authenticated via HMAC-SHA256) |
 | GET `/obs/obs_mycro.py` | Direct download of the OBS capture provider script (attachment) |
 

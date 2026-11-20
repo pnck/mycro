@@ -72,9 +72,10 @@ Automate desktop tasks and games that require visual feedback without running in
 
 ![MYCRO Pixel Assist](docs/images/pixel-assist.png)
 
-- **OBS Studio Companion (`obs_mycro.py`)**: A capture script for OBS Studio serving on-demand screen frames and pixel queries over local TCP (`:7373`).
-- **Pixel Assist Workspace**: Built-in visual overlay with an 11&times;11 pixel loupe, real-time coordinate inspection, color sampling, and one-click DSL snippet generation (`img.at`, `img.diff`).
-- **Precise Color & Telemetry**: Live color sampling and pixel matching for reliable closed-loop automation.
+- **OBS Studio Companion (`obs_mycro.py`)**: A zero-dependency Python script for OBS Studio that streams GPU-rendered desktop frames to MYCRO over local TCP (`:7373`), completely bypassing the controlled machine's OS hooks.
+- **Pixel Assist Workspace**: Built-in visual overlay in Web Studio with an 11&times;11 pixel loupe, real-time coordinate inspection, color sampling, and one-click DSL snippet generation (`img.at`, `img.diff`, `img.snap`).
+- **Reactive On-Screen State Triggers**: Stream screen coordinate colors directly into macro signal slots (`$slot.img.<name>.val`) via `\call{img.watch}`, enabling macros to reactively trigger actions when game health, cooldowns, or UI states change.
+- **On-Device Pixel Verification**: Lossless RGB8 crop snapshots (`img.snap`) with buffer handle management and normalized difference matching (`img.diff`) executing right on the microcontroller.
 
 ---
 

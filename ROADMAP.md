@@ -24,6 +24,7 @@ The domain-specific language designed for expressing hardware-level input automa
   - Subtraction arithmetic (`\sub`) and uniform handle fault codes (`$err`).
   - USB Consumer Control media keys (HID Usage Page 0x0C).
   - Flat iterative guarded blocks (`\guarded`) for deterministic exit handling.
+  - Configurable compile-time press-hold duration (`hold_ms`, default 10 ms, range `[0, 65535]`) with tap-release invariants and explicit `\tap` command.
 
 ---
 
@@ -43,6 +44,9 @@ The microcontroller execution engine, decoupled from host operating systems and 
   - Typed register write mediation with handle resource lifecycle management and `$err` fault dispatch.
   - Single-point scalar telemetry projection (`$slot.img.<name>.val`).
   - Modularized streaming compiler with bounded memory and zero Python recursion.
+  - Modular host and network services package (`lib/services/`: network, http, raw, img, runner).
+  - Guard invariant evaluation on signal arrival during wait with timer-jitter tolerance.
+  - Program-bound immutable press-hold timing enforcement across all paced atomic actions.
 
 ---
 
@@ -61,7 +65,11 @@ The zero-install authoring, telemetry, and diagnostics environment served direct
 - [x] **Pixel Assist & Visual Telemetry**:
   - Live workspace overlay with 11&times;11 pixel loupe and crosshairs.
   - Real-time coordinate sampling, color format conversion (Hex/RGB/DSL), and 1-click macro snippet generation.
-  - OBS Studio companion provider (`obs/obs_mycro.py`) streaming native frames over local TCP.
+  - Pure standard-library OBS Studio companion provider (`obs/obs_mycro.py`) with in-memory OBS-WS v5 RPC, lossless crops, and transport vs business error differentiation.
+  - Ephemeral direct preview over HTTP with Chrome Private Network Access (PNA 204) and HMAC-SHA256 authenticated ticket distribution.
+  - 7-domain headless diagnostic test runner (`tests/obs/obstest.py`).
+  - Interactive Tk 9 closed-loop hardware verification GUI (`tests/obs/full_link_test.py`) with automatic coordinate calibration and multi-frequency perception latency profiling.
+  - Table-driven 6-domain acceptance suite in `tests/device/devicetest.py` (Domains A through G).
 
 ---
 
