@@ -391,6 +391,122 @@ async function main() {
 		if (!xrefResult.isTargetOpen) throw new Error(`Target section '${xrefResult.secName}' failed to open upon clicking cross-reference link!`);
 		console.log(`✓ Requirement 6: Cross-reference link opens and highlights '${xrefResult.secName}'.`);
 
+		console.log("\n--- TEST 7: Custom Editor Commands & Key Bindings ---");
+		const editorTestResult = await evaluate(`
+			(() => {
+				const editor = window.macroEditor;
+				if (!editor) return { error: "No macroEditor instance found" };
+				const ta = editor.textarea;
+
+				const set = (val, start, end = start) => {
+					editor.setOptions({ value: val });
+					ta.value = val;
+					ta.setSelectionRange(start, end);
+				};
+
+				const press = (key, opts = {}) => {
+					const ev = new KeyboardEvent("keydown", {
+						key,
+						bubbles: true,
+						cancelable: true,
+						...opts
+					});
+					ta.dispatchEvent(ev);
+				};
+
+				// 1. Shift+Tab outdent from end of line
+				set("  hello", 7);
+				press("Tab", { shiftKey: true });
+				if (editor.value !== "hello" || ta.selectionStart !== 5) {
+					return { error: "Shift+Tab from end failed: " + editor.value + " at " + ta.selectionStart };
+				}
+
+				// 2. Shift+Tab outdent from middle of line
+				set("  foobar", 4);
+				press("Tab", { shiftKey: true });
+				if (editor.value !== "foobar" || ta.selectionStart !== 2) {
+					return { error: "Shift+Tab from middle failed: " + editor.value + " at " + ta.selectionStart };
+				}
+
+				// 3. Auto-close {
+				set("", 0);
+				press("{");
+				if (editor.value !== "{}" || ta.selectionStart !== 1 || ta.selectionEnd !== 1) {
+					return { error: "Auto-close { failed: " + editor.value + " at " + ta.selectionStart };
+				}
+
+				// 4. Auto-close [
+				set("", 0);
+				press("[");
+				if (editor.value !== "[]" || ta.selectionStart !== 1 || ta.selectionEnd !== 1) {
+					return { error: "Auto-close [ failed: " + editor.value + " at " + ta.selectionStart };
+				}
+
+				// 5. Overtyping }
+				set("{}", 1);
+				press("}");
+				if (editor.value !== "{}" || ta.selectionStart !== 2) {
+					return { error: "Overtyping } failed: " + editor.value + " at " + ta.selectionStart };
+				}
+
+				// 6. Overtyping ]
+				set("[]", 1);
+				press("]");
+				if (editor.value !== "[]" || ta.selectionStart !== 2) {
+					return { error: "Overtyping ] failed: " + editor.value + " at " + ta.selectionStart };
+				}
+
+				// 7. Backspace inside {}
+				set("{}", 1);
+				press("Backspace");
+				if (editor.value !== "" || ta.selectionStart !== 0) {
+					return { error: "Backspace inside {} failed: " + editor.value + " at " + ta.selectionStart };
+				}
+
+				// 8. Backspace inside []
+				set("[]", 1);
+				press("Backspace");
+				if (editor.value !== "" || ta.selectionStart !== 0) {
+					return { error: "Backspace inside [] failed: " + editor.value + " at " + ta.selectionStart };
+				}
+
+				// 9. Enter inside {}
+				set("{}", 1);
+				press("Enter");
+				const expectedEnter = "{\\n  \\n}";
+				if (editor.value !== expectedEnter || ta.selectionStart !== 4) {
+					return { error: "Enter inside {} failed: " + JSON.stringify(editor.value) + " at " + ta.selectionStart };
+				}
+
+				// 10. Enter inside []
+				set("[]", 1);
+				press("Enter");
+				if (editor.value !== "[\\n  \\n]" || ta.selectionStart !== 4) {
+					return { error: "Enter inside [] failed: " + JSON.stringify(editor.value) + " at " + ta.selectionStart };
+				}
+
+				// 11. Selection wrap {
+				set("param", 0, 5);
+				press("{");
+				if (editor.value !== "{param}" || ta.selectionStart !== 1 || ta.selectionEnd !== 6) {
+					return { error: "Selection wrap { failed: " + editor.value + " at [" + ta.selectionStart + "," + ta.selectionEnd + "]" };
+				}
+
+				// 12. Verbatim block immunity: inside \text{}...\endtext{}, { should not auto-close
+				set(${JSON.stringify("\\text{}\n\n\\endtext{}")}, 8);
+				press("{");
+				if (editor.value !== ${JSON.stringify("\\text{}\n\n\\endtext{}")}) {
+					return { error: "Verbatim block auto-close immunity failed: " + editor.value };
+				}
+
+				return { success: true };
+			})()
+		`);
+		if (editorTestResult.error) {
+			throw new Error("Editor key binding test failed: " + editorTestResult.error);
+		}
+		console.log("✓ Requirement 7: Custom editor shortcuts, Shift+Tab outdent, bracket pairs & smart Enter verified.");
+
 		console.log("\n=================================");
 		console.log("ALL REQUIREMENTS VERIFIED IN E2E!");
 		console.log("=================================");
