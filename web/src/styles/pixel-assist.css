@@ -7,7 +7,6 @@
 	color: #24292f;
 	display: none;
 	flex-direction: column;
-	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 	user-select: none;
 }
 #paTopBar {
@@ -35,6 +34,7 @@
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
+	text-decoration: none;
 	box-sizing: border-box;
 }
 .pa-btn:hover:not(:disabled) {
@@ -98,61 +98,112 @@
 	display: block;
 	cursor: crosshair;
 }
-#paViewport.pa-pan-ready { cursor: grab; }
-#paViewport.pa-panning { cursor: grabbing; }
+
+/* Workspace Presentation Surface Cursors */
+#paViewport.pa-pan-ready {
+	cursor: grab;
+}
+#paViewport.pa-panning {
+	cursor: grabbing;
+}
+#paSvgBoxBody {
+	cursor: move;
+}
 
 #paStageContainer {
 	position: absolute;
-	top: 0;
 	left: 0;
+	top: 0;
+	display: inline-block;
+	box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
+	border: 1px solid #bcc3ce;
+	background: #ffffff;
 	transform-origin: 0 0;
-	pointer-events: none;
+	cursor: crosshair;
+	image-rendering: pixelated;
 }
 #paDisplayCanvas {
 	display: block;
-	pointer-events: none;
+	cursor: crosshair;
 	image-rendering: pixelated;
 }
 #paOverlaySvg {
 	position: absolute;
-	top: 0;
-	left: 0;
-	overflow: visible;
+	inset: 0;
+	width: 100%;
+	height: 100%;
 	pointer-events: none;
+	overflow: visible;
+	cursor: crosshair;
+}
+#paPixelGridRect,
+#paSvgSelectionGroup,
+#paSvgBox,
+#paSvgBoxOuter {
+	cursor: crosshair;
 }
 
+/* Floating Inspector HUD with dynamic viewport scroll & fit */
 #paInspector {
-	width: 320px;
+	position: absolute;
+	right: 20px;
+	top: 60px;
+	bottom: 16px;
+	width: 330px;
+	max-height: calc(100vh - 76px);
+	overflow-y: auto;
+	overflow-x: hidden;
 	background: #ffffff;
-	border-left: 1px solid #d0d7de;
+	border: 1px solid #d0d7de;
+	border-radius: 8px;
+	box-shadow: 0 8px 28px rgba(140, 149, 159, 0.25);
+	padding: 14px;
 	display: flex;
 	flex-direction: column;
 	gap: 12px;
-	padding: 16px;
-	overflow-y: auto;
-	flex-shrink: 0;
-	box-shadow: -1px 0 3px rgba(0, 0, 0, 0.05);
+	font-size: 13px;
+	z-index: 10;
+	color: #24292f;
 	box-sizing: border-box;
 	cursor: default;
 }
+
+/* Modern slender scrollbar for inspector panel */
+#paInspector::-webkit-scrollbar {
+	width: 6px;
+}
+#paInspector::-webkit-scrollbar-track {
+	background: transparent;
+}
+#paInspector::-webkit-scrollbar-thumb {
+	background: #d0d7de;
+	border-radius: 3px;
+}
+#paInspector::-webkit-scrollbar-thumb:hover {
+	background: #afb8c1;
+}
+
 .pa-panel-title {
 	font-size: 11px;
-	font-weight: 700;
+	font-weight: 600;
 	text-transform: uppercase;
 	letter-spacing: 0.5px;
 	color: #57606a;
-	margin: 0 0 6px 0;
+	margin-bottom: 2px;
 }
 .pa-loupe-wrap {
 	display: flex;
+	gap: 12px;
 	align-items: center;
-	gap: 14px;
 }
 #paLoupeCanvas {
+	width: 132px;
+	height: 132px;
 	border: 1px solid #d0d7de;
-	border-radius: 6px;
+	border-radius: 4px;
 	background: #ffffff;
 	image-rendering: pixelated;
+	image-rendering: crisp-edges;
 }
 .pa-color-preview-large {
 	width: 46px;
@@ -172,9 +223,6 @@
 	font-family: monospace;
 	font-size: 12px;
 }
-.pa-data-row span:first-child { color: #57606a; }
-.pa-data-row span:nth-child(2) { color: #24292f; }
-
 .pa-copy-btn {
 	background: #ffffff;
 	color: #0969da;
@@ -193,17 +241,40 @@
 	color: #0550ae;
 	border-color: #0969da;
 }
-.pa-copy-btn:active, .pa-btn-insert:active, .pa-btn-copy-snippet:active {
+
+/* Mechanical press feedback for mouse :active and keyboard .pa-key-active */
+.pa-copy-btn:active,
+.pa-copy-btn.pa-key-active,
+.pa-btn-copy-snippet:active,
+.pa-btn-copy-snippet.pa-key-active,
+.pa-btn-insert:active {
+	transform: translateY(1px);
 	background: #eef1f5;
 	border-color: #0969da;
 }
-.pa-copy-btn kbd, .pa-btn-copy-snippet kbd {
+
+.pa-copy-btn kbd,
+.pa-btn-copy-snippet kbd {
 	background: #f6f8fa;
 	border: 1px solid #d0d7de;
 	border-radius: 3px;
 	padding: 1px 4px;
 	font-size: 10px;
 	color: #57606a;
+	line-height: 1;
+	box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
+}
+
+/* Keycap tactile depression feedback */
+.pa-copy-btn:active kbd,
+.pa-copy-btn.pa-key-active kbd,
+.pa-btn-copy-snippet:active kbd,
+.pa-btn-copy-snippet.pa-key-active kbd {
+	background: #d0d7de;
+	border-color: #afb8c1;
+	color: #24292f;
+	box-shadow: none;
+	transform: translateY(1px);
 }
 
 .pa-badge {
@@ -220,6 +291,7 @@
 	border: 1px solid #d4a72c;
 }
 
+/* Distinct Action Buttons for Snippet Section */
 .pa-snippet-actions {
 	display: flex;
 	gap: 8px;
@@ -239,6 +311,7 @@
 	align-items: center;
 	justify-content: center;
 	gap: 5px;
+	box-shadow: 0 1px 3px rgba(9, 105, 218, 0.2);
 }
 .pa-btn-insert:hover:not(:disabled) {
 	background: #0550ae;
@@ -258,6 +331,7 @@
 	align-items: center;
 	justify-content: center;
 	gap: 5px;
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 .pa-btn-copy-snippet:hover {
 	background: #f3f4f6;
@@ -278,17 +352,20 @@
 	padding: 8px;
 	font-size: 11px;
 	line-height: 1.45;
-	font-family: monospace;
+	font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 	margin: 0;
 	white-space: pre-wrap;
 	word-break: break-all;
 	color: #1f2328;
 	user-select: text;
+	-webkit-user-select: text;
+	cursor: text;
 	resize: vertical;
 }
 .pa-snippet-box:focus {
 	outline: none;
 	border-color: #0969da;
+	box-shadow: 0 0 0 2px rgba(9, 105, 218, 0.2);
 }
 
 .pa-btn-sm {
@@ -306,7 +383,6 @@
 	min-width: 76px;
 	text-align: center;
 }
-
 .pa-bounds-grid {
 	display: grid;
 	grid-template-columns: 1fr 1fr;
@@ -322,6 +398,8 @@
 	border-radius: 3px;
 	padding: 2px 4px;
 }
+.pa-data-row span:first-child { color: #57606a; }
+.pa-data-row span:nth-child(2) { color: #24292f; }
 
 #paShieldModal {
 	position: fixed;
@@ -375,32 +453,32 @@
 	gap: 8px;
 }
 
-.pa-btn *, .pa-copy-btn *, .pa-toggle-btn *, .pa-btn-insert *, .pa-btn-copy-snippet * {
+/* Ensure all buttons have pointer cursor and children do not interfere with hit-testing */
+.pa-btn,
+.pa-copy-btn,
+.pa-toggle-btn,
+.pa-btn-insert,
+.pa-btn-copy-snippet,
+.pa-shield-card .pa-btn,
+#paExitShieldModalBtn,
+#paRetestShieldBtn {
+	cursor: pointer;
+}
+
+.pa-btn *,
+.pa-copy-btn *,
+.pa-toggle-btn *,
+.pa-btn-insert *,
+.pa-btn-copy-snippet *,
+.pa-shield-card .pa-btn *,
+#paExitShieldModalBtn *,
+#paRetestShieldBtn * {
 	pointer-events: none;
 }
 
+/* SVG Selection Handles and Box Body Cursors */
 .pa-handle {
-	fill: #ffffff;
-	stroke: #0969da;
-	stroke-width: 1.5;
 	pointer-events: all;
-}
-#paSvgBoxBody {
-	fill: rgba(9, 105, 218, 0.1);
-	cursor: move;
-}
-#paSvgBox {
-	fill: none;
-	stroke: #0969da;
-	stroke-width: 1.5;
-	pointer-events: none;
-}
-#paSvgBoxOuter {
-	fill: none;
-	stroke: #ffffff;
-	stroke-width: 1;
-	stroke-dasharray: 3, 3;
-	pointer-events: none;
 }
 .pa-handle[data-handle="nw"], .pa-handle[data-handle="se"] { cursor: nwse-resize; }
 .pa-handle[data-handle="ne"], .pa-handle[data-handle="sw"] { cursor: nesw-resize; }

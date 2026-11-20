@@ -77,6 +77,11 @@ Automate desktop tasks and games that require visual feedback without running in
 - **Reactive On-Screen State Triggers**: Stream screen coordinate colors directly into macro signal slots (`$slot.img.<name>.val`) via `\call{img.watch}`, enabling macros to reactively trigger actions when game health, cooldowns, or UI states change.
 - **On-Device Pixel Verification**: Lossless RGB8 crop snapshots (`img.snap`) with buffer handle management and normalized difference matching (`img.diff`) executing right on the microcontroller.
 
+To get started with vision automation:
+1. In OBS Studio: Enable WebSocket (**Tools &rarr; WebSocket Server Settings &rarr; Enable WebSocket server**, port 4455).
+2. In OBS Studio: Load `obs/obs_mycro.py` via **Tools &rarr; Scripts**, set your device host (`mycro.local`), and click **Connect**.
+3. In Web Studio: Open **Pixel Assist** to inspect coordinates and generate macro snippets.
+
 ---
 
 ### 4. High-Performance Dual-Channel Architecture

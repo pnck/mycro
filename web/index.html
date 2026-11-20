@@ -72,11 +72,11 @@
 
 	<details style="margin:8px 0 16px 0;font-size:12px;color:#57606a">
 		<summary style="cursor:pointer;user-select:none;font-weight:600">OBS Capture Script Setup Guide</summary>
-		<p style="margin:4px 0 6px 0">Streams screen frames to MYCRO (:7373) for Pixel Assist and <code>img.*</code> operations.</p>
-		<ol style="margin:4px 0;padding-left:18px">
-			<li><a href="/obs/obs_mycro.py" download="obs_mycro.py">Download <code>obs_mycro.py</code></a> (or copy from USB drive).</li>
-			<li>In OBS: <strong>Tools &rarr; Scripts &rarr; Python Settings</strong> (Python 3.10+, <code>pip install pillow</code>).</li>
-			<li>Under <strong>Scripts</strong> tab, click <strong>+</strong>, select <code>obs_mycro.py</code>, enter IP, and connect.</li>
+		<ol style="margin:6px 0;padding-left:18px">
+			<li><a href="/obs/obs_mycro.py" download="obs_mycro.py">Download <code>obs_mycro.py</code></a> (or from USB drive).</li>
+			<li>In OBS: <strong>Tools &rarr; WebSocket Server Settings &rarr; Enable WebSocket server</strong> (port 4455).</li>
+			<li>In OBS: <strong>Tools &rarr; Scripts &rarr; Python Settings</strong> (Python 3.10+, stdlib only).</li>
+			<li>Under <strong>Scripts</strong> tab: click <strong>+</strong>, select <code>obs_mycro.py</code>, set Device Host (<code>mycro.local</code>), click <strong>Connect</strong>.</li>
 		</ol>
 	</details>
 
@@ -86,11 +86,11 @@
 				<button type="button" id="paCloseBtn" class="pa-btn pa-btn-danger">Close (Esc)</button>
 				<span style="font-weight:600;font-size:14px;letter-spacing:0.3px">Pixel Assist</span>
 				<span id="paResBadge" class="pa-badge" style="display:none">0×0</span>
-				<button type="button" id="paShieldWarning" class="pa-badge pa-badge-warn" style="display:none;cursor:pointer" title="Click for details on browser canvas noise">Anti-Fingerprint Active</button>
-				<a href="/obs/obs_mycro.py" download="obs_mycro.py" class="pa-btn pa-btn-sm" title="Download OBS capture script">OBS Script</a>
+				<button type="button" id="paShieldWarning" class="pa-badge pa-badge-warn" style="display:none;cursor:pointer;border:1px solid #d4a72c" title="Click for details on browser canvas noise">Anti-Fingerprint Active</button>
+				<a href="/obs/obs_mycro.py" download="obs_mycro.py" class="pa-btn" style="padding:4px 8px;font-size:12px" title="Download OBS capture script">OBS Script</a>
 			</div>
 			<div style="display:flex;align-items:center;gap:10px">
-				<span id="paCaptureStatus"></span>
+				<span id="paCaptureStatus" style="font-size:12px;color:#57606a"></span>
 				<button type="button" id="paCaptureBtn" class="pa-btn pa-btn-primary">Capture Screen</button>
 				<div class="pa-toggle-group">
 					<button type="button" id="paModePoint" class="pa-toggle-btn active">Point</button>
@@ -135,18 +135,18 @@
 					</defs>
 					<rect id="paPixelGridRect" x="0" y="0" width="100%" height="100%" fill="url(#paPixelGridPattern)" style="display:none;pointer-events:none;"></rect>
 					<g id="paSvgSelectionGroup" style="display:none">
-						<rect id="paSvgBoxBody" x="0" y="0" width="0" height="0"></rect>
-						<rect id="paSvgBox" x="0" y="0" width="0" height="0"></rect>
-						<rect id="paSvgBoxOuter" x="0" y="0" width="0" height="0"></rect>
+						<rect id="paSvgBoxBody" x="0" y="0" width="0" height="0" fill="rgba(9, 105, 218, 0.1)"></rect>
+						<rect id="paSvgBox" x="0" y="0" width="0" height="0" fill="none" stroke="#0969da" stroke-width="1.5" style="pointer-events:none;"></rect>
+						<rect id="paSvgBoxOuter" x="0" y="0" width="0" height="0" fill="none" stroke="#ffffff" stroke-width="1" stroke-dasharray="3,3" style="pointer-events:none;"></rect>
 						<g id="paSvgHandles" style="display:none">
-							<rect class="pa-handle" data-handle="nw" width="7" height="7"></rect>
-							<rect class="pa-handle" data-handle="n" width="7" height="7"></rect>
-							<rect class="pa-handle" data-handle="ne" width="7" height="7"></rect>
-							<rect class="pa-handle" data-handle="e" width="7" height="7"></rect>
-							<rect class="pa-handle" data-handle="se" width="7" height="7"></rect>
-							<rect class="pa-handle" data-handle="s" width="7" height="7"></rect>
-							<rect class="pa-handle" data-handle="sw" width="7" height="7"></rect>
-							<rect class="pa-handle" data-handle="w" width="7" height="7"></rect>
+							<rect class="pa-handle" data-handle="nw" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="n" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="ne" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="e" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="se" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="s" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="sw" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
+							<rect class="pa-handle" data-handle="w" width="7" height="7" fill="#ffffff" stroke="#0969da" stroke-width="1.5"></rect>
 						</g>
 					</g>
 				</svg>
@@ -155,19 +155,19 @@
 
 		<div id="paShieldModal" style="display:none">
 			<div class="pa-shield-card">
-				<h4>Canvas Noise Detected — Color Picker Blocked</h4>
+				<h4>Canvas Readout Blocked</h4>
 				<p class="pa-shield-desc">
 					Your browser or an active extension (e.g. Brave Shields, CanvasBlocker, Firefox <code>privacy.resistFingerprinting</code>) is modifying canvas pixel data on readout.
 				</p>
 				<div class="pa-shield-box">
 					<strong>Why sampling is completely blocked:</strong>
-					<p>
+					<p style="margin:4px 0 0 0">
 						MYCRO macros execute conditional color checks (e.g. <code>\if{ {$ret, =, 0xRRGGBB} }</code>) requiring exact 24-bit RGB values. Random noise injection corrupts sampled pixel channels, which causes macros to fail on hardware.
 					</p>
 				</div>
 				<div class="pa-shield-action">
 					<strong>How to unblock:</strong>
-					<p>
+					<p style="margin:4px 0 0 0">
 						Disable canvas fingerprinting protection for this origin/IP in your browser shield settings, then click <strong>Re-test &amp; Unlock</strong>.
 					</p>
 				</div>

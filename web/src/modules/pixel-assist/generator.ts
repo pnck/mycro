@@ -23,12 +23,12 @@ export function generateRegionSnippet(
 	ry: number,
 	rw: number,
 	rh: number,
-	getPixel: (x: number, y: number) => [number, number, number]
+	getPixel?: (x: number, y: number) => [number, number, number]
 ): string {
 	const rectArg = `${rx}, ${ry}, ${rw}, ${rh}`;
 
-	// For regions up to 1024 pixels (e.g. 32x32, 64x16), generate exact pixelrect reference matrix
-	if (rw * rh <= 1024 && rw <= 128 && rh <= 128) {
+	// For regions up to 16x16, generate exact pixelrect reference matrix
+	if (getPixel && rw <= 16 && rh <= 16) {
 		const rows: string[] = [];
 		for (let j = 0; j < rh; j++) {
 			const cells: string[] = [];
@@ -50,7 +50,7 @@ export function generateRegionSnippet(
 		].join("\n");
 	}
 
-	// For larger regions (>1024 pixels), generate a dynamic screen change detection template
+	// For larger regions (>16x16), generate dynamic screen change detection template
 	return [
 		"\\use{img}\\",
 		`\\call{img.snap}{${rectArg}}\\set{ref}{$ret}\\`,
