@@ -51,7 +51,7 @@ The table defines the DSL/VM-visible resource capacities, operand limits, and ti
 | `MAX_STRINGS` | `255` | Pool Entries | Maximum shared string-table entries (`u8` index). |
 | `MAX_STRING_BYTES` | `255` | Bytes per Entry | Maximum UTF-8 byte length of a string-table entry (`u8 len`); longer entries are compile-time errors. |
 | `DELAY_SLICE_QUANTUM` | `20` | Milliseconds | Base guard-inspection slice for sleeps, waits, pacing, and internal click holds. |
-| `DEFAULT_CLICK_HOLD_MS` | `10` | Milliseconds | Default pulse duration for key taps, mouse clicks, and consumer-control pulses; the `click_hold_ms` configuration domain is `[0,65535]` milliseconds. |
+| Default global press-hold duration | `10` | Milliseconds | Compilation-time pulse duration for key taps, mouse clicks, and consumer-control pulses when no explicit value is supplied; the accepted configuration domain is `[0,65535]` milliseconds. |
 | `DEFAULT_PACE_MS` | `0` | Milliseconds | Execution-start value of the task-global `pace_ms`; `PACE` is its sole runtime writer. |
 | `EXT_TIMEOUT_MS` | `5000` | Milliseconds | Timeout for extension calls requiring a provider round trip (`img.*`); expiry returns `ERR_TIMEOUT` ([runtime.md §3.0](runtime.md#30-universal-return-and-error-contract)). |
 
@@ -64,6 +64,7 @@ The MYCRO VM is a linear bytecode register machine. Each task has:
 - `str_table`: Read-only string pool loaded from the container header.
 - `guard_slots` / `guard_depth`: A pre-allocated array of `MAX_GUARD_NEST = 4` entries and its active-depth cursor ([§6](#6-flat-iterative-guard-model)).
 - `pace_ms`: Task-global pacing state, initialized to `DEFAULT_PACE_MS`. `PACE` is its sole runtime writer; scope entry and exit leave it unchanged.
+- Press-hold duration: Immutable global value fixed in the Program at compilation. Every execution of that Program uses the same value; no instruction or later request modifies it.
 - `active_consumer_usage`: The Consumer Control usage between press and release, with an inactive state at execution start and after release.
 
 ### 1.2 Halting Decidability & Control Flow
@@ -110,6 +111,8 @@ Execution and disassembly accept `VERSION = 0xA6`; every other value is rejected
 
 The opcode segment has logical address `0` at its first opcode. `ip`, branch bases and targets, `loop_body_pc`, and `abort_ip` all use this code-relative address system. Its length includes every opcode, operand and the terminal `END`, and is bounded by `MAX_CODE_BYTES = 65535`. Code capacity and string-table capacity are independent; the string table follows `MAX_STRINGS` and `MAX_STRING_BYTES`.
 
+A Program has one immutable global press-hold duration, fixed when the Program is compiled. This duration is part of the Program's observable behavior, while its representation in the compiled artifact is unspecified. Every execution uses the Program's duration without a separate execution-time override. The setting consumes neither code capacity nor code-relative address space.
+
 The compiler interns string-table entries in order of first use and deduplicates them by exact content.
 
 ### Physical Typed Operand Encoding
@@ -139,13 +142,13 @@ Instruction decoding starts at logical address `0` of the opcode segment. `0xA6`
 | Opcode | Mnemonic | Operands | Operational Semantics |
 |---|---|---|---|
 | `0x01` | `CHAR` | `u8 ascii` | Type ASCII character (Shift state handled automatically by keymap). Also the lowering target of lone printable-character key commands ([dsl.md §5.1](dsl.md#51-keyboard-operations-and-chording)). |
-| `0x02` | `KEY` | `u8 keycode` | Single key tap: press, hold `click_hold_ms`, release. |
-| `0x03` | `COMBO` | `u8 mod_mask, u8 keycode` | **Deprecated**: advances `ip += 3` with peripheral and register state unchanged. Chording lowers to `KEY_DOWN`/`SLEEP click_hold_ms`/`KEY_UP` sequences ([dsl.md §5.1](dsl.md#51-keyboard-operations-and-chording)). |
+| `0x02` | `KEY` | `u8 keycode` | Single key tap: press, hold for the Program's press-hold duration, release. |
+| `0x03` | `COMBO` | `u8 mod_mask, u8 keycode` | **Deprecated**: advances `ip += 3` with peripheral and register state unchanged. Chording lowers to `KEY_DOWN`/hold-`SLEEP`/`KEY_UP` sequences using the Program's press-hold duration ([dsl.md §5.1](dsl.md#51-keyboard-operations-and-chording)). |
 | `0x04` | `SLEEP` | `typed(u16 ms)` | One-shot suspension (DSL `\delay`), with duration in $0..65535\text{ ms}$. |
-| `0x05` | `MCLICK` | `typed(u8 btn), typed(u16 count)` | Mouse click (`btn`: 1=L, 2=R, 4=M, 8=B, 16=F; `count`: $1..65535$). |
+| `0x05` | `MCLICK` | `typed(u8 btn), typed(u16 count)` | Mouse click (`btn`: 1=L, 2=R, 4=M, 8=B, 16=F; `count`: $1..65535$). Each click releases the clicked button and cancels an earlier hold for that button; unrelated held mouse buttons remain held. |
 | `0x06` | `MMOVE` | `typed(i16 dx), typed(i16 dy)` | Relative mouse move. Physical USB mouse reports cap relative movements to $\pm 127$; underlying `HIDProvider.mouse_move` implementations chunk larger deltas into repeated reports (see [runtime.md §2](runtime.md#2-hidprovider-peripheral-abstraction-layer)). |
 | `0x07` | `PACE` | `typed(u16 ms)` | Set task-global `pace_ms` to a value in $0..65535\text{ ms}$, corresponding to DSL `\pace{t}`. See **Automatic Pacing** below. |
-| `0x08` | `CONSUMER_KEY` | `typed(u16 usage_id)` | Single Consumer Control pulse (USB HID Page 0x0C): `hid.consumer_press(usage_id)`, guard-sliced `click_hold_ms` suspension, then `hid.consumer_release(usage_id)`. The VM tracks the active usage between press and release. |
+| `0x08` | `CONSUMER_KEY` | `typed(u16 usage_id)` | Single Consumer Control pulse (USB HID Page 0x0C): `hid.consumer_press(usage_id)`, guard-sliced suspension for the Program's press-hold duration, then `hid.consumer_release(usage_id)`. The VM tracks the active usage between press and release. |
 | `0x10` | `LOOP` | `typed(u8 count), u16 len` | Let `loop_base` be the byte immediately after the complete `LOOP`; `len` is the body byte length including `LOOP_END`. For count 0, leave `loop_stack` unchanged and set `ip = loop_base + len`. For a nonzero count, push `(remaining_count = count, loop_body_pc = loop_base)` and continue at `ip = loop_base`. |
 | `0x11` | `LOOP_END` | — | Decrement the top `remaining_count`. If the result is greater than 0, set `ip = loop_body_pc`; otherwise pop the frame and advance to the following instruction. |
 | `0x12` | `KEY_DOWN` | `typed(u8 keycode)` | Press and hold key. Keycode 0 is the HID no-event value: it performs no key press or release; instruction pacing still applies. |
@@ -162,7 +165,7 @@ Instruction decoding starts at logical address `0` of the opcode segment. `0xA6`
 | `0x28` | `READSLOT` | `u8 reg, u8 sig_str_idx, u8 field_str_idx` | Read slot value into register (mediated). |
 | `0x29` | `WAIT` | `u8 sig_str_idx, u8 field_str_idx, typed(i32 timeout_ms)` | Suspend until `$slot.<sig>.<field>` receives a projection, a pending event is consumed, or timeout expires. Signed `i32` timeout domain: $> 0$ bounded wait; $\le 0$ non-blocking immediate poll (consumes a pending event if present). Writes status (0=arrival/consumed, 1=timeout) to `$timeout` (`0xFE`, mediated). |
 | `0x2A` | `CALL_EXT` | `u8 ns_id, u8 fn_id, u8 argc, argc × typed` | Invoke the registered extension signature (`ns_id`/`fn_id` are compact activated-namespace and function table indices). Scalar arguments pass as raw signed `i32` values; Name arguments use `TAG_NAME`. The signature governs scalar and Handle arguments and declares the return type. On success, `$ret` (`0xFF`, mediated) holds the returned scalar or Handle ID; void calls and failures produce `0`. `$err` (`0xFD`, mediated) receives `0` on success or the failure code. |
-| `0x2B` | `TYPEREG` | `u8 reg` | Type the register's decimal integer value as ASCII taps, each held for `click_hold_ms` (DSL `\typenum{$var}` / `\typenum{${var}}`). |
+| `0x2B` | `TYPEREG` | `u8 reg` | Type the register's decimal integer value as ASCII taps, each held for the Program's press-hold duration (DSL `\typenum{$var}` / `\typenum{${var}}`). |
 | `0xFF` | `END` | — | Halt execution successfully. |
 
 **Scalar-Only Operand Handle Faults**: Runtime type metadata identifies Handles independently of their numeric IDs. A Handle in any scalar-only typed operand of `SLEEP`, `PACE`, `LOOP`, `MCLICK`, `MMOVE`, `KEY_DOWN`, `KEY_UP`, `MDOWN`, `MUP`, `CONSUMER_KEY`, `BRA`, `ADD`, `SUB`, or the `WAIT` timeout produces `ERR_HANDLE_MISUSE`; a Handle in a `TYPEREG` source or an `ADD`/`SUB` destination produces the same fault. The VM writes `$err` through mediation, skips the complete host action and automatic pacing, and preserves the destination and controlled peripheral, pacing, slot, and timeout state. Fault completion uses these control transfers:
@@ -172,7 +175,7 @@ Instruction decoding starts at logical address `0` of the opcode segment. `0xA6`
 
 An evaluated predicate triplet with either operand Handle-typed is FALSE and sets `$err = ERR_HANDLE_MISUSE`, for both `BRA` and guard descriptors. `SET` copies scalar or Handle type through mediation. `CALL_EXT` forwards argument types to the registered runtime signature, which governs acceptance, execution, and status; its declared return signature determines whether a successful `$ret` write installs a scalar or a Handle reference. Runtime type comes exclusively from metadata.
 
-**Automatic Pacing**: The VM applies the current `pace_ms` after `CHAR`, `KEY`, `KEY_DOWN`, `KEY_UP`, `MDOWN`, `MUP`, `MCLICK` (between clicks and after the last), `MMOVE`, `CONSUMER_KEY`, and each `TYPEREG` character (including the last). This is the complete paced-opcode set. A tap completes its press, internal `click_hold_ms`, and release before pacing starts; `pace_ms` then covers the interval between that completed atomic action and the next action. The two intervals compose in sequence. Each pacing suspension is guard-sliced per [§6.2](#62-dual-trigger-inspection-scheduling).
+**Automatic Pacing**: The VM applies the current `pace_ms` after `CHAR`, `KEY`, `KEY_DOWN`, `KEY_UP`, `MDOWN`, `MUP`, `MCLICK` (between clicks and after the last), `MMOVE`, `CONSUMER_KEY`, and each `TYPEREG` character (including the last). This is the complete paced-opcode set. A tap completes its press, internal press-hold suspension, and release before pacing starts; `pace_ms` then covers the interval between that completed atomic action and the next action. The two intervals compose in sequence. A generated tap or click release cancels an earlier hold for every key or button used by that action, including an already-held modifier inserted by character mapping. Holds for keys and buttons not used by the action remain intact. Explicit down/up instructions have no press-hold interval; pacing after those instructions remains unchanged. Guard failure, cancellation, and abnormal termination retain the all-peripheral cleanup rules in §1.3. Each pacing suspension is guard-sliced per [§6.2](#62-dual-trigger-inspection-scheduling).
 
 ### 4.1 Compact Predicate Descriptor Specification (`pred_descriptor`)
 
@@ -296,7 +299,7 @@ The VM evaluates active guards cooperatively from outermost to innermost (`0` th
 2. **Instruction Boundaries**: Guards are checked after an instruction completes and before the next dispatch. Each evaluation updates `last_check_ms`:
    - `throttle_ms == 0`: Check after every completed macro instruction.
    - `throttle_ms > 0`: Check when `monotonic_ms - last_check_ms >= throttle_ms`.
-3. **Suspension Slicing**: `OP_SLEEP`, automatic pacing, and every internal `click_hold_ms` suspension in `CHAR`, `KEY`, `MCLICK`, `CONSUMER_KEY`, and `TYPEREG` use the same guard slices while guards are active:
+3. **Suspension Slicing**: `OP_SLEEP`, automatic pacing, and every internal press-hold suspension in `CHAR`, `KEY`, `MCLICK`, `CONSUMER_KEY`, and `TYPEREG` use the same guard slices while guards are active:
    $$\Delta t = \min(t_{\text{remaining}}, \Delta t_{\text{slice}})$$
    $$\Delta t_{\text{slice}} = \min_{0 \le j < \text{guard\_depth}} (t_{\text{throttle}, j} > 0 \ ? \ t_{\text{throttle}, j} : \text{DELAY\_SLICE\_QUANTUM})$$
    Guards are evaluated at each slice wake-up; a violation aborts immediately. Resumption continues the remaining host suspension after successful checks.

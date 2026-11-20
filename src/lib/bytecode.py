@@ -82,7 +82,8 @@ MAX_COMBO_KEYS = 8
 MAX_SLOTS = 256
 DELAY_SLICE_QUANTUM = 20
 DEFAULT_WAIT_TIMEOUT_MS = 2147483647
-DEFAULT_CLICK_HOLD_MS = 10
+DEFAULT_PRESS_HOLD_MS = 10
+DEFAULT_CLICK_HOLD_MS = DEFAULT_PRESS_HOLD_MS  # legacy alias
 DEFAULT_PACE_MS = 0
 
 # Guard operand tags (spec/vm.md §4.1)
@@ -347,6 +348,42 @@ def read_header(bc):
             raise ValueError("Invalid UTF-8 in bytecode string table") from exc
         i += ln
     return strs, i
+
+
+class Program:
+    """Compiled bytecode program with immutable press-hold duration.
+
+    Acts as a bytes-like container with zero code/register/string overhead.
+    """
+
+    def __init__(self, bc, press_hold_ms=DEFAULT_PRESS_HOLD_MS):
+        self._bc = bytes(bc)
+        self.press_hold_ms = press_hold_ms
+
+    def __len__(self):
+        return len(self._bc)
+
+    def __getitem__(self, item):
+        return self._bc[item]
+
+    def __bytes__(self):
+        return self._bc
+
+    def __iter__(self):
+        return iter(self._bc)
+
+    def __eq__(self, other):
+        if isinstance(other, Program):
+            return self._bc == other._bc and self.press_hold_ms == other.press_hold_ms
+        if isinstance(other, (bytes, bytearray)):
+            return self._bc == other
+        return False
+
+    def __getattr__(self, name):
+        return getattr(self._bc, name)
+
+    def __repr__(self):
+        return f"<Program {len(self._bc)}B hold={self.press_hold_ms}ms>"
 
 
 class MacroError(Exception):

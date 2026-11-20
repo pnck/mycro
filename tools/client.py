@@ -131,6 +131,7 @@ def main(argv=None):
     sub.add_parser("info")
     p_submit = sub.add_parser("submit")
     p_submit.add_argument("code", help="DSL source, or '-' for stdin")
+    p_submit.add_argument("fields", nargs="*", help="Optional payload fields as name=value (e.g. hold_ms=25)")
     p_event = sub.add_parser("event")
     p_event.add_argument("name")
     p_event.add_argument("fields", nargs="*")
@@ -144,7 +145,10 @@ def main(argv=None):
             return 0
         if args.cmd == "submit":
             code = sys.stdin.read() if args.code == "-" else args.code
-            env = c.call("macro.submit", {"code": code})
+            payload = {"code": code}
+            if args.fields:
+                payload.update(_parse_fields(args.fields))
+            env = c.call("macro.submit", payload)
         elif args.cmd == "event":
             env = c.call("event.push",
                          {"name": args.name, "fields": _parse_fields(args.fields)})

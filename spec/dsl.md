@@ -260,7 +260,7 @@ Digit        ::= "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
 Every `KeyCombo` and hold/release `ComboPayload` observes the same source-token bound. For `T1 + ... + Tn`, `n` occupies `[1, MAX_COMBO_KEYS]`; a longer source chain produces `key combination exceeds MAX_COMBO_KEYS=8`. Each token expands to its physical sequence `K(Ti)`, such as `a → [a]`, `A → [shift, a]`, and `plus → [shift, equal]`. Concatenation produces `K = K(T1) || ... || K(Tn)`. The compiler emits:
 
 1. `KEY_DOWN` for each element of `K` in source order;
-2. `SLEEP click_hold_ms`;
+2. `SLEEP` for the Program's press-hold duration;
 3. `KEY_UP` for each element in reverse order.
 
 Each down/up instruction receives VM pacing. Combinations use the sequence lowering above; `COMBO` is a v4 NOP.
@@ -270,11 +270,17 @@ A lone key command lowers to one action:
 - `\a`–`\z`, `\A`–`\Z`, `\plus`, `\minus`, `\equal` and `\space` lower to `CHAR` for their named printable character. `\A` therefore emits `CHAR 0x41`.
 - Other named keys, including Tab, Enter, arrows, function keys and every `kp_*` key, lower to `KEY` with the listed usage.
 
-`click_hold_ms` is a device configuration input with domain `[0,65535]` milliseconds and default `DEFAULT_CLICK_HOLD_MS = 10`. A tap consists of press, hold for `click_hold_ms`, and release. The VM reads its execution-time value for taps in `KEY`, `CHAR`, `MCLICK`, `CONSUMER_KEY` and each `TYPEREG` character. Combination lowering reads the compiler-time value for the embedded `SLEEP`. Internal hold suspension, explicit `SLEEP`, and automatic pacing share the guard slicing in vm.md §6.2. Explicit holds use `\kdown`/`\mdown`, `\delay` and `\kup`/`\mup`.
+The press-hold duration is an out-of-band global setting with an integer domain of `[0,65535]` milliseconds. Each compilation resolves it independently: an explicitly supplied value is validated, and an omitted value uses the default of 10 ms. No value is inherited from an earlier compilation. The resolved duration becomes an immutable property of the resulting Program. Every execution of that Program uses the same duration, without an execution-time override or an instruction that changes it. Invalid or out-of-range settings are rejected before a Program is produced.
+
+A tap consists of press, hold for the Program's press-hold duration, and release. The same duration applies to `KEY`, `CHAR`, `MCLICK`, `CONSUMER_KEY`, every `TYPEREG` character, and combination lowering, including macro-expanded and nested code. A zero duration is valid and introduces no suspension between press and release. Internal hold suspension, explicit `SLEEP`, and automatic pacing share the guard slicing in vm.md §6.2. Explicit holds use `\kdown`/`\mdown`, `\delay` and `\kup`/`\mup`.
+
+A normal tap or click releases every key or button used by that action, including one already held when the action began. The tap therefore cancels an earlier explicit hold for each key it uses. This applies equally to a repeated key and to a modifier inserted by character mapping, such as Shift for an uppercase character. Keys and buttons not used by the action remain held. Guard failure, cancellation, and abnormal termination still perform the documented all-peripheral cleanup.
+
+Explicit down/up instructions have no press-hold interval. Any time between an explicit down and a later up comes from an explicit delay, pacing, or other intervening work, not from the press-hold setting.
 
 - `\kdown{combo}` emits the forward `KEY_DOWN` sequence; an empty `\kdown{}` emits no instructions because no keys are selected.
 - `\kup{combo}` emits the reverse `KEY_UP` sequence; an empty `\kup{}` releases all keyboard keys because no subset is selected.
-- `\tap{key}` or `\tap{combo}` explicitly executes a tap sequence: a lone key lowers to `CHAR` (printable) or `KEY` held for `click_hold_ms`; a combination lowers to the forward `KEY_DOWN` sequence, `SLEEP click_hold_ms`, and reverse `KEY_UP`.
+- `\tap{key}` or `\tap{combo}` explicitly executes a tap sequence: a lone key lowers to `CHAR` (printable) or `KEY` held for the Program's press-hold duration; a combination lowers to the forward `KEY_DOWN` sequence, a hold `SLEEP`, and reverse `KEY_UP`.
 - In every keyboard hold/release payload, including a lone `0` and combinations containing `0`, `0` denotes the main-row zero key (usage `0x27`). It is not a release-all alias.
 
 Combination expansion preserves duplicates and source order. For example, `\a+A` produces `[a, shift, a]` down, one hold, and the reverse sequence up. Host treatment of repeated assertions of the same usage is platform-dependent.
@@ -291,7 +297,7 @@ MediaKey   ::= "media_playpause" | "media_next" | "media_prev" | "media_stop" | 
 MediaAlias ::= (* each alias in the table below *)
 ```
 
-These commands emit USB HID Consumer Control usages from Usage Page `0x0C`. Each pulse presses the usage, holds it for `click_hold_ms` under the guard slicing in vm.md §6.2, and releases it. Abnormal termination, external cancellation and guard failure release any active usage.
+These commands emit USB HID Consumer Control usages from Usage Page `0x0C`. Each pulse presses the usage, holds it for the Program's press-hold duration under the guard slicing in vm.md §6.2, and releases it. Abnormal termination, external cancellation and guard failure release any active usage.
 
 | Command | Aliases | Usage ID | Action |
 |---|---|---|---|
@@ -320,9 +326,9 @@ MouseUp   ::= "\mup" "{" Button "}"
 Button    ::= "L" | "R" | "M" | "B" | "F"
 ```
 
-- `\click{btn[, count]}` clicks button `L`, `R`, `M`, `B` or `F`. `count` defaults to 1 and has interval `[1, 65535]`.
+- `\click{btn[, count]}` clicks button `L`, `R`, `M`, `B` or `F`. `count` defaults to 1 and has interval `[1, 65535]`. Each click releases every button it uses, including a button held by an earlier `\mdown`; other held mouse buttons remain held.
 - `\move{dx, dy}` performs relative movement with signed `i16` components.
-- `\mdown{btn}` and `\mup{btn}` press and release a mouse button.
+- `\mdown{btn}` and `\mup{btn}` press and release a mouse button. These explicit operations have no press-hold interval.
 
 ### 5.4 Delay and Pacing
 
@@ -336,9 +342,9 @@ ScalarRef ::= VarRef | SysVarRef | SlotRef
 Durations use milliseconds after folding. Static values occupy `[0, 65535]`. Dynamic register values clamp to that interval at execution.
 
 - `\delay{t}` emits one `SLEEP`.
-- `\pace{t}` emits `PACE` and sets the task-global VM pacing interval. Execution starts at `DEFAULT_PACE_MS`; the profile supplies this initial value, and `PACE` is the sole runtime writer. Pacing persists across nested scopes until the next `PACE` or execution start. It follows completion of each atomic action, including any internal `click_hold_ms`, under [vm.md §4](vm.md#4-opcode-set-v4). Automatic pacing adds zero compiler-emitted instructions.
+- `\pace{t}` emits `PACE` and sets the task-global VM pacing interval. Execution starts at `DEFAULT_PACE_MS`; the profile supplies this initial value, and `PACE` is the sole runtime writer. Pacing persists across nested scopes until the next `PACE` or execution start. It follows completion of each atomic action, including any internal press-hold suspension, under [vm.md §4](vm.md#4-opcode-set-v4). Automatic pacing adds zero compiler-emitted instructions.
 
-For example, with `click_hold_ms = 10` and `pace_ms = 50`, a tap beginning at `t = 0` releases at `t = 10`; its pacing interval ends at `t = 60`, when the next atomic action can begin. Explicit `\delay` remains a separate `SLEEP` instruction.
+For example, with a press-hold duration of 10 ms and a pacing interval of 50 ms, a tap beginning at `t = 0` releases at `t = 10`; its pacing interval ends at `t = 60`, when the next atomic action can begin. Explicit `\delay` remains a separate `SLEEP` instruction.
 
 Longer delays use bounded loops, such as `\rep{100}{\delay{1s}}`.
 
@@ -464,7 +470,7 @@ DynamicRef ::= VarRef | SysVarRef | SlotRef
 
 ### 6.6 Dynamic Number Rendering
 
-`\typenum{ref}` accepts a user variable, system register or slot reference. It renders the signed scalar in decimal ASCII, including a leading `-`, and taps each character with `click_hold_ms` and per-character pacing.
+`\typenum{ref}` accepts a user variable, system register or slot reference. It renders the signed scalar in decimal ASCII, including a leading `-`, and taps each character with the Program's press-hold duration and per-character pacing.
 
 A literal argument produces `typenum requires a variable ($name)`. A Handle operand renders empty output and sets `$err = ERR_HANDLE_MISUSE`.
 

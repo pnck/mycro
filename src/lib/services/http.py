@@ -48,18 +48,21 @@ def urldecode(s):
 
 
 def _macro_form(request):
-    """Extract and decode macro form fields. Returns (code, hold_ms_or_none)."""
+    """Extract and decode macro form fields. Returns (code, hold_ms, err)."""
     code = request.form_data.get("code", "")
     hold = request.form_data.get("hold_ms", "")
     if not code:
-        return None, None
+        return None, None, "No macro code"
     hold_ms = None
     if hold:
         try:
-            hold_ms = max(0, min(65535, int(hold)))
-        except Exception:
-            pass
-    return urldecode(code), hold_ms
+            val = int(hold)
+            if not (0 <= val <= 65535):
+                return urldecode(code), None, "Invalid hold_ms: must be in [0, 65535]"
+            hold_ms = val
+        except (ValueError, TypeError):
+            return urldecode(code), None, f"Invalid hold_ms: {hold!r}"
+    return urldecode(code), hold_ms, None
 
 
 class HttpServer:
@@ -188,9 +191,11 @@ class HttpServer:
             if self.macro_runner.is_running():
                 return Response(request, "Busy: Macro is running", status=(409, "Conflict"), content_type="text/plain")
 
-            code, hold_ms = _macro_form(request)
+            code, hold_ms, form_err = _macro_form(request)
             if code is None:
                 return Response(request, "Error: No macro code", content_type="text/plain")
+            if form_err:
+                return Response(request, f"Error: {form_err}", status=(400, "Bad Request"), content_type="text/plain; charset=utf-8")
 
             size, err = self.macro_runner.submit(code, hold_ms=hold_ms, source="http")
             if err:
@@ -222,12 +227,14 @@ class HttpServer:
             if self.macro_runner.is_running():
                 return Response(request, "Busy: Macro is running", status=(409, "Conflict"), content_type="text/plain")
 
-            code, _ = _macro_form(request)
+            code, hold_ms, form_err = _macro_form(request)
             if code is None:
                 return Response(request, "Error: No macro code", content_type="text/plain")
+            if form_err:
+                return Response(request, f"Error: {form_err}", status=(400, "Bad Request"), content_type="text/plain; charset=utf-8")
 
             try:
-                bytecode, err = self.macro_runner.macro.compile(code)
+                bytecode, err = self.macro_runner.macro.compile(code, press_hold_ms=hold_ms)
             except Exception as e:
                 return Response(request, f"Compile failed: {type(e).__name__}: {e}", content_type="text/plain; charset=utf-8")
 

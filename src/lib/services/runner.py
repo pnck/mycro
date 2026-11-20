@@ -28,7 +28,6 @@ class MacroRunner:
         self.img_provider = img_provider
         self.task = None
         self.state = {"state": "idle", "detail": "", "bytes": 0}
-        self.click_hold_ms = 10
 
     def set_raw_server(self, raw_server):
         self.raw_server = raw_server
@@ -58,10 +57,11 @@ class MacroRunner:
 
     def submit(self, code, hold_ms=None, source="http"):
         if hold_ms is not None:
-            self.click_hold_ms = hold_ms
+            if isinstance(hold_ms, bool) or not isinstance(hold_ms, int) or not (0 <= hold_ms <= 65535):
+                return None, f"Compile Error: hold_ms must be an integer in [0, 65535], got {hold_ms!r}"
 
         try:
-            bytecode, err = self.macro.compile(code)
+            bytecode, err = self.macro.compile(code, press_hold_ms=hold_ms)
         except Exception as e:
             return None, f"Compile failed: {type(e).__name__}: {e}"
 
@@ -88,7 +88,7 @@ class MacroRunner:
         t0 = _now_ms()
         try:
             try:
-                await self.macro.execute(bytecode, click_hold_ms=self.click_hold_ms)
+                await self.macro.execute(bytecode)
                 self.state["state"] = "done"
             except asyncio.CancelledError:
                 self.state["state"] = "aborted"

@@ -47,7 +47,7 @@ def run(text, rt=None, **kwargs):
     bc, err = m.compile(text)
     assert err is None, f"compile error: {err}"
     kwargs.setdefault("default_delay_ms", 0)
-    kwargs.setdefault("click_hold_ms", 0)
+    kwargs.setdefault("press_hold_ms", 0)
     asyncio.run(m.execute(bc, **kwargs))
     return hid
 
@@ -264,7 +264,7 @@ def test_guarded_sleep_slicing_abort():
             await asyncio.sleep(0.03)
             rt.fire_signal("net.msg", {"stop": 1})
 
-        task = asyncio.create_task(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+        task = asyncio.create_task(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
         bg = asyncio.create_task(background_project())
         await asyncio.gather(task, bg)
 
@@ -309,7 +309,7 @@ def test_guarded_wait_slicing_abort():
             # Both project target (with pending=1) AND violate guard (guard_val=0)
             rt.fire_signal("net.msg", {"guard_val": 0, "target": 100})
 
-        task = asyncio.create_task(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+        task = asyncio.create_task(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
         bg = asyncio.create_task(background_violation())
         await asyncio.gather(task, bg)
 
@@ -350,7 +350,7 @@ def test_guarded_wait_preserves_prior_timeout():
             await asyncio.sleep(0.03)
             rt.fire_signal("net.msg", {"active": 0})
 
-        task = asyncio.create_task(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+        task = asyncio.create_task(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
         bg = asyncio.create_task(bg_viol())
         await asyncio.gather(task, bg)
 
@@ -437,7 +437,7 @@ def test_guarded_hardware_reset_on_abort():
             await asyncio.sleep(0.02)
             rt.fire_signal("net.msg", {"stop": 1})
 
-        task = asyncio.create_task(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+        task = asyncio.create_task(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
         bg_task = asyncio.create_task(bg())
         await asyncio.gather(task, bg_task)
 

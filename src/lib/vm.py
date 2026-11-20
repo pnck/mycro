@@ -16,7 +16,7 @@ from bytecode import (
     REG_RET, REG_TIMEOUT, REG_ERR,
     ERR_OK, ERR_HANDLE_MISUSE,
     MAX_GUARD_NEST, DELAY_SLICE_QUANTUM,
-    DEFAULT_PACE_MS, MAX_CODE_BYTES,
+    DEFAULT_PACE_MS, DEFAULT_PRESS_HOLD_MS, MAX_CODE_BYTES,
     GUARD_TAG_IMM, GUARD_TAG_REG, GUARD_TAG_SLOT,
     CC_NAMES, CONSUMER_NAMES,
     read_header, keycode_name, mod_names,
@@ -377,7 +377,7 @@ class VM:
             raise ValueError("Bytecode missing terminal END")
         return "\n".join(lines)
 
-    async def execute(self, bytecode, default_delay_ms=DEFAULT_PACE_MS, click_hold_ms=10):
+    async def execute(self, bytecode, default_delay_ms=DEFAULT_PACE_MS, **kwargs):
         """Execute compiled bytecode.
 
         On exception or cancellation/abort, emergency-releases all keys and
@@ -390,6 +390,9 @@ class VM:
         if n - ip > MAX_CODE_BYTES:
             raise ValueError(f"Bytecode code segment exceeds {MAX_CODE_BYTES} bytes")
         delay_ms = default_delay_ms
+        press_hold_ms = getattr(bytecode, "press_hold_ms", None)
+        if press_hold_ms is None:
+            press_hold_ms = kwargs.get("press_hold_ms", kwargs.get("click_hold_ms", DEFAULT_PRESS_HOLD_MS))
         loop_stack = []  # [(loop_body_ip, remaining_count)]
         ended = False
         regs = [0] * 256
@@ -575,7 +578,7 @@ class VM:
                             raise RuntimeError(f"Unmappable char: {ch!r}")
                         for kc in codes:
                             hid.key_press(kc)
-                        await sleep_ms(click_hold_ms)
+                        await sleep_ms(press_hold_ms)
                         for kc in reversed(codes):
                             hid.key_release(kc)
                         await sleep_ms(delay_ms)
@@ -583,7 +586,7 @@ class VM:
                     elif op == OP_KEY:
                         kc = read_u8()
                         hid.key_press(kc)
-                        await sleep_ms(click_hold_ms)
+                        await sleep_ms(press_hold_ms)
                         hid.key_release(kc)
                         await sleep_ms(delay_ms)
 
@@ -622,13 +625,13 @@ class VM:
                                 hid.consumer_press(usage)
                                 active_consumer_usage = usage
                                 self.active_consumer_usage = usage
-                                await sleep_ms(click_hold_ms)
+                                await sleep_ms(press_hold_ms)
                                 if hasattr(hid, "consumer_release"):
                                     hid.consumer_release(usage)
                                 active_consumer_usage = None
                                 self.active_consumer_usage = None
                             else:
-                                await sleep_ms(click_hold_ms)
+                                await sleep_ms(press_hold_ms)
                             await sleep_ms(delay_ms)
 
                     elif op == OP_MCLICK:
@@ -645,7 +648,7 @@ class VM:
                             count = clamp(count, 1, 65535)
                             for i in range(count):
                                 hid.mouse_press(btn)
-                                await sleep_ms(click_hold_ms)
+                                await sleep_ms(press_hold_ms)
                                 hid.mouse_release(btn)
                                 if i < count - 1:
                                     await sleep_ms(delay_ms)
@@ -879,7 +882,7 @@ class VM:
                                 if codes:
                                     for kc in codes:
                                         hid.key_press(kc)
-                                    await sleep_ms(click_hold_ms)
+                                    await sleep_ms(press_hold_ms)
                                     for kc in reversed(codes):
                                         hid.key_release(kc)
                                     await sleep_ms(delay_ms)

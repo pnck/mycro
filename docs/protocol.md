@@ -56,7 +56,7 @@ Inbound `type: "error"` and types ending in `.ok` are terminal responses or noti
 
 | type | direction | payload | response payload |
 |---|---|---|---|
-| `macro.submit` | client → server | `code`: DSL source string | `bytes`: compiled bytecode size |
+| `macro.submit` | client → server | `code`: DSL source string; optional `hold_ms`: integer in `[0,65535]` | `bytes`: compiled bytecode size |
 | `macro.status` | client → server | — | `state`: `idle`/`running`/`done`/`aborted`/`error`, optional `detail` |
 | `macro.abort` | client → server | — | — (error `state` when active macro count is zero) |
 | `device.info` | client → server | optional `gc`: true → reading taken after a GC sweep (steady-state truth) | `board`, `fw`, `free_mem`, `proto` (protocol version) |
@@ -68,6 +68,8 @@ Inbound `type: "error"` and types ending in `.ok` are terminal responses or noti
 | `img.arm_preview` | server → capture client | `nonce`: 32-hex ephemeral random nonce | `img.arm_preview.ok` with `port`: ephemeral TCP port, `width`/`height`: native source dimensions |
 | `img.watch` | server → capture client | `name`: stream identifier; `x`, `y`: sampling point; `interval_ms`, `duration_ms` (lease) | `img.watch.ok` with `interval_ms`: effective period after provider capability clamping |
 | `img.unwatch` | server → capture client | `name` | `img.unwatch.ok` |
+
+`hold_ms` is the out-of-band press-hold setting supplied when a macro is compiled. It is resolved independently for every `macro.submit`: omission selects the default of 10 ms rather than retaining a previous request's value. A non-integer or out-of-range value receives `field`, and no Program is produced. The resolved duration is an immutable property of the resulting Program; execution accepts no separate hold override, and no instruction or later request can modify it. HTTP `POST /macro` and `POST /compile` use the optional form field `hold_ms` with the same default and validation rules, so compile-only output and execution describe the same resolved configuration.
 
 Every `img.frame.ok` response carries `width` and `height` equal to the native source dimensions. Selector-specific response fields are:
 

@@ -2,7 +2,7 @@
 
 Covers:
 - Command and alias compilation to OP_CONSUMER_KEY (0x08)
-- Pulse execution: consumer_press -> click_hold_ms -> consumer_release
+- Pulse execution: consumer_press -> press_hold_ms -> consumer_release
 - Automatic pacing after CONSUMER_KEY
 - Disassembly formatting with CONSUMER_NAMES
 - Name collision rejection in \\def
@@ -51,7 +51,7 @@ def run_macro(text, hid=None, rt=None, **kwargs):
     bc, err = m.compile(text)
     assert err is None, f"compile error: {err}"
     kwargs.setdefault("default_delay_ms", 0)
-    kwargs.setdefault("click_hold_ms", 10)
+    kwargs.setdefault("press_hold_ms", 10)
     asyncio.run(m.execute(bc, **kwargs))
     return m, hid
 
@@ -130,7 +130,7 @@ class TestConsumerControlExecution:
         ]
 
     def test_guard_abort_releases_active_consumer_usage(self):
-        """Guard failure during click_hold_ms releases active_consumer_usage."""
+        """Guard failure during press_hold_ms releases active_consumer_usage."""
         rt = Runtime()
         rt.register_ns("net", {})
         rt.register_signal("net.msg")
@@ -151,7 +151,7 @@ class TestConsumerControlExecution:
                 await asyncio.sleep(0.005)
                 rt.fire_signal("net.msg", {"stop": 1})
 
-            task1 = asyncio.create_task(m.execute(bc, default_delay_ms=0, click_hold_ms=50))
+            task1 = asyncio.create_task(m.execute(bc, default_delay_ms=0, press_hold_ms=50))
             task2 = asyncio.create_task(_trigger())
             await asyncio.gather(task1, task2)
 

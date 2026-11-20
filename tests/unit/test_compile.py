@@ -1,5 +1,6 @@
 """Compiler tests — run on CPython, no hardware involved."""
 
+import pytest
 import keymap
 from macro import (
     Macro,
@@ -777,7 +778,7 @@ def test_tap_single_keys_and_combos():
     bc2 = compile_ok("\\tap{a}")
     assert bc2 == H + bytes([OP_CHAR, ord("a"), OP_END])
 
-    # Combo tap lowers to KEY_DOWN, SLEEP click_hold_ms, KEY_UP
+    # Combo tap lowers to KEY_DOWN, SLEEP press_hold_ms, KEY_UP
     bc3 = compile_ok("\\tap{ctrl+c}")
     assert bc3 == H + bytes([
         OP_KEY_DOWN, 0, keymap.CONTROL, 0, 0, 0,
@@ -820,6 +821,45 @@ def test_kdown_kup_rejects_leading_backslash():
 
     err3 = compile_err(r"\tap{\ctrl}")
     assert "Unknown key" in err3
+
+
+def test_compile_press_hold_domain_validation():
+    m = Macro(MockHID())
+    # Valid domain [0, 65535]
+    p0, err0 = m.compile("a", press_hold_ms=0)
+    assert err0 is None and p0.press_hold_ms == 0
+
+    p_max, err_max = m.compile("a", press_hold_ms=65535)
+    assert err_max is None and p_max.press_hold_ms == 65535
+
+    # Invalid domains: bool, negative, >65535, non-int
+    for invalid in (True, False, -1, 65536, "10", 12.5):
+        with pytest.raises(ValueError, match="press_hold_ms must be an integer in \\[0, 65535\\]"):
+            m.compile("a", press_hold_ms=invalid)
+
+        with pytest.raises(ValueError, match="press_hold_ms must be an integer in \\[0, 65535\\]"):
+            m.compile("a", config={"press_hold_ms": invalid})
+
+
+def test_compile_press_hold_independent_resolution_no_leakage():
+    m = Macro(MockHID())
+    # 1. Explicit compilation with hold=50 ms
+    p1, err1 = m.compile(r"\ctrl+c", press_hold_ms=50)
+    assert err1 is None and p1.press_hold_ms == 50
+    assert bytes([OP_SLEEP, 0, 50, 0, 0, 0]) in bytes(p1)
+
+    # 2. Subsequent compilation on SAME compiler instance without hold_ms must resolve independently to default 10 ms
+    p2, err2 = m.compile(r"\ctrl+c")
+    assert err2 is None and p2.press_hold_ms == 10
+    assert bytes([OP_SLEEP, 0, 10, 0, 0, 0]) in bytes(p2)
+
+
+def test_tap_combo_parity_with_chording():
+    m = Macro(MockHID())
+    p_chord, _ = m.compile(r"\ctrl+c")
+    p_tap, _ = m.compile(r"\tap{ctrl+c}")
+    assert bytes(p_chord) == bytes(p_tap)
+
 
 
 

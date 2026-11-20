@@ -25,7 +25,7 @@ class FakeCtx:
         self.runtime.register_signal("net.msg")
         self.submitted = []
 
-    def submit(self, code):
+    def submit(self, code, hold_ms=None):
         self.submitted.append(code)
         return 26, None
 

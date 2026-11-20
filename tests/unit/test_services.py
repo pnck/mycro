@@ -5,7 +5,7 @@ import pytest
 
 from services.network import normalize_hostname
 from services.raw import get_raw_port
-from services.http import urldecode, HttpServer
+from services.http import urldecode, HttpServer, _macro_form
 
 
 @pytest.mark.parametrize("raw, expected", [
@@ -73,3 +73,52 @@ def test_http_should_redirect():
     # Missing host: no redirect
     assert server._should_redirect("", {}) is False
     assert server._should_redirect(None, {}) is False
+
+
+def test_macro_form_hold_ms_parsing():
+    class FakeRequest:
+        def __init__(self, form):
+            self.form_data = form
+
+    # 1. Valid hold_ms
+    c1, h1, err1 = _macro_form(FakeRequest({"code": "a", "hold_ms": "25"}))
+    assert c1 == "a" and h1 == 25 and err1 is None
+
+    # 2. Omitted hold_ms
+    c2, h2, err2 = _macro_form(FakeRequest({"code": "a"}))
+    assert c2 == "a" and h2 is None and err2 is None
+
+    # 3. Invalid hold_ms (non-int, out of range)
+    for invalid in ("bad", "-5", "70000"):
+        _, h_inv, err_inv = _macro_form(FakeRequest({"code": "a", "hold_ms": invalid}))
+        assert h_inv is None and err_inv is not None
+
+    # 4. Empty code
+    c4, h4, err4 = _macro_form(FakeRequest({"code": ""}))
+    assert c4 is None
+
+
+def test_macro_runner_and_proto_context():
+    import asyncio
+    from macro import Macro
+    from mock_hid import MockHID
+    from services.raw import ProtoContext
+    from services.runner import MacroRunner
+
+    async def _test():
+        runner = MacroRunner(Macro(MockHID()))
+        ctx = ProtoContext(None, runner)
+
+        # Valid submissions: custom hold_ms and default fallback (zero state leakage)
+        assert ctx.submit(r"\move{0,0}", hold_ms=50)[1] is None
+        await runner.task
+        assert ctx.submit(r"\move{0,0}")[1] is None  # defaults to 10, no leak
+        await runner.task
+
+        # Fast-fail invalid hold_ms
+        assert ctx.submit(r"\move{0,0}", hold_ms=-1)[0] is None
+        assert ctx.submit(r"\move{0,0}", hold_ms="abc")[0] is None
+
+    asyncio.run(_test())
+
+

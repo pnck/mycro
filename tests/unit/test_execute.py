@@ -15,7 +15,7 @@ def run(text, hid=None, **kwargs):
     bc, err = m.compile(text)
     assert err is None, f"compile error: {err}"
     kwargs.setdefault("default_delay_ms", 0)
-    kwargs.setdefault("click_hold_ms", 0)
+    kwargs.setdefault("press_hold_ms", 0)
     asyncio.run(m.execute(bc, **kwargs))
     return hid
 
@@ -96,14 +96,14 @@ def test_kdown_remains_held_after_script_completion():
     m = Macro(hid)
     bc, err = m.compile(r"\kdown{a}")
     assert err is None
-    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
     ka = keymap.letter_keycode("a")
     assert hid.events == [("kp", ka)]  # strictly only key_press, no key_release or kra!
 
     # A subsequent macro can release it
     bc_up, err = m.compile(r"\kup{a}")
     assert err is None
-    asyncio.run(m.execute(bc_up, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(m.execute(bc_up, default_delay_ms=0, press_hold_ms=0))
     assert hid.events == [("kp", ka), ("kr", ka)]
 
 
@@ -112,13 +112,13 @@ def test_kdown_kup_combo_execution():
     m = Macro(hid)
     bc, err = m.compile(r"\kdown{ctrl+c}")
     assert err is None
-    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
     kc = keymap.letter_keycode("c")
     assert hid.events == [("kp", keymap.CONTROL), ("kp", kc)]
 
     bc_up, err = m.compile(r"\kup{ctrl+c}")
     assert err is None
-    asyncio.run(m.execute(bc_up, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(m.execute(bc_up, default_delay_ms=0, press_hold_ms=0))
     assert hid.events == [("kp", keymap.CONTROL), ("kp", kc), ("kr", kc), ("kr", keymap.CONTROL)]
 
 
@@ -127,7 +127,7 @@ def test_combo_execution_press_hold_release():
     m = Macro(hid)
     bc, err = m.compile(r"\ctrl+c")
     assert err is None
-    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
     kc = keymap.letter_keycode("c")
     assert hid.events == [
         ("kp", keymap.CONTROL),
@@ -143,12 +143,12 @@ def test_mdown_remains_held_after_script_completion():
     m = Macro(hid)
     bc, err = m.compile(r"\mdown{L}")
     assert err is None
-    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
     assert hid.events == [("mp", keymap.BTN_LEFT)]
 
     bc_up, err = m.compile(r"\mup{L}")
     assert err is None
-    asyncio.run(m.execute(bc_up, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(m.execute(bc_up, default_delay_ms=0, press_hold_ms=0))
     assert hid.events == [("mp", keymap.BTN_LEFT), ("mr", keymap.BTN_LEFT)]
 
 
@@ -187,7 +187,7 @@ def test_execute_rejects_wrong_version():
     hid = MockHID()
     m = Macro(hid)
     try:
-        asyncio.run(m.execute(b"\x00\x01\xff", default_delay_ms=0, click_hold_ms=0))
+        asyncio.run(m.execute(b"\x00\x01\xff", default_delay_ms=0, press_hold_ms=0))
         raised = False
     except ValueError as e:
         raised = "version" in str(e)
@@ -203,7 +203,7 @@ def test_loop_count_zero_skips_body():
     bc = bytes([VERSION, 0, OP_LOOP, 0, 0, 0, 0, 0, len(body) + 1, 0]) + body + bytes([
         OP_LOOP_END, OP_CHAR, ord("y"), OP_END,
     ])
-    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
     chars = [e for e in hid.events if e[0] == "kp"]
     # only 'y' typed; 'x' skipped
     assert chars == [("kp", keymap.letter_keycode("y")), ("kra",)] or \
@@ -216,7 +216,7 @@ def test_combo_opcode_deprecated_nop():
     m = Macro(hid)
     # OP_COMBO with dummy mods=0x01, key=0x04 should be a 3-byte NOP in v4
     bc = bytes([VERSION, 0, 0x03, 0x01, 0x04, OP_CHAR, ord("a"), OP_END])
-    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
     # OP_COMBO did not press ctrl, only OP_CHAR pressed and released 'a'
     assert ("kp", keymap.CONTROL) not in hid.events
     assert ("kp", keymap.letter_keycode("a")) in hid.events
@@ -232,7 +232,7 @@ def test_b2_keys_released_on_runtime_error():
     bc, err = m.compile("\\kdown{ctrl}~")
     assert err is None
     try:
-        asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+        asyncio.run(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
         raised = False
     except RuntimeError:
         raised = True
@@ -251,7 +251,7 @@ def test_b2_keys_released_on_cancel():
     assert err is None
 
     async def scenario():
-        task = asyncio.create_task(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+        task = asyncio.create_task(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
         await asyncio.sleep(0.01)
         task.cancel()
         try:
@@ -269,7 +269,7 @@ def test_unknown_opcode_raises_and_cleans_up():
     hid = MockHID()
     m = Macro(hid)
     try:
-        asyncio.run(m.execute(bytes([VERSION, 0, 0x77]), default_delay_ms=0, click_hold_ms=0))
+        asyncio.run(m.execute(bytes([VERSION, 0, 0x77]), default_delay_ms=0, press_hold_ms=0))
         raised = False
     except RuntimeError as e:
         raised = "opcode" in str(e)
@@ -306,7 +306,7 @@ def test_execute_text_block_in_free_mode():
     )
     bc, err = m.compile(text)
     assert err is None
-    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
     kp_events = [e[1] for e in hid.events if e[0] == "kp"]
     assert keymap.ENTER in kp_events
     assert 0x2C in kp_events  # space keycode
@@ -317,7 +317,7 @@ def test_vm_class_direct_usage():
     hid = MockHID()
     vm = VM(hid)
     bc = bytes([VERSION, 0, OP_CHAR, ord("z"), OP_END])
-    asyncio.run(vm.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(vm.execute(bc, default_delay_ms=0, press_hold_ms=0))
     assert ("kp", keymap.letter_keycode("z")) in hid.events
     dis = vm.disassemble(bc)
     assert "CHAR 'z'" in dis
@@ -338,5 +338,97 @@ def test_run_call_async_fn_awaited():
     asyncio.run(m.execute(bc))
     assert ("kp", keymap.digit_keycode("4")) in hid.events
     assert ("kp", keymap.digit_keycode("2")) in hid.events
+
+
+def _active_keys(events):
+    held = set()
+    for ev in events:
+        if ev[0] == "kp":
+            held.add(ev[1])
+        elif ev[0] == "kr":
+            held.discard(ev[1])
+        elif ev[0] == "kra":
+            held.clear()
+    return held
+
+
+def _active_mouse(events):
+    held = set()
+    for ev in events:
+        if ev[0] == "mp":
+            held.add(ev[1])
+        elif ev[0] == "mr":
+            held.discard(ev[1])
+    return held
+
+
+def test_tap_cancels_earlier_holds_for_used_keys_only():
+    """spec/dsl.md §5.1: A normal tap or click releases every key or button used
+
+    by that action, cancelling earlier holds for those keys, while unrelated
+    held keys and buttons remain held.
+    """
+    ka = keymap.letter_keycode("a")
+    kb = keymap.letter_keycode("b")
+    k_shift = keymap.SHIFT
+    k_ctrl = keymap.CONTROL
+
+    # 1. \kdown{a}\tap{a} -> 'a' is released
+    hid1 = run(r"\kdown{a}\tap{a}")
+    assert ka not in _active_keys(hid1.events)
+
+    # 2. \kdown{b}\kdown{a}\tap{a} -> 'a' is released, 'b' remains pressed
+    hid2 = run(r"\kdown{b}\kdown{a}\tap{a}")
+    held2 = _active_keys(hid2.events)
+    assert ka not in held2
+    assert kb in held2
+
+    # 3. \kdown{shift}\tap{A} -> 'A' uses [shift, a]; both shift and 'a' released
+    hid3 = run(r"\kdown{shift}\tap{A}")
+    held3 = _active_keys(hid3.events)
+    assert k_shift not in held3
+    assert ka not in held3
+
+    # 4. \kdown{ctrl}\tap{A} -> 'ctrl' remains pressed, shift and 'a' released
+    hid4 = run(r"\kdown{ctrl}\tap{A}")
+    held4 = _active_keys(hid4.events)
+    assert k_ctrl in held4
+    assert k_shift not in held4
+    assert ka not in held4
+
+    # 5. \mdown{L}\mdown{R}\click{L} -> L released, R remains pressed
+    hid5 = run(r"\mdown{L}\mdown{R}\click{L}")
+    held_m5 = _active_mouse(hid5.events)
+    assert keymap.BTN_LEFT not in held_m5
+    assert keymap.BTN_RIGHT in held_m5
+
+
+def test_program_press_hold_duration_fidelity(monkeypatch):
+    """Program press_hold_ms is immutable and shared by combos and single keys."""
+    recorded_sleeps = []
+
+    async def fake_sleep(ms):
+        recorded_sleeps.append(ms)
+
+    monkeypatch.setattr(asyncio, "sleep", lambda s: fake_sleep(int(s * 1000)))
+
+    hid = MockHID()
+    m = Macro(hid)
+    # Compile with 25 ms hold: both combo lowering and \enter (KEY) must use 25 ms
+    p, err = m.compile(r"\ctrl+c\enter", press_hold_ms=25)
+    assert err is None
+    assert p.press_hold_ms == 25
+
+    recorded_sleeps.clear()
+    # Execute without override
+    asyncio.run(m.execute(p, default_delay_ms=0))
+    # Combo sleep is 25, enter tap hold is 25
+    assert recorded_sleeps == [25, 25]
+
+    recorded_sleeps.clear()
+    # Even if an execution-time override is passed, the Program's duration prevails
+    asyncio.run(m.execute(p, default_delay_ms=0, press_hold_ms=999))
+    assert recorded_sleeps == [25, 25]
+
 
 

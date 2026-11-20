@@ -71,7 +71,7 @@ def make_test_runtime():
 
 def run_macro(m, bc):
     """Execute bytecode and return a dict of user variables and special registers."""
-    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
     reg_vals = {}
     if hasattr(m.compiler, "_vars"):
         for var, reg in m.compiler._vars.items():

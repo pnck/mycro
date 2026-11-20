@@ -82,9 +82,9 @@ Peripheral interactions use the `HIDProvider` interface, isolating the VM core a
 | `consumer_press` | `usage_id: int` | Presses one USB HID Consumer Control usage (Usage Page 0x0C, for example volume, playback, or power; VM opcode `0x08 CONSUMER_KEY`). |
 | `consumer_release` | `usage_id: int` | Releases one active USB HID Consumer Control usage. |
 
-For character entry, a `shift = true` mapping presses Shift followed by `keycodes` in sequence, holds for `click_hold_ms`, and releases in reverse order: reversed `keycodes`, then Shift. A `shift = false` mapping presses and releases `keycodes` in the corresponding forward and reverse orders.
+For character entry, a `shift = true` mapping presses Shift followed by `keycodes` in sequence, holds for the Program's immutable press-hold duration, and releases in reverse order: reversed `keycodes`, then Shift. A `shift = false` mapping presses and releases `keycodes` in the corresponding forward and reverse orders. The generated release cancels any earlier hold for the keys used by the character action, including an already-held Shift. Holds for keys not used by the action remain intact.
 
-`CONSUMER_KEY` calls `consumer_press(usage_id)`, holds for the execution-time `click_hold_ms` using guard-sliced timing, and calls `consumer_release(usage_id)`. The VM tracks the active consumer usage, and every macro exit path, including completion, abort, and unhandled exception, releases that usage.
+`CONSUMER_KEY` calls `consumer_press(usage_id)`, holds for the Program's immutable press-hold duration using guard-sliced timing, and calls `consumer_release(usage_id)`. The VM tracks the active consumer usage, and every macro exit path, including completion, abort, and unhandled exception, releases that usage.
 
 Platform implementations:
 - CircuitPython: `src/lib/hid_adafruit.py` (backed by `adafruit_hid`).

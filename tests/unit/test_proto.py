@@ -14,12 +14,14 @@ class FakeCtx:
         self.runtime = Runtime()
         self.runtime.register_signal("net.msg")
         self.submitted = []
+        self.submitted_holds = []
         self.fail_compile = False
         self.state = ("idle", None)
         self.aborted = False
 
-    def submit(self, code):
+    def submit(self, code, hold_ms=None):
         self.submitted.append(code)
+        self.submitted_holds.append(hold_ms)
         if self.fail_compile:
             return None, "line 1: bad syntax"
         return 42, None
@@ -95,6 +97,21 @@ def test_submit_ok():
     r = dispatch(ctx, "macro.submit", {"code": "hello"})
     assert r["type"] == "macro.submit.ok" and r["payload"]["bytes"] == 42
     assert ctx.submitted == ["hello"]
+
+
+def test_submit_optional_hold_ms():
+    ctx = FakeCtx()
+    # 1. Valid hold_ms passed through
+    r = dispatch(ctx, "macro.submit", {"code": "hello", "hold_ms": 25})
+    assert r["type"] == "macro.submit.ok"
+    assert ctx.submitted_holds == [25]
+
+    # 2. Invalid hold_ms rejected as field error
+    for invalid in (True, False, -1, 65536, "10", 10.5):
+        r_inv = dispatch(ctx, "macro.submit", {"code": "hello", "hold_ms": invalid})
+        assert r_inv["type"] == "error"
+        assert r_inv["payload"]["code"] == "field"
+        assert "'hold_ms' must be an integer in [0, 65535]" in r_inv["payload"]["message"]
 
 
 def test_submit_compile_error():

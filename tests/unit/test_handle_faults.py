@@ -51,7 +51,7 @@ def run(text, rt=None, hid=None):
             uses += f"\\use{{{ns}}}"
     bc, err = m.compile(uses + text)
     assert err is None, f"compile error: {err}"
-    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
     return hid, rt
 
 

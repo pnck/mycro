@@ -95,8 +95,8 @@ class ProtoContext:
         self.runtime = runtime
         self._macro_runner = macro_runner
 
-    def submit(self, code):
-        return self._macro_runner.submit(code, source="raw")
+    def submit(self, code, hold_ms=None):
+        return self._macro_runner.submit(code, hold_ms=hold_ms, source="raw")
 
     def status(self):
         return self._macro_runner.get_status()

@@ -21,7 +21,7 @@ from bytecode import (
     CC_OPS, CC_NAMES, CONVERSE_CC, INVERT_CC,
     MAX_CODE_BYTES, MAX_BYTECODE, MAX_STRINGS, MAX_STRING_BYTES,
     MAX_RUNTIME_NEST, MAX_MACRO_EXPAND, MAX_PRED_NEST, MAX_GUARD_NEST,
-    MAX_COMBO_KEYS, MAX_SLOTS, DELAY_SLICE_QUANTUM, DEFAULT_WAIT_TIMEOUT_MS, DEFAULT_CLICK_HOLD_MS, DEFAULT_PACE_MS, _PRINTABLE_LONE_KEYS,
+    MAX_COMBO_KEYS, MAX_SLOTS, DELAY_SLICE_QUANTUM, DEFAULT_WAIT_TIMEOUT_MS, DEFAULT_PRESS_HOLD_MS, DEFAULT_CLICK_HOLD_MS, DEFAULT_PACE_MS, _PRINTABLE_LONE_KEYS,
     GUARD_TAG_IMM, GUARD_TAG_REG, GUARD_TAG_SLOT,
     ERR_OK, ERR_GENERIC, ERR_INVALID_ARG, ERR_NO_PROVIDER, ERR_OUT_OF_BOUNDS,
     ERR_HANDLE_INVALID, ERR_RESOURCE_EXHAUSTED, ERR_TIMEOUT, ERR_HANDLE_MISUSE,
@@ -52,25 +52,24 @@ class Macro:
 
     _read_header = staticmethod(read_header)
 
-    def __init__(self, hid=None, runtime=None, click_hold_ms=DEFAULT_CLICK_HOLD_MS):
+    def __init__(self, hid=None, runtime=None, press_hold_ms=None, click_hold_ms=None):
         self.hid = hid
         self.runtime = runtime
-        self.click_hold_ms = click_hold_ms
-        self.compiler = Compiler(runtime=runtime, click_hold_ms=click_hold_ms)
+        self.compiler = Compiler(runtime=runtime, press_hold_ms=press_hold_ms, click_hold_ms=click_hold_ms)
         self.vm = VM(hid=hid, runtime=runtime)
 
-    def compile(self, text, config=None, click_hold_ms=None):
+    def compile(self, text, config=None, press_hold_ms=None, click_hold_ms=None):
         """Compile macro text to bytecode. Returns (bytecode, error_msg)."""
-        bc, err = self.compiler.compile(text, config=config, click_hold_ms=click_hold_ms)
+        bc, err = self.compiler.compile(
+            text, config=config, press_hold_ms=press_hold_ms, click_hold_ms=click_hold_ms
+        )
         if bc is not None:
             self.vm.activated_namespaces = list(self.compiler.activated_namespaces)
         return bc, err
 
-    async def execute(self, bytecode, default_delay_ms=DEFAULT_PACE_MS, click_hold_ms=10):
+    async def execute(self, bytecode, default_delay_ms=DEFAULT_PACE_MS, **kwargs):
         """Execute compiled bytecode asynchronously on the VM."""
-        return await self.vm.execute(
-            bytecode, default_delay_ms=default_delay_ms, click_hold_ms=click_hold_ms
-        )
+        return await self.vm.execute(bytecode, default_delay_ms=default_delay_ms, **kwargs)
 
     def disassemble(self, bytecode):
         """Disassemble bytecode to human-readable format."""

@@ -142,7 +142,10 @@ class ActionsMixin:
                 return
             raise MacroError(f"Unknown key: {tok}", pos)
 
-        # Combination lowering: forward KEY_DOWN, SLEEP click_hold_ms, reverse KEY_UP
+        self._lower_combo(tokens, pos)
+
+    def _lower_combo(self, tokens, pos):
+        # Combination lowering: forward KEY_DOWN, SLEEP press_hold_ms, reverse KEY_UP
         K = []
         for tok in tokens:
             K.extend(self._resolve_combo_key(tok, pos))
@@ -152,7 +155,7 @@ class ActionsMixin:
             self._emit_typed((TAG_IMM, kc))
 
         self._emit(OP_SLEEP)
-        self._emit_typed((TAG_IMM, self._click_hold_ms))
+        self._emit_typed((TAG_IMM, self._press_hold_ms))
 
         for kc in reversed(K):
             self._emit(OP_KEY_UP)
@@ -499,19 +502,7 @@ class ActionsMixin:
                 return
             raise MacroError(f"Unknown key: {tok}", pos)
 
-        # Combination lowering: forward KEY_DOWN, SLEEP click_hold_ms, reverse KEY_UP
-        K = []
-        for tok in tokens:
-            K.extend(self._resolve_combo_key(tok, pos))
-        for kc in K:
-            self._emit(OP_KEY_DOWN)
-            self._emit_typed((TAG_IMM, kc))
-        if self._click_hold_ms > 0:
-            self._emit(OP_SLEEP)
-            self._emit_typed((TAG_IMM, self._click_hold_ms), 2)
-        for kc in reversed(K):
-            self._emit(OP_KEY_UP)
-            self._emit_typed((TAG_IMM, kc))
+        self._lower_combo(tokens, pos)
 
     def _cmd_kdown(self, pos):
         arg = self._read_braces()

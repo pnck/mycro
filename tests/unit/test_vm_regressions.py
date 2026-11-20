@@ -99,7 +99,7 @@ def guarded_slot(throttle_ms, body, abort):
 def execute(bc, hid=None, runtime=None, use_macro=False, **kwargs):
     hid = hid or MockHID()
     runner = Macro(hid, runtime) if use_macro else VM(hid, runtime)
-    kwargs.setdefault("click_hold_ms", 0)
+    kwargs.setdefault("press_hold_ms", 0)
     asyncio.run(runner.execute(bc, **kwargs))
     return hid, runner
 
@@ -154,7 +154,7 @@ def test_tap_releases_before_automatic_pacing(monkeypatch):
     monkeypatch.setattr(hid, "key_press", press)
     monkeypatch.setattr(hid, "key_release", release)
     monkeypatch.setattr(vm_module.asyncio, "sleep", sleep)
-    execute(program(key(keycode)), hid=hid, default_delay_ms=7, click_hold_ms=5)
+    execute(program(key(keycode)), hid=hid, default_delay_ms=7, press_hold_ms=5)
     assert events == [
         ("press", keycode), ("sleep", 5),
         ("release", keycode), ("sleep", 7),
@@ -204,7 +204,7 @@ def test_handle_count_loop_fault_does_not_push_or_pop_a_frame():
         r"\use{img}\call{img.snap}{0, 0, 1, 1}\set{h}{$ret}\rep{2}{\a\rep{$h}{\b}\c}"
     )
     assert err is None
-    asyncio.run(macro.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(macro.execute(bc, default_delay_ms=0, press_hold_ms=0))
     assert typed_chars(hid) == "acac"
     assert macro.vm.last_regs[REG_ERR] == ERR_HANDLE_MISUSE
 
@@ -223,7 +223,7 @@ def test_kdown_digit_zero_presses_the_digit_key():
     macro = Macro(hid)
     bc, err = macro.compile(r"\kdown{0}")
     assert err is None
-    asyncio.run(macro.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(macro.execute(bc, default_delay_ms=0, press_hold_ms=0))
     assert hid.events == [("kp", keymap.digit_keycode("0"))]
 
 
@@ -232,7 +232,7 @@ def test_kup_digit_zero_releases_the_digit_key():
     macro = Macro(hid)
     bc, err = macro.compile(r"\kup{0}")
     assert err is None
-    asyncio.run(macro.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(macro.execute(bc, default_delay_ms=0, press_hold_ms=0))
     assert hid.events == [("kr", keymap.digit_keycode("0"))]
 
 

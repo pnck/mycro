@@ -30,7 +30,7 @@ def run(code, rt=None):
     m = Macro(hid, runtime=rt)
     bc, err = m.compile(code)
     assert err is None, f"compile error: {err}"
-    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
     return hid
 
 

@@ -72,7 +72,7 @@ def run(text, rt=None, hid=None):
         prefix += "\\use{go}"
     bc, err = m.compile(prefix + text)
     assert err is None, f"compile error: {err}"
-    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
     return hid
 
 
@@ -192,7 +192,7 @@ def test_wait_suspends_and_wakes_on_projection():
     assert err is None
 
     async def scenario():
-        task = asyncio.create_task(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+        task = asyncio.create_task(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
         await asyncio.sleep(0.02)
         # Verify latch is 0 while waiting
         assert rt.slot_pending("go", "val") == 0

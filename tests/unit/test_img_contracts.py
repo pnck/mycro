@@ -299,7 +299,7 @@ def test_call_ext_rejects_handle_in_scalar_parameter():
               r"\call{img.diff}{$p}{$p}{$ret}")
     bc, err = device.macro.compile(source)
     assert err is None
-    _run(device.macro.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    _run(device.macro.execute(bc, default_delay_ms=0, press_hold_ms=0))
     assert device.macro.last_regs[REG_RET] == 0
     assert device.macro.last_regs[REG_ERR] == ERR_HANDLE_MISUSE
 

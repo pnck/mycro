@@ -74,9 +74,13 @@ def _h_submit(payload, ctx, _env):
     code = payload.get("code")
     if not isinstance(code, str) or not code:
         return ("field", "'code' must be a non-empty string")
+    hold_ms = payload.get("hold_ms")
+    if hold_ms is not None:
+        if isinstance(hold_ms, bool) or not isinstance(hold_ms, int) or not (0 <= hold_ms <= 65535):
+            return ("field", "'hold_ms' must be an integer in [0, 65535]")
     if ctx.status()[0] == "running":
         return ("state", "busy: macro is running")
-    nbytes, err = ctx.submit(code)
+    nbytes, err = ctx.submit(code, hold_ms=hold_ms)
     if err:
         return ("compile_error", err)
     return ("ok", {"bytes": nbytes})

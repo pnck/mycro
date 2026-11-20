@@ -99,7 +99,7 @@ def run_macro(text, rt=None):
     m = Macro(hid, runtime)
     bc, err = m.compile(_with_uses(text, runtime))
     assert err is None, f"compile failed: {err}"
-    asyncio.run(m.execute(bc, default_delay_ms=0, click_hold_ms=0))
+    asyncio.run(m.execute(bc, default_delay_ms=0, press_hold_ms=0))
     reg_dict = {
         "$ret": m.vm.last_regs[REG_RET],
         "$err": m.vm.last_regs[REG_ERR],

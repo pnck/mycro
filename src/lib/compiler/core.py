@@ -12,10 +12,12 @@ from bytecode import (
     TAG_IMM,
     TAG_REG,
     MAX_CODE_BYTES,
+    DEFAULT_PRESS_HOLD_MS,
     DEFAULT_CLICK_HOLD_MS,
     CONSUMER_COMMANDS,
     _is_alpha,
     read_header,
+    Program,
     MacroError,
 )
 from .label import Label
@@ -30,9 +32,8 @@ class Compiler(SyntaxMixin, LiteralMixin, PredicateMixin, ActionsMixin):
     Normative reference: spec/dsl.md (grammar, syntax lowering, type environment).
     """
 
-    def __init__(self, runtime=None, click_hold_ms=DEFAULT_CLICK_HOLD_MS):
+    def __init__(self, runtime=None, press_hold_ms=None, click_hold_ms=None):
         self.runtime = runtime
-        self.click_hold_ms = click_hold_ms
         self._emit_newline = True
         self._emit_space = True
         self._first_executable_pos = 0
@@ -40,7 +41,7 @@ class Compiler(SyntaxMixin, LiteralMixin, PredicateMixin, ActionsMixin):
         self.activated_namespaces = []
         self._guard_depth = 0
 
-    def compile(self, text, config=None, click_hold_ms=None):
+    def compile(self, text, config=None, press_hold_ms=None, click_hold_ms=None):
         """Compile macro text to bytecode. Returns (bytecode, error_msg).
 
         Nesting (rep/if/guarded/macro bodies) is parsed iteratively on an explicit
@@ -48,12 +49,19 @@ class Compiler(SyntaxMixin, LiteralMixin, PredicateMixin, ActionsMixin):
         pystack only survives ~2 levels of recursive compilation once the
         asyncio + httpserver baseline is active.
         """
-        if config and isinstance(config, dict) and "click_hold_ms" in config:
-            self._click_hold_ms = config["click_hold_ms"]
-        elif click_hold_ms is not None:
-            self._click_hold_ms = click_hold_ms
+        raw_hold = None
+        if config and isinstance(config, dict):
+            raw_hold = config.get("press_hold_ms", config.get("click_hold_ms"))
+        if raw_hold is None:
+            raw_hold = press_hold_ms if press_hold_ms is not None else click_hold_ms
+
+        if raw_hold is not None:
+            if isinstance(raw_hold, bool) or not isinstance(raw_hold, int) or not (0 <= raw_hold <= 65535):
+                raise ValueError(f"press_hold_ms must be an integer in [0, 65535], got {raw_hold!r}")
+            self._press_hold_ms = raw_hold
         else:
-            self._click_hold_ms = getattr(self, "click_hold_ms", DEFAULT_CLICK_HOLD_MS)
+            self._press_hold_ms = DEFAULT_PRESS_HOLD_MS
+        self._click_hold_ms = self._press_hold_ms
 
         self._bc = bytearray()
         self._text = text
@@ -88,7 +96,7 @@ class Compiler(SyntaxMixin, LiteralMixin, PredicateMixin, ActionsMixin):
             for s in self._strs:
                 hdr.append(len(s.encode("utf-8")))
                 hdr.extend(s.encode("utf-8"))
-            return bytes(hdr + self._bc[2:]), None
+            return Program(bytes(hdr + self._bc[2:]), press_hold_ms=self._press_hold_ms), None
         except MacroError as e:
             # Rebuild the "In <context>: ..." chain from the nest stack,
             # innermost first — same message shape the recursive compiler made.
