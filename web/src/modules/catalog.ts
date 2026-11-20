@@ -92,28 +92,28 @@ function item(
 		table?: { headers: string[]; rows: string[][] };
 	}
 ): ManualItem {
-	return {
-		name,
-		syntax,
-		desc,
-		snippet,
-		aliases: opts?.aliases,
-		usageId: opts?.usageId,
-		fields: opts?.fields?.map(([name, def, optOrPh, width]) => ({
-			name,
-			type: Array.isArray(optOrPh) ? "select" : "text",
-			default: def,
-			options: Array.isArray(optOrPh) ? optOrPh : undefined,
-			placeholder: typeof optOrPh === "string" ? optOrPh : undefined,
-			width
-		})),
-		template: opts?.template,
-		returns: opts?.returns,
-		multiline: opts?.multiline,
-		keywords: opts?.keywords,
-		notes: opts?.notes,
-		table: opts?.table
-	};
+	const it: ManualItem = { name, syntax, desc, snippet };
+	if (opts) {
+		if (opts.aliases) it.aliases = opts.aliases;
+		if (opts.usageId) it.usageId = opts.usageId;
+		if (opts.fields) {
+			it.fields = opts.fields.map(([fName, def, optOrPh, width]) => ({
+				name: fName,
+				type: Array.isArray(optOrPh) ? "select" : "text",
+				default: def,
+				options: Array.isArray(optOrPh) ? optOrPh : undefined,
+				placeholder: typeof optOrPh === "string" ? optOrPh : undefined,
+				width
+			}));
+		}
+		if (opts.template) it.template = opts.template;
+		if (opts.returns) it.returns = opts.returns;
+		if (opts.multiline) it.multiline = opts.multiline;
+		if (opts.keywords) it.keywords = opts.keywords;
+		if (opts.notes) it.notes = opts.notes;
+		if (opts.table) it.table = opts.table;
+	}
+	return it;
 }
 
 
@@ -153,8 +153,7 @@ export const MANUAL_DATA: ManualCategory[] = [
 				],
 				template: "\\#!syntax: newline=${newline}, space=${space}\n",
 			}),
-			item("Line Continuation (\\)", "\\ at line end", "A trailing backslash absorbs the newline without emitting Return. Used in typewriter mode to split commands across lines.", "\\\n", {
-			})
+			item("Line Continuation (\\)", "\\ at line end", "A trailing backslash absorbs the newline without emitting Return. Used in typewriter mode to split commands across lines.", "\\\n")
 		]
 	},
 	{
@@ -171,16 +170,14 @@ export const MANUAL_DATA: ManualCategory[] = [
 				],
 				template: "\\# ${text}\n",
 			}),
-			item("Literal Backslash (\\\\)", "\\\\", "Emits a single literal backslash character (0x5C) to the host system.", "\\\\", {
-			}),
+			item("Literal Backslash (\\\\)", "\\\\", "Emits a single literal backslash character (0x5C) to the host system.", "\\\\"),
 			item("Literal Curly Braces (\\{, \\})", "\\{ or \\}", "Emits literal curly brace characters without opening or closing DSL blocks or parameter scopes.", "\\{", {
 				fields: [
 					["brace", "{", ["{", "}"], "45px"]
 				],
 				template: "\\${brace}",
 			}),
-			item("Literal Dollar Sign (\\$)", "\\$", "Emits a literal dollar sign character ($) to the host without triggering variable or slot interpolation ($var / ${var}).", "\\$", {
-			})
+			item("Literal Dollar Sign (\\$)", "\\$", "Emits a literal dollar sign character ($) to the host without triggering variable or slot interpolation ($var / ${var}).", "\\$")
 		]
 	},
 	{
@@ -400,10 +397,8 @@ export const MANUAL_DATA: ManualCategory[] = [
 				template: "\\if{ {${lhs}, ${op}, ${rhs}} }{\n  \\enter\n}\n",
 				multiline: true,
 			}),
-			item("Conjunction Logic Block (\\all)", "\\all{ {p1}, {p2} }", "Logical AND conjunction: passes only if every inner comparison triplet evaluates to true.", "\\set{x}{50}\\if{ \\all{ {$x, >=, 0}, {$x, <=, 100} } }{\\enter}", {
-			}),
-			item("Disjunction Logic Block (\\any)", "\\any{ {p1}, {p2} }", "Logical OR disjunction: passes if at least one inner comparison triplet evaluates to true.", "\\if{ \\any{ {$err, !=, 0}, {$timeout, =, 1} } }{\\esc}", {
-			}),
+			item("Conjunction Logic Block (\\all)", "\\all{ {p1}, {p2} }", "Logical AND conjunction: passes only if every inner comparison triplet evaluates to true.", "\\set{x}{50}\\if{ \\all{ {$x, >=, 0}, {$x, <=, 100} } }{\\enter}"),
+			item("Disjunction Logic Block (\\any)", "\\any{ {p1}, {p2} }", "Logical OR disjunction: passes if at least one inner comparison triplet evaluates to true.", "\\if{ \\any{ {$err, !=, 0}, {$timeout, =, 1} } }{\\esc}"),
 			item("Guarded Invariant Block (\\guarded)", "\\guarded[<throttle>]{<invariant>}{<body>}[{<on_abort>}]", "Continuously asserts invariant predicate. On violation, halts body, releases held keys/buttons, and runs optional on_abort block.", "\\guarded[50ms]{ {$err, =, 0} }{\n  \\click{L}\n  \\delay{50ms}\n}{\n  \\esc\n}\n", {
 				fields: [
 					["throttle", "50ms", "throttle interval", "80px"]
@@ -460,8 +455,7 @@ export const MANUAL_DATA: ManualCategory[] = [
 		badge: "sys",
 		desc: "Core firmware diagnostics, memory monitoring, and runtime execution environment. Always declare \\use{sys} once before calling any sys.* functions in your macro.",
 		items: [
-			item("Activate Namespace (\\use{sys})", "\\use{sys}", "Declares dependency on the sys namespace, binding system diagnostic functions into the macro execution context.", "\\use{sys}\n", {
-			}),
+			item("Activate Namespace (\\use{sys})", "\\use{sys}", "Declares dependency on the sys namespace, binding system diagnostic functions into the macro execution context.", "\\use{sys}\n"),
 			item("Query Free Heap Memory (sys.free)", "\\call{sys.free}", "Queries CircuitPython GC allocator free heap bytes. Writes free memory byte count to $ret. Essential for asserting device memory headroom before processing large image frames.", "\\use{sys}\n\\call{sys.free}", {
 				returns: "$ret (free bytes in RAM)",
 			})
@@ -472,8 +466,7 @@ export const MANUAL_DATA: ManualCategory[] = [
 		badge: "net",
 		desc: "Raw bi-directional TCP communication channel (:7373) connecting the macro device to host companion applications. Enables bidirectional handshakes, message broadcasting, and event-driven automation.",
 		items: [
-			item("Activate Namespace (\\use{net})", "\\use{net}", "Declares dependency on the net namespace, activating network broadcast and signal receptors.", "\\use{net}\n", {
-			}),
+			item("Activate Namespace (\\use{net})", "\\use{net}", "Declares dependency on the net namespace, activating network broadcast and signal receptors.", "\\use{net}\n"),
 			item("Broadcast Message to Host (net.send)", "\\call{net.send}{<msg>}", "Broadcasts message tag to all authenticated companion clients on raw TCP port (:7373). Writes status code to $err (0=ERR_OK).", "\\use{net}\n\\call{net.send}{ready}", {
 				fields: [
 					["msg", "ready", "message tag", "120px"]
@@ -493,8 +486,7 @@ export const MANUAL_DATA: ManualCategory[] = [
 		badge: "img",
 		desc: "Screen capture, point color sampling, diffing, and streaming telemetry coordinated with an external capture provider (e.g. OBS Studio).",
 		items: [
-			item("Activate Namespace (\\use{img})", "\\use{img}", "Declares dependency on the img namespace, activating screen capture, pixel sampling, and stream telemetry verbs.", "\\use{img}\n", {
-			}),
+			item("Activate Namespace (\\use{img})", "\\use{img}", "Declares dependency on the img namespace, activating screen capture, pixel sampling, and stream telemetry verbs.", "\\use{img}\n"),
 			item("Capture Snapshot Region (img.snap)", "\\call{img.snap}{<x>, <y>, <w>, <h>}", "Captures rectangular screen region from external provider. Allocates snapshot handle in device memory and writes handle ID to $ret.", "\\use{img}\n\\call{img.snap}{0, 0, 100, 100}", {
 				fields: [
 					["x", "0", "x", "45px"],

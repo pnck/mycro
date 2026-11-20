@@ -3,73 +3,62 @@ import { hmacSha256Hex } from "../../utils/crypto";
 import { generatePointSnippet, generateRegionSnippet, toHex } from "./generator";
 import { insertTextAtCursor } from "../editor";
 
+const ZOOM_PRESETS = [0.25, 0.5, 1, 2, 4, 8, 16];
+
+function setSvgRect(el: SVGElement, x: number, y: number, w: number, h: number): void {
+	el.setAttribute("x", String(x));
+	el.setAttribute("y", String(y));
+	el.setAttribute("width", String(w));
+	el.setAttribute("height", String(h));
+}
+
 export function initPixelAssist(): void {
 	// --- DOM Element References ---
-	const paOverlay = document.getElementById("paOverlay")!;
-	const paViewport = document.getElementById("paViewport")!;
-	const paInspector = document.getElementById("paInspector")!;
-	const paShieldModal = document.getElementById("paShieldModal")!;
-	const paShieldWarning = document.getElementById("paShieldWarning") as HTMLButtonElement | null;
-	const paShieldModalResult = document.getElementById("paShieldModalResult");
-	const paExitShieldModalBtn = document.getElementById("paExitShieldModalBtn");
-	const paRetestShieldBtn = document.getElementById("paRetestShieldBtn");
+	const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T | null;
+	const $req = <T extends Element = HTMLElement>(id: string) => document.getElementById(id) as T;
 
-	const paOpenBtn = document.getElementById("paOpenBtn");
-	const paCloseBtn = document.getElementById("paCloseBtn");
-	const paCaptureBtn = document.getElementById("paCaptureBtn") as HTMLButtonElement | null;
-	const paCapturePromptBtn = document.getElementById("paCapturePromptBtn") as HTMLButtonElement | null;
-	const paCaptureStatus = document.getElementById("paCaptureStatus");
-	const paMainStatus = document.getElementById("paMainStatus");
-	const paResBadge = document.getElementById("paResBadge");
-	const paEmptyPrompt = document.getElementById("paEmptyPrompt");
-
-	const paStageContainer = document.getElementById("paStageContainer")!;
-	const paDisplayCanvas = document.getElementById("paDisplayCanvas") as HTMLCanvasElement;
+	const paOverlay = $req("paOverlay");
+	const paViewport = $req("paViewport");
+	const paShieldModal = $req("paShieldModal");
+	const paStageContainer = $req("paStageContainer");
+	const paDisplayCanvas = $req<HTMLCanvasElement>("paDisplayCanvas");
 	const paDisplayCtx = paDisplayCanvas.getContext("2d")!;
-	const paOverlaySvg = document.getElementById("paOverlaySvg") as unknown as SVGElement;
-	const paPixelGridRect = document.getElementById("paPixelGridRect") as unknown as SVGRectElement;
-	const paPixelGridPattern = document.getElementById("paPixelGridPattern") as unknown as SVGPatternElement;
-	const paPixelGridPath = document.getElementById("paPixelGridPath") as unknown as SVGPathElement;
-	const paSvgSelectionGroup = document.getElementById("paSvgSelectionGroup") as unknown as SVGElement;
-	const paSvgBox = document.getElementById("paSvgBox") as unknown as SVGRectElement;
-	const paSvgBoxOuter = document.getElementById("paSvgBoxOuter") as unknown as SVGRectElement;
-	const paSvgBoxBody = document.getElementById("paSvgBoxBody") as unknown as SVGRectElement;
-	const paSvgHandles = document.getElementById("paSvgHandles") as unknown as SVGElement;
+	const paOverlaySvg = $req<SVGElement>("paOverlaySvg");
+	const paPixelGridRect = $req<SVGRectElement>("paPixelGridRect");
+	const paPixelGridPattern = $req<SVGPatternElement>("paPixelGridPattern");
+	const paPixelGridPath = $req<SVGPathElement>("paPixelGridPath");
+	const paSvgSelectionGroup = $req<SVGElement>("paSvgSelectionGroup");
+	const paSvgBox = $req<SVGRectElement>("paSvgBox");
+	const paSvgBoxOuter = $req<SVGRectElement>("paSvgBoxOuter");
+	const paSvgBoxBody = $req<SVGRectElement>("paSvgBoxBody");
+	const paSvgHandles = $req<SVGElement>("paSvgHandles");
+	const handleEls = Array.from(paSvgHandles.querySelectorAll<SVGElement>(".pa-handle")).map(el => ({
+		el,
+		k: el.getAttribute("data-handle") || ""
+	}));
 
-	const paModePoint = document.getElementById("paModePoint");
-	const paModeRegion = document.getElementById("paModeRegion");
-	const paHudModeBadge = document.getElementById("paHudModeBadge");
-	const paRegionControls = document.getElementById("paRegionControls");
-	const paGridToggleBtn = document.getElementById("paGridToggleBtn") as HTMLButtonElement | null;
-	const paZoomSelect = document.getElementById("paZoomSelect") as HTMLSelectElement;
-	const paZoomCustomOpt = document.getElementById("paZoomCustomOpt") as HTMLOptionElement;
-	const paZoomInBtn = document.getElementById("paZoomInBtn");
-	const paZoomOutBtn = document.getElementById("paZoomOutBtn");
-	const paZoomFitBtn = document.getElementById("paZoomFitBtn");
-
-	const paLoupeCanvas = document.getElementById("paLoupeCanvas") as HTMLCanvasElement;
+	const paZoomSelect = $req<HTMLSelectElement>("paZoomSelect");
+	const paZoomCustomOpt = $req<HTMLOptionElement>("paZoomCustomOpt");
+	const paLoupeCanvas = $req<HTMLCanvasElement>("paLoupeCanvas");
 	const paLoupeCtx = paLoupeCanvas.getContext("2d")!;
 	paLoupeCtx.imageSmoothingEnabled = false;
 
-	const paColorSwatch = document.getElementById("paColorSwatch");
-	const paColorHexShort = document.getElementById("paColorHexShort");
-	const paCoordText = document.getElementById("paCoordText");
-	const paHexDslText = document.getElementById("paHexDslText");
-	const paHexCssText = document.getElementById("paHexCssText");
-	const paRgbText = document.getElementById("paRgbText");
-	const paRegionSwatches = document.getElementById("paRegionSwatches");
-	const paSnippetBox = document.getElementById("paSnippetBox") as HTMLTextAreaElement;
-	const paInsertSnippetBtn = document.getElementById("paInsertSnippetBtn");
-	const paCopyCoordBtn = document.getElementById("paCopyCoordBtn");
-	const paCopyHexDslBtn = document.getElementById("paCopyHexDslBtn");
-	const paCopyHexCssBtn = document.getElementById("paCopyHexCssBtn");
-	const paCopyRgbBtn = document.getElementById("paCopyRgbBtn");
-	const paCopySnippetBtn = document.getElementById("paCopySnippetBtn");
+	const paSnippetBox = $req<HTMLTextAreaElement>("paSnippetBox");
+	const paInX = $req<HTMLInputElement>("paInX");
+	const paInY = $req<HTMLInputElement>("paInY");
+	const paInW = $req<HTMLInputElement>("paInW");
+	const paInH = $req<HTMLInputElement>("paInH");
 
-	const paInX = document.getElementById("paInX") as HTMLInputElement;
-	const paInY = document.getElementById("paInY") as HTMLInputElement;
-	const paInW = document.getElementById("paInW") as HTMLInputElement;
-	const paInH = document.getElementById("paInH") as HTMLInputElement;
+	const setText = (id: string, text: string) => {
+		const el = $(id);
+		if (el) el.textContent = text;
+	};
+
+	const syncColorDisplays = (hex: string, r: number, g: number, b: number) => {
+		setText("paHexDslText", `0x${hex}`);
+		setText("paHexCssText", `#${hex}`);
+		setText("paRgbText", `rgb(${r}, ${g}, ${b})`);
+	};
 
 	// --- State ---
 	let img: HTMLImageElement | null = null;
@@ -131,13 +120,15 @@ export function initPixelAssist(): void {
 	function enforceShield(locked: boolean) {
 		shieldBlocked = locked;
 		paShieldModal.style.display = locked ? "flex" : "none";
-		if (paShieldWarning) paShieldWarning.style.display = locked ? "inline-flex" : "none";
-		if (paShieldModalResult) {
-			paShieldModalResult.style.display = locked ? "block" : "none";
+		const warn = $("paShieldWarning");
+		if (warn) warn.style.display = locked ? "inline-flex" : "none";
+		const res = $("paShieldModalResult");
+		if (res) {
+			res.style.display = locked ? "block" : "none";
 			if (locked) {
-				paShieldModalResult.style.background = "#ffebe9";
-				paShieldModalResult.style.color = "#cf222e";
-				paShieldModalResult.textContent = "Color sampling is disabled until browser canvas noise protection is disabled.";
+				res.style.background = "#ffebe9";
+				res.style.color = "#cf222e";
+				res.textContent = "Color sampling is disabled until browser canvas noise protection is disabled.";
 			}
 		}
 	}
@@ -193,8 +184,7 @@ export function initPixelAssist(): void {
 
 	function updateZoomSelect(isFit: boolean) {
 		const pct = Math.round(zoom * 100);
-		const presets = [0.25, 0.5, 1, 2, 4, 8, 16];
-		const exact = !isFit && presets.find(z => Math.round(z * 100) === pct);
+		const exact = !isFit && ZOOM_PRESETS.find(z => Math.round(z * 100) === pct);
 		if (exact !== undefined) {
 			paZoomSelect.value = String(exact);
 			paZoomCustomOpt.style.display = "none";
@@ -221,10 +211,11 @@ export function initPixelAssist(): void {
 	}
 
 	function renderPixelGrid() {
-		if (paGridToggleBtn) {
-			paGridToggleBtn.style.color = showGrid ? "#0969da" : "#57606a";
-			paGridToggleBtn.style.borderColor = showGrid ? "#0969da" : "#d0d7de";
-			paGridToggleBtn.style.background = showGrid ? "#f0f7ff" : "#ffffff";
+		const btn = $("paGridToggleBtn");
+		if (btn) {
+			btn.style.color = showGrid ? "#0969da" : "#57606a";
+			btn.style.borderColor = showGrid ? "#0969da" : "#d0d7de";
+			btn.style.background = showGrid ? "#f0f7ff" : "#ffffff";
 		}
 		if (showGrid && zoom >= 3.9) {
 			paPixelGridPattern.setAttribute("width", String(zoom));
@@ -253,26 +244,14 @@ export function initPixelAssist(): void {
 		const sw = Math.max(1, w * zoom);
 		const sh = Math.max(1, h * zoom);
 
-		paSvgBox.setAttribute("x", String(sx));
-		paSvgBox.setAttribute("y", String(sy));
-		paSvgBox.setAttribute("width", String(sw));
-		paSvgBox.setAttribute("height", String(sh));
-
-		paSvgBoxOuter.setAttribute("x", String(sx - 1));
-		paSvgBoxOuter.setAttribute("y", String(sy - 1));
-		paSvgBoxOuter.setAttribute("width", String(sw + 2));
-		paSvgBoxOuter.setAttribute("height", String(sh + 2));
-
-		paSvgBoxBody.setAttribute("x", String(sx));
-		paSvgBoxBody.setAttribute("y", String(sy));
-		paSvgBoxBody.setAttribute("width", String(sw));
-		paSvgBoxBody.setAttribute("height", String(sh));
+		setSvgRect(paSvgBox, sx, sy, sw, sh);
+		setSvgRect(paSvgBoxOuter, sx - 1, sy - 1, sw + 2, sh + 2);
+		setSvgRect(paSvgBoxBody, sx, sy, sw, sh);
 		paSvgBoxBody.style.pointerEvents = isPoint ? "none" : "all";
 
 		paSvgHandles.style.display = isPoint ? "none" : "block";
 		if (!isPoint) {
-			const hs = 7;
-			const half = hs / 2;
+			const half = 3.5;
 			const posMap: Record<string, [number, number]> = {
 				nw: [sx, sy],
 				n: [sx + sw / 2, sy],
@@ -283,13 +262,13 @@ export function initPixelAssist(): void {
 				sw: [sx, sy + sh],
 				w: [sx, sy + sh / 2]
 			};
-			paSvgHandles.querySelectorAll(".pa-handle").forEach(el => {
-				const k = el.getAttribute("data-handle");
-				if (k && posMap[k]) {
-					el.setAttribute("x", String(posMap[k][0] - half));
-					el.setAttribute("y", String(posMap[k][1] - half));
+			for (const { el, k } of handleEls) {
+				const pos = posMap[k];
+				if (pos) {
+					el.setAttribute("x", String(pos[0] - half));
+					el.setAttribute("y", String(pos[1] - half));
 				}
-			});
+			}
 		}
 	}
 
@@ -329,8 +308,14 @@ export function initPixelAssist(): void {
 	function updateHoverPreview(x: number, y: number) {
 		const [r, g, b] = getPixel(x, y);
 		const hex = toHex(r, g, b);
-		if (paColorSwatch) paColorSwatch.style.backgroundColor = `rgb(${r},${g},${b})`;
-		if (paColorHexShort) paColorHexShort.textContent = `0x${hex}`;
+		const swatch = $("paColorSwatch");
+		if (swatch) swatch.style.backgroundColor = `rgb(${r},${g},${b})`;
+		setText("paColorHexShort", `0x${hex}`);
+	}
+
+	function updateLoupeAndPreview(x: number, y: number) {
+		renderLoupe(x, y);
+		updateHoverPreview(x, y);
 	}
 
 	function syncRegionParams() {
@@ -339,39 +324,29 @@ export function initPixelAssist(): void {
 		paInY.value = String(region.y);
 		paInW.value = String(region.w);
 		paInH.value = String(region.h);
-
-		if (paCoordText) {
-			paCoordText.textContent = `Rect: ${region.x},${region.y} (${region.w}×${region.h})`;
-		}
+		setText("paCoordText", `Rect: ${region.x},${region.y} (${region.w}×${region.h})`);
 
 		const targetX = region.x + (region.w >> 1);
 		const targetY = region.y + (region.h >> 1);
 		const [r, g, b] = getPixel(targetX, targetY);
-		const hex = toHex(r, g, b);
+		syncColorDisplays(toHex(r, g, b), r, g, b);
 
-		if (paHexDslText) paHexDslText.textContent = `0x${hex}`;
-		if (paHexCssText) paHexCssText.textContent = `#${hex}`;
-		if (paRgbText) paRgbText.textContent = `rgb(${r}, ${g}, ${b})`;
-
-		if (paRegionSwatches) {
-			paRegionSwatches.innerHTML = "";
-			const pts = [
-				{ name: "TL", x: region.x, y: region.y },
-				{ name: "TR", x: region.x + region.w - 1, y: region.y },
-				{ name: "BL", x: region.x, y: region.y + region.h - 1 },
-				{ name: "BR", x: region.x + region.w - 1, y: region.y + region.h - 1 },
-				{ name: "Center", x: targetX, y: targetY }
+		const swatches = $("paRegionSwatches");
+		if (swatches) {
+			const x2 = region.x + region.w - 1;
+			const y2 = region.y + region.h - 1;
+			const pts: [string, number, number][] = [
+				["TL", region.x, region.y],
+				["TR", x2, region.y],
+				["BL", region.x, y2],
+				["BR", x2, y2],
+				["Center", targetX, targetY]
 			];
-			pts.forEach(pt => {
-				const [pr, pg, pb] = getPixel(pt.x, pt.y);
+			swatches.innerHTML = pts.map(([name, px, py]) => {
+				const [pr, pg, pb] = getPixel(px, py);
 				const phex = toHex(pr, pg, pb);
-				const badge = document.createElement("span");
-				badge.style.cssText =
-					"display:inline-flex;align-items:center;gap:3px;background:#f6f8fa;padding:2px 5px;border-radius:3px;font-size:10px;font-family:monospace;border:1px solid #d0d7de;";
-				badge.title = `${pt.name}: (${pt.x},${pt.y}) 0x${phex}`;
-				badge.innerHTML = `<span style="width:9px;height:9px;border-radius:2px;background:rgb(${pr},${pg},${pb});display:inline-block;border:1px solid #d0d7de"></span> ${pt.name}: 0x${phex}`;
-				paRegionSwatches.appendChild(badge);
-			});
+				return `<span style="display:inline-flex;align-items:center;gap:3px;background:#f6f8fa;padding:2px 5px;border-radius:3px;font-size:10px;font-family:monospace;border:1px solid #d0d7de" title="${name}: (${px},${py}) 0x${phex}"><span style="width:9px;height:9px;border-radius:2px;background:rgb(${pr},${pg},${pb});display:inline-block;border:1px solid #d0d7de"></span> ${name}: 0x${phex}</span>`;
+			}).join("");
 		}
 
 		paSnippetBox.value = generateRegionSnippet(region.x, region.y, region.w, region.h, getPixel);
@@ -384,19 +359,14 @@ export function initPixelAssist(): void {
 			const [r, g, b] = getPixel(point.x, point.y);
 			const hex = toHex(r, g, b);
 
-			renderLoupe(point.x, point.y);
-			updateHoverPreview(point.x, point.y);
-
-			if (paCoordText) paCoordText.textContent = `X: ${point.x}, Y: ${point.y}`;
-			if (paHexDslText) paHexDslText.textContent = `0x${hex}`;
-			if (paHexCssText) paHexCssText.textContent = `#${hex}`;
-			if (paRgbText) paRgbText.textContent = `rgb(${r}, ${g}, ${b})`;
+			updateLoupeAndPreview(point.x, point.y);
+			setText("paCoordText", `X: ${point.x}, Y: ${point.y}`);
+			syncColorDisplays(hex, r, g, b);
 			paSnippetBox.value = generatePointSnippet(point.x, point.y, hex);
 		} else {
 			const targetX = region.x + (region.w >> 1);
 			const targetY = region.y + (region.h >> 1);
-			renderLoupe(targetX, targetY);
-			updateHoverPreview(targetX, targetY);
+			updateLoupeAndPreview(targetX, targetY);
 			syncRegionParams();
 		}
 	}
@@ -445,8 +415,7 @@ export function initPixelAssist(): void {
 			};
 			paViewport.setPointerCapture(e.pointerId);
 			const p = screenToPixel(e.clientX, e.clientY);
-			renderLoupe(p.x, p.y);
-			updateHoverPreview(p.x, p.y);
+			updateLoupeAndPreview(p.x, p.y);
 			e.preventDefault();
 			return;
 		}
@@ -461,8 +430,7 @@ export function initPixelAssist(): void {
 			};
 			paViewport.setPointerCapture(e.pointerId);
 			const p = screenToPixel(e.clientX, e.clientY);
-			renderLoupe(p.x, p.y);
-			updateHoverPreview(p.x, p.y);
+			updateLoupeAndPreview(p.x, p.y);
 			e.preventDefault();
 			return;
 		}
@@ -478,8 +446,7 @@ export function initPixelAssist(): void {
 				activeDrag = { type: "draw", startPt: { x: p.x, y: p.y } };
 				region = { x: p.x, y: p.y, w: 1, h: 1 };
 				renderSelection();
-				renderLoupe(p.x, p.y);
-				updateHoverPreview(p.x, p.y);
+				updateLoupeAndPreview(p.x, p.y);
 				syncRegionParams();
 				paViewport.setPointerCapture(e.pointerId);
 				e.preventDefault();
@@ -506,15 +473,7 @@ export function initPixelAssist(): void {
 					w: r0.w,
 					h: r0.h
 				};
-				renderSelection();
-				const p = screenToPixel(e.clientX, e.clientY);
-				renderLoupe(p.x, p.y);
-				updateHoverPreview(p.x, p.y);
-				syncRegionParams();
-				return;
-			}
-
-			if (activeDrag.type === "resize") {
+			} else if (activeDrag.type === "resize") {
 				const dx = Math.round((e.clientX - activeDrag.startX) / zoom);
 				const dy = Math.round((e.clientY - activeDrag.startY) / zoom);
 				const r0 = activeDrag.origRegion;
@@ -538,41 +497,21 @@ export function initPixelAssist(): void {
 				w = Math.max(1, Math.min(128, Math.min(img.width - x, Math.max(1, w))));
 				h = Math.max(1, Math.min(128, Math.min(img.height - y, Math.max(1, h))));
 				region = { x, y, w, h };
-				renderSelection();
+			} else if (activeDrag.type === "draw") {
 				const p = screenToPixel(e.clientX, e.clientY);
-				renderLoupe(p.x, p.y);
-				updateHoverPreview(p.x, p.y);
-				syncRegionParams();
-				return;
+				const calcSpan = (cur: number, start: number, max: number): [number, number] => {
+					if (cur >= start) return [start, Math.max(1, Math.min(128, max - start, cur - start + 1))];
+					const span = Math.max(1, Math.min(128, start + 1, start - cur + 1));
+					return [start - span + 1, span];
+				};
+				const [x, w] = calcSpan(p.x, activeDrag.startPt.x, img.width);
+				const [y, h] = calcSpan(p.y, activeDrag.startPt.y, img.height);
+				region = { x, y, w, h };
 			}
-
-			if (activeDrag.type === "draw") {
-				const p = screenToPixel(e.clientX, e.clientY);
-				let x0 = activeDrag.startPt.x;
-				let y0 = activeDrag.startPt.y;
-				let w = 1;
-				let h = 1;
-				if (p.x >= activeDrag.startPt.x) {
-					w = Math.max(1, Math.min(128, Math.min(img.width - x0, p.x - x0 + 1)));
-				} else {
-					const rawW = activeDrag.startPt.x - p.x + 1;
-					w = Math.max(1, Math.min(128, Math.min(activeDrag.startPt.x + 1, rawW)));
-					x0 = activeDrag.startPt.x - w + 1;
-				}
-				if (p.y >= activeDrag.startPt.y) {
-					h = Math.max(1, Math.min(128, Math.min(img.height - y0, p.y - y0 + 1)));
-				} else {
-					const rawH = activeDrag.startPt.y - p.y + 1;
-					h = Math.max(1, Math.min(128, Math.min(activeDrag.startPt.y + 1, rawH)));
-					y0 = activeDrag.startPt.y - h + 1;
-				}
-				region = { x: x0, y: y0, w, h };
-				renderSelection();
-				renderLoupe(p.x, p.y);
-				updateHoverPreview(p.x, p.y);
-				syncRegionParams();
-				return;
-			}
+			renderSelection();
+			const p = screenToPixel(e.clientX, e.clientY);
+			updateLoupeAndPreview(p.x, p.y);
+			syncRegionParams();
 			return;
 		}
 
@@ -580,8 +519,7 @@ export function initPixelAssist(): void {
 		if (!img || shieldBlocked) return;
 		const p = screenToPixel(e.clientX, e.clientY);
 		if (p.inside) {
-			renderLoupe(p.x, p.y);
-			updateHoverPreview(p.x, p.y);
+			updateLoupeAndPreview(p.x, p.y);
 		} else {
 			renderPinned();
 		}
@@ -600,8 +538,7 @@ export function initPixelAssist(): void {
 				syncRegionParams();
 				const p = screenToPixel(e.clientX, e.clientY);
 				if (p.inside) {
-					renderLoupe(p.x, p.y);
-					updateHoverPreview(p.x, p.y);
+					updateLoupeAndPreview(p.x, p.y);
 				} else {
 					renderPinned();
 				}
@@ -632,17 +569,14 @@ export function initPixelAssist(): void {
 	}
 
 	// --- Global Shortcuts & Modal Lifecycle (strictly attached when open, detached when closed) ---
-	function flashKeyActive(btn: HTMLElement | null): void {
+	function flashKeyActive(target: string | HTMLElement | null): void {
+		const btn = typeof target === "string" ? $(target) : target;
 		if (!btn) return;
 		btn.classList.add("pa-key-active");
 		setTimeout(() => btn.classList.remove("pa-key-active"), 140);
 	}
 
-	function copyText(text: string): void {
-		if (!text) return;
-		if (navigator.clipboard?.writeText) {
-			navigator.clipboard.writeText(text).catch(() => {});
-		}
+	function fallbackCopy(text: string): void {
 		try {
 			const el = document.createElement("textarea");
 			el.value = text;
@@ -652,6 +586,15 @@ export function initPixelAssist(): void {
 			document.execCommand("copy");
 			document.body.removeChild(el);
 		} catch {}
+	}
+
+	function copyText(text: string): void {
+		if (!text) return;
+		if (navigator.clipboard?.writeText) {
+			navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+		} else {
+			fallbackCopy(text);
+		}
 	}
 
 	function getActivePixel(): [number, number, number] {
@@ -665,11 +608,19 @@ export function initPixelAssist(): void {
 	}
 
 	function setCaptureStatus(text: string, type: "ok" | "err" | "info"): void {
-		if (!paCaptureStatus) return;
-		paCaptureStatus.textContent = text;
-		const c = type === "ok" ? "#1a7f37;#dafbe1;#4ac26b" : (type === "err" ? "#cf222e;#ffebe9;#ff8182" : "#0969da;#ddf4ff;#54aeff");
-		const [fg, bg, bd] = c.split(";");
-		paCaptureStatus.style.cssText = `font-size:12px;color:${fg};background:${bg};border:1px solid ${bd};border-radius:4px;padding:2px 8px;`;
+		const el = $("paCaptureStatus");
+		if (!el) return;
+		el.textContent = text;
+		const [fg, bg, bd] = (type === "ok" ? "#1a7f37;#dafbe1;#4ac26b" : type === "err" ? "#cf222e;#ffebe9;#ff8182" : "#0969da;#ddf4ff;#54aeff").split(";");
+		el.style.cssText = `font-size:12px;color:${fg};background:${bg};border:1px solid ${bd};border-radius:4px;padding:2px 8px;`;
+	}
+
+	function setCaptureBusy(busy: boolean) {
+		isCapturing = busy;
+		const b1 = $<HTMLButtonElement>("paCaptureBtn");
+		const b2 = $<HTMLButtonElement>("paCapturePromptBtn");
+		if (b1) b1.disabled = busy;
+		if (b2) b2.disabled = busy;
 	}
 
 	function onKeyDown(e: KeyboardEvent) {
@@ -694,20 +645,19 @@ export function initPixelAssist(): void {
 		}
 
 		const key = e.key.toLowerCase();
-		if (key === "c" && !e.metaKey && !e.ctrlKey) {
-			const [r, g, b] = getActivePixel();
-			copyText("0x" + toHex(r, g, b));
-			flashKeyActive(paCopyHexDslBtn);
+		const copyMap: Record<string, [() => string, string]> = {
+			c: [() => "0x" + toHex(...getActivePixel()), "paCopyHexDslBtn"],
+			x: [getActiveCoords, "paCopyCoordBtn"],
+			s: [() => paSnippetBox.value, "paCopySnippetBtn"]
+		};
+		if (!e.metaKey && !e.ctrlKey && copyMap[key]) {
+			const [fn, btnId] = copyMap[key];
+			copyText(fn());
+			flashKeyActive(btnId);
 			e.preventDefault();
-		} else if (key === "x" && !e.metaKey && !e.ctrlKey) {
-			copyText(getActiveCoords());
-			flashKeyActive(paCopyCoordBtn);
-			e.preventDefault();
-		} else if (key === "s" && !e.metaKey && !e.ctrlKey) {
-			copyText(paSnippetBox.value);
-			flashKeyActive(paCopySnippetBtn);
-			e.preventDefault();
-		} else if (mode === "region" && img && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
+			return;
+		}
+		if (mode === "region" && img && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
 			const step = e.shiftKey ? 10 : 1;
 			if (e.key === "ArrowLeft") region.x = Math.max(0, region.x - step);
 			if (e.key === "ArrowRight") region.x = Math.min(img.width - region.w, region.x + step);
@@ -724,10 +674,8 @@ export function initPixelAssist(): void {
 			isSpaceDown = false;
 			paViewport.classList.remove("pa-pan-ready");
 		}
-		const key = e.key.toLowerCase();
-		if (key === "c") paCopyHexDslBtn?.classList.remove("pa-key-active");
-		if (key === "x") paCopyCoordBtn?.classList.remove("pa-key-active");
-		if (key === "s") paCopySnippetBtn?.classList.remove("pa-key-active");
+		const keyToBtn: Record<string, string> = { c: "paCopyHexDslBtn", x: "paCopyCoordBtn", s: "paCopySnippetBtn" };
+		if (keyToBtn[e.key.toLowerCase()]) $(keyToBtn[e.key.toLowerCase()])?.classList.remove("pa-key-active");
 	}
 
 	function onResize() {
@@ -785,59 +733,51 @@ export function initPixelAssist(): void {
 		detachOverlayListeners();
 	}
 
-	paOpenBtn?.addEventListener("click", openOverlay);
-	paCloseBtn?.addEventListener("click", closeOverlay);
+	$("paOpenBtn")?.addEventListener("click", openOverlay);
+	$("paCloseBtn")?.addEventListener("click", closeOverlay);
 
 	function setMode(newMode: "point" | "region") {
 		mode = newMode;
 		const isPoint = mode === "point";
-		paModePoint?.classList.toggle("active", isPoint);
-		paModeRegion?.classList.toggle("active", !isPoint);
-		if (paHudModeBadge) paHudModeBadge.textContent = isPoint ? "Point Mode" : "Region Mode";
-		if (paRegionControls) paRegionControls.style.display = isPoint ? "none" : "block";
+		$("paModePoint")?.classList.toggle("active", isPoint);
+		$("paModeRegion")?.classList.toggle("active", !isPoint);
+		const badge = $("paHudModeBadge");
+		if (badge) badge.textContent = isPoint ? "Point Mode" : "Region Mode";
+		const controls = $("paRegionControls");
+		if (controls) controls.style.display = isPoint ? "none" : "block";
 		renderSelection();
 		renderPinned();
 	}
-	paModePoint?.addEventListener("click", () => setMode("point"));
-	paModeRegion?.addEventListener("click", () => setMode("region"));
+	$("paModePoint")?.addEventListener("click", () => setMode("point"));
+	$("paModeRegion")?.addEventListener("click", () => setMode("region"));
 
-	paGridToggleBtn?.addEventListener("click", () => {
+	$("paGridToggleBtn")?.addEventListener("click", () => {
 		showGrid = !showGrid;
 		renderPixelGrid();
 	});
 
-	paZoomInBtn?.addEventListener("click", () => {
-		const steps = [0.25, 0.5, 1, 2, 4, 8, 16];
-		const next = steps.find(s => s > zoom * 1.05) ?? Math.min(16, zoom * 1.5);
-		applyZoomAt(paViewport.clientWidth / 2, paViewport.clientHeight / 2, next);
+	const zoomCenter = (z: number) => applyZoomAt(paViewport.clientWidth / 2, paViewport.clientHeight / 2, z);
+	$("paZoomInBtn")?.addEventListener("click", () => {
+		zoomCenter(ZOOM_PRESETS.find(s => s > zoom * 1.05) ?? Math.min(16, zoom * 1.5));
 	});
-
-	paZoomOutBtn?.addEventListener("click", () => {
-		const steps = [0.25, 0.5, 1, 2, 4, 8, 16];
-		const prev = [...steps].reverse().find(s => s < zoom * 0.95) ?? Math.max(0.1, zoom / 1.5);
-		applyZoomAt(paViewport.clientWidth / 2, paViewport.clientHeight / 2, prev);
+	$("paZoomOutBtn")?.addEventListener("click", () => {
+		zoomCenter([...ZOOM_PRESETS].reverse().find(s => s < zoom * 0.95) ?? Math.max(0.1, zoom / 1.5));
 	});
-
-	paZoomFitBtn?.addEventListener("click", zoomToFit);
-
+	$("paZoomFitBtn")?.addEventListener("click", zoomToFit);
 	paZoomSelect?.addEventListener("change", () => {
-		if (paZoomSelect.value === "fit") {
-			zoomToFit();
-		} else {
-			const z = parseFloat(paZoomSelect.value) || 1;
-			applyZoomAt(paViewport.clientWidth / 2, paViewport.clientHeight / 2, z);
-		}
+		if (paZoomSelect.value === "fit") zoomToFit();
+		else zoomCenter(parseFloat(paZoomSelect.value) || 1);
 	});
-
 
 	// Region Manual Numeric Input sync
 	[paInX, paInY, paInW, paInH].forEach(input => {
 		input?.addEventListener("input", () => {
 			if (!img || mode !== "region") return;
-			const rx = Math.max(0, Math.min(img.width - 1, parseInt(paInX.value, 10) || 0));
-			const ry = Math.max(0, Math.min(img.height - 1, parseInt(paInY.value, 10) || 0));
-			const rw = Math.max(1, Math.min(128, Math.min(img.width - rx, parseInt(paInW.value, 10) || 1)));
-			const rh = Math.max(1, Math.min(128, Math.min(img.height - ry, parseInt(paInH.value, 10) || 1)));
+			const parseVal = (el: HTMLInputElement, def: number) => parseInt(el.value, 10) || def;
+			const rx = Math.max(0, Math.min(img.width - 1, parseVal(paInX, 0)));
+			const ry = Math.max(0, Math.min(img.height - 1, parseVal(paInY, 0)));
+			const rw = Math.max(1, Math.min(128, img.width - rx, parseVal(paInW, 1)));
+			const rh = Math.max(1, Math.min(128, img.height - ry, parseVal(paInH, 1)));
 			region = { x: rx, y: ry, w: rw, h: rh };
 			renderSelection();
 			renderPinned();
@@ -845,47 +785,48 @@ export function initPixelAssist(): void {
 	});
 
 	// Copy & Snippet Action Listeners
-	function bindCopy(btn: HTMLElement | null, fn: () => string) {
-		btn?.addEventListener("click", () => {
+	function bindCopy(id: string, fn: () => string) {
+		$(id)?.addEventListener("click", () => {
 			copyText(fn());
-			flashKeyActive(btn);
+			flashKeyActive(id);
 		});
 	}
-	bindCopy(paCopyCoordBtn, getActiveCoords);
-	bindCopy(paCopyHexDslBtn, () => "0x" + toHex(...getActivePixel()));
-	bindCopy(paCopyHexCssBtn, () => "#" + toHex(...getActivePixel()));
-	bindCopy(paCopyRgbBtn, () => { const [r, g, b] = getActivePixel(); return `rgb(${r}, ${g}, ${b})`; });
-	bindCopy(paCopySnippetBtn, () => paSnippetBox.value);
+	bindCopy("paCopyCoordBtn", getActiveCoords);
+	bindCopy("paCopyHexDslBtn", () => "0x" + toHex(...getActivePixel()));
+	bindCopy("paCopyHexCssBtn", () => "#" + toHex(...getActivePixel()));
+	bindCopy("paCopyRgbBtn", () => `rgb(${getActivePixel().join(", ")})`);
+	bindCopy("paCopySnippetBtn", () => paSnippetBox.value);
 
-	paInsertSnippetBtn?.addEventListener("click", () => {
+	$("paInsertSnippetBtn")?.addEventListener("click", () => {
 		const snip = paSnippetBox.value;
 		if (!snip) return;
 		insertTextAtCursor(snip);
-		flashKeyActive(paInsertSnippetBtn);
+		flashKeyActive("paInsertSnippetBtn");
 	});
 
 	// --- Presentation Surface 3: Modal Dialog ---
-	paShieldWarning?.addEventListener("click", () => {
+	$("paShieldWarning")?.addEventListener("click", () => {
 		paShieldModal.style.display = "flex";
 	});
 
-	paExitShieldModalBtn?.addEventListener("click", () => {
+	$("paExitShieldModalBtn")?.addEventListener("click", () => {
 		paShieldModal.style.display = "none";
 		closeOverlay();
 	});
 
-	paRetestShieldBtn?.addEventListener("click", () => {
-		if (!paShieldModalResult) return;
-		paShieldModalResult.style.display = "block";
+	$("paRetestShieldBtn")?.addEventListener("click", () => {
+		const res = $("paShieldModalResult");
+		if (!res) return;
+		res.style.display = "block";
 		if (checkAntiFingerprintNoise()) {
-			paShieldModalResult.style.background = "#ffebe9";
-			paShieldModalResult.style.color = "#cf222e";
-			paShieldModalResult.textContent = "Noise still detected. Please whitelist this origin in Brave/browser shield settings.";
+			res.style.background = "#ffebe9";
+			res.style.color = "#cf222e";
+			res.textContent = "Noise still detected. Please whitelist this origin in Brave/browser shield settings.";
 			enforceShield(true);
 		} else {
-			paShieldModalResult.style.background = "#dafbe1";
-			paShieldModalResult.style.color = "#1a7f37";
-			paShieldModalResult.textContent = "Canvas is clean. Unlocking workspace...";
+			res.style.background = "#dafbe1";
+			res.style.color = "#1a7f37";
+			res.textContent = "Canvas is clean. Unlocking workspace...";
 			if (img) initPixelBuffer(img);
 			setTimeout(() => {
 				enforceShield(false);
@@ -893,8 +834,6 @@ export function initPixelAssist(): void {
 			}, 600);
 		}
 	});
-
-
 
 	// --- Image Capture Engine ---
 	function loadCaptureBlob(blob: Blob, sourceLabel: string = "Active capture") {
@@ -911,12 +850,15 @@ export function initPixelAssist(): void {
 			point = { x: Math.floor(img.width / 2), y: Math.floor(img.height / 2) };
 			region = { x: point.x - 8, y: point.y - 8, w: 16, h: 16 };
 
-			if (paEmptyPrompt) paEmptyPrompt.style.display = "none";
+			const emptyPrompt = $("paEmptyPrompt");
+			if (emptyPrompt) emptyPrompt.style.display = "none";
 			paStageContainer.style.display = "inline-block";
-			paInspector.style.display = "flex";
-			if (paResBadge) {
-				paResBadge.style.display = "inline-block";
-				paResBadge.textContent = `${img.width}×${img.height}`;
+			const inspector = $("paInspector");
+			if (inspector) inspector.style.display = "flex";
+			const resBadge = $("paResBadge");
+			if (resBadge) {
+				resBadge.style.display = "inline-block";
+				resBadge.textContent = `${img.width}×${img.height}`;
 			}
 
 			enforceShield(checkAntiFingerprintNoise());
@@ -925,30 +867,25 @@ export function initPixelAssist(): void {
 			renderPinned();
 
 			setCaptureStatus(`Ready (${img.width}×${img.height})`, "ok");
-			if (paMainStatus) {
-				paMainStatus.textContent = `${sourceLabel}: ${img.width}×${img.height}`;
-				paMainStatus.style.color = "#57606a";
+			const mainStatus = $("paMainStatus");
+			if (mainStatus) {
+				mainStatus.textContent = `${sourceLabel}: ${img.width}×${img.height}`;
+				mainStatus.style.color = "#57606a";
 			}
 			URL.revokeObjectURL(url);
-			if (paCaptureBtn) paCaptureBtn.disabled = false;
-			if (paCapturePromptBtn) paCapturePromptBtn.disabled = false;
-			isCapturing = false;
+			setCaptureBusy(false);
 		};
 		loadedImg.onerror = () => {
 			URL.revokeObjectURL(url);
 			setCaptureStatus("Failed to decode image", "err");
-			if (paCaptureBtn) paCaptureBtn.disabled = false;
-			if (paCapturePromptBtn) paCapturePromptBtn.disabled = false;
-			isCapturing = false;
+			setCaptureBusy(false);
 		};
 		loadedImg.src = url;
 	}
 
 	async function triggerCapture() {
 		if (isCapturing) return;
-		isCapturing = true;
-		if (paCaptureBtn) paCaptureBtn.disabled = true;
-		if (paCapturePromptBtn) paCapturePromptBtn.disabled = true;
+		setCaptureBusy(true);
 		setCaptureStatus("Requesting screen from capture provider...", "info");
 
 		try {
@@ -962,9 +899,7 @@ export function initPixelAssist(): void {
 			}
 		} catch (err: any) {
 			setCaptureStatus(err.message || "Failed to trigger capture", "err");
-			if (paCaptureBtn) paCaptureBtn.disabled = false;
-			if (paCapturePromptBtn) paCapturePromptBtn.disabled = false;
-			isCapturing = false;
+			setCaptureBusy(false);
 			return;
 		}
 
@@ -1006,14 +941,12 @@ export function initPixelAssist(): void {
 				setTimeout(poll, 300);
 			} catch (err: any) {
 				setCaptureStatus(err.message || "Capture poll failed", "err");
-				if (paCaptureBtn) paCaptureBtn.disabled = false;
-				if (paCapturePromptBtn) paCapturePromptBtn.disabled = false;
-				isCapturing = false;
+				setCaptureBusy(false);
 			}
 		};
 		setTimeout(poll, 300);
 	}
 
-	paCaptureBtn?.addEventListener("click", triggerCapture);
-	paCapturePromptBtn?.addEventListener("click", triggerCapture);
+	$("paCaptureBtn")?.addEventListener("click", triggerCapture);
+	$("paCapturePromptBtn")?.addEventListener("click", triggerCapture);
 }

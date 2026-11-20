@@ -21,21 +21,21 @@ export function initMacroPresets(): void {
 	}
 
 	function updateDeleteState(): void {
-		const currentName = select!.value || nameInput!.value.trim();
-		deleteBtn!.disabled = !macros.some(m => m.name === currentName);
+		const currentName = select.value || nameInput.value.trim();
+		deleteBtn.disabled = !macros.some(m => m.name === currentName);
 	}
 
 	function renderSelect(selectedName?: string): void {
-		activePresetName = selectedName !== undefined ? selectedName : (select!.value || activePresetStore.get() || "");
+		activePresetName = selectedName !== undefined ? selectedName : (select.value || activePresetStore.get() || "");
 		activePresetStore.set(activePresetName);
-		select!.innerHTML = '<option value="">-- Saved Macros --</option>' +
+		select.innerHTML = '<option value="">-- Saved Macros --</option>' +
 			macros.map(m => `<option value="${m.name}" ${m.name === activePresetName ? "selected" : ""}>${m.name}</option>`).join("");
-		if (selectedName !== undefined) select!.value = selectedName;
+		if (selectedName !== undefined) select.value = selectedName;
 		updateDeleteState();
 	}
 
 	function handleSelectChange(): void {
-		const name = select!.value;
+		const name = select.value;
 		if (!name) {
 			activePresetName = "";
 			activePresetStore.set("");
@@ -45,26 +45,26 @@ export function initMacroPresets(): void {
 		const item = macros.find(m => m.name === name);
 		if (!item) return;
 
-		if (codeEl!.value.trim() && codeEl!.value !== item.code && !window.confirm(`Discard current editor content and load "${item.name}"?`)) {
-			select!.value = activePresetName;
+		if (codeEl.value.trim() && codeEl.value !== item.code && !window.confirm(`Discard current editor content and load "${item.name}"?`)) {
+			select.value = activePresetName;
 			updateDeleteState();
 			return;
 		}
 
-		codeEl!.value = item.code;
-		nameInput!.value = item.name;
+		codeEl.value = item.code;
+		nameInput.value = item.name;
 		activePresetName = item.name;
 		activePresetStore.set(item.name);
 		updateDeleteState();
 	}
 
 	function handleSave(): void {
-		const code = codeEl!.value;
-		let name = nameInput!.value.trim();
+		const code = codeEl.value;
+		let name = nameInput.value.trim();
 		if (!name) {
 			if (!code.trim()) return;
 			name = `Macro ${macros.length + 1}`;
-			nameInput!.value = name;
+			nameInput.value = name;
 		}
 
 		const existingIdx = macros.findIndex(m => m.name === name);
@@ -75,23 +75,23 @@ export function initMacroPresets(): void {
 		activePresetStore.set(name);
 		renderSelect(name);
 
-		const origText = saveBtn!.textContent;
-		saveBtn!.textContent = "Saved";
-		setTimeout(() => { if (saveBtn) saveBtn.textContent = origText; }, 800);
+		const origText = saveBtn.textContent;
+		saveBtn.textContent = "Saved";
+		setTimeout(() => { saveBtn.textContent = origText; }, 800);
 	}
 
 	function handleDelete(): void {
-		const name = select!.value || nameInput!.value.trim();
+		const name = select.value || nameInput.value.trim();
 		if (!name) return;
 		macros = macros.filter(m => m.name !== name);
 		presetsStore.set(macros);
-		nameInput!.value = "";
+		nameInput.value = "";
 		activePresetStore.set("");
 		renderSelect("");
 	}
 
 	function handleExport(): void {
-		const exportList = macros.length > 0 ? macros : (codeEl!.value.trim() ? [{ name: nameInput!.value.trim() || "untitled", code: codeEl!.value }] : []);
+		const exportList = macros.length > 0 ? macros : (codeEl.value.trim() ? [{ name: nameInput.value.trim() || "untitled", code: codeEl.value }] : []);
 		if (exportList.length === 0) return;
 
 		const blob = new Blob([JSON.stringify({ app: "mycro", version: 1, exportedAt: new Date().toISOString(), macros: exportList }, null, 2)], { type: "application/json" });
@@ -122,11 +122,11 @@ export function initMacroPresets(): void {
 
 				presetsStore.set(macros);
 				const last = importedList[importedList.length - 1];
-				if (codeEl!.value.trim() && codeEl!.value !== last.code && !window.confirm(`Discard current editor content and load imported "${last.name}"?`)) {
+				if (codeEl.value.trim() && codeEl.value !== last.code && !window.confirm(`Discard current editor content and load imported "${last.name}"?`)) {
 					renderSelect(activePresetName);
 				} else {
-					nameInput!.value = last.name;
-					codeEl!.value = last.code;
+					nameInput.value = last.name;
+					codeEl.value = last.code;
 					activePresetStore.set(last.name);
 					renderSelect(last.name);
 				}

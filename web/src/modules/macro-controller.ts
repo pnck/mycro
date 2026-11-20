@@ -1,62 +1,54 @@
 import { headers } from "../utils/api";
 import { configStore } from "../store";
 
+const getOut = () => document.getElementById("macroOutput");
+
+function postMacro(path: string, body?: string, initial?: string, onOk?: (t: string) => void): void {
+	const out = getOut();
+	if (initial && out) out.textContent = initial;
+	fetch(path, { method: "POST", headers: headers(), body })
+		.then(r => r.text())
+		.then(t => {
+			if (out) out.textContent = t;
+			onOk?.(t);
+		})
+		.catch(e => {
+			if (out) out.textContent = "Error: " + e;
+		});
+}
+
 export function pollMacroStatus(): void {
-	const outEl = document.getElementById("macroOutput");
 	fetch("/macro/status", { headers: headers() })
 		.then(r => r.text())
 		.then(t => {
-			if (outEl) outEl.textContent = "Status: " + t;
+			const out = getOut();
+			if (out) out.textContent = "Status: " + t;
 			if (t.startsWith("running")) setTimeout(pollMacroStatus, 500);
 		})
 		.catch(() => {});
 }
 
 export function executeMacro(codeOverride?: string): void {
-	const codeEl = document.getElementById("macroCode") as HTMLTextAreaElement | null;
-	const outEl = document.getElementById("macroOutput");
-	const holdMsEl = document.getElementById("holdMs") as HTMLInputElement | null;
-	const code = codeOverride !== undefined ? codeOverride : (codeEl?.value || "");
-	const holdMs = holdMsEl?.value || "";
-
-	if (outEl) outEl.textContent = "Working...";
-	fetch("/macro", {
-		method: "POST",
-		headers: headers(),
-		body: "code=" + encodeURIComponent(code) + "&hold_ms=" + encodeURIComponent(holdMs)
-	})
-		.then(r => r.text())
-		.then(t => {
-			if (outEl) outEl.textContent = t;
-			if (t.startsWith("Started")) setTimeout(pollMacroStatus, 300);
-		})
-		.catch(e => {
-			if (outEl) outEl.textContent = "Error: " + e;
-		});
+	const code = codeOverride !== undefined ? codeOverride : ((document.getElementById("macroCode") as HTMLTextAreaElement | null)?.value || "");
+	const holdMs = (document.getElementById("holdMs") as HTMLInputElement | null)?.value || "";
+	postMacro(
+		"/macro",
+		`code=${encodeURIComponent(code)}&hold_ms=${encodeURIComponent(holdMs)}`,
+		"Working...",
+		t => { if (t.startsWith("Started")) setTimeout(pollMacroStatus, 300); }
+	);
 }
 
 export function abortMacro(): void {
-	const outEl = document.getElementById("macroOutput");
-	fetch("/macro/abort", { method: "POST", headers: headers() })
-		.then(r => r.text())
-		.then(t => {
-			if (outEl) outEl.textContent = t;
-			setTimeout(pollMacroStatus, 300);
-		})
-		.catch(e => {
-			if (outEl) outEl.textContent = "Error: " + e;
-		});
+	postMacro("/macro/abort", undefined, undefined, () => setTimeout(pollMacroStatus, 300));
 }
 
 export function initMacroController(): void {
 	const form = document.getElementById("macroForm") as HTMLFormElement | null;
-	const compileBtn = document.getElementById("compileBtn");
-	const abortBtn = document.getElementById("abortBtn");
-	const holdMsEl = document.getElementById("holdMs") as HTMLInputElement | null;
-	const tokenEl = document.getElementById("token") as HTMLInputElement | null;
-
 	if (!form) return;
 
+	const holdMsEl = document.getElementById("holdMs") as HTMLInputElement | null;
+	const tokenEl = document.getElementById("token") as HTMLInputElement | null;
 	const cfg = configStore.get();
 	if (tokenEl && cfg.token && !tokenEl.value) tokenEl.value = cfg.token;
 	if (holdMsEl && cfg.holdMs && !holdMsEl.value) holdMsEl.value = String(cfg.holdMs);
@@ -72,19 +64,11 @@ export function initMacroController(): void {
 		executeMacro();
 	});
 
-	compileBtn?.addEventListener("click", () => {
-		const codeEl = document.getElementById("macroCode") as HTMLTextAreaElement | null;
-		const outEl = document.getElementById("macroOutput");
-		if (outEl) outEl.textContent = "Compiling...";
-		fetch("/compile", {
-			method: "POST",
-			headers: headers(),
-			body: "code=" + encodeURIComponent(codeEl?.value || "")
-		})
-			.then(r => r.text())
-			.then(t => { if (outEl) outEl.textContent = t; })
-			.catch(e => { if (outEl) outEl.textContent = "Error: " + e; });
+	document.getElementById("compileBtn")?.addEventListener("click", () => {
+		const code = (document.getElementById("macroCode") as HTMLTextAreaElement | null)?.value || "";
+		postMacro("/compile", `code=${encodeURIComponent(code)}`, "Compiling...");
 	});
 
-	abortBtn?.addEventListener("click", abortMacro);
+	document.getElementById("abortBtn")?.addEventListener("click", abortMacro);
 }
+

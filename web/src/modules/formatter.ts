@@ -147,44 +147,24 @@ function formatStatementStream(rawText: string, depth: number, isTypewriter: boo
 				}
 
 				if (BODY_COMMANDS.has(cmd)) {
+					const formatBlock = (header: string, inner1: string, inner2?: string) => {
+						lines.push(`${pad}${header}`);
+						lines.push(...formatStatementStream(inner1, depth + 1, false));
+						if (inner2 !== undefined) {
+							lines.push(`${pad}}{`);
+							lines.push(...formatStatementStream(inner2, depth + 1, false));
+						}
+						lines.push(`${pad}}`);
+					};
+
 					if (cmd === "\\def") {
-						const name = args.length > 0 ? `{${args[0].trim()}}` : "";
-						const bodyInner = args.length > 1 ? args[1] : "";
-						const innerLines = formatStatementStream(bodyInner, depth + 1, false);
-						lines.push(`${pad}\\def${name}${decorator}{`);
-						lines.push(...innerLines);
-						lines.push(`${pad}}`);
+						formatBlock(`\\def${args[0] ? `{${args[0].trim()}}` : ""}${decorator}{`, args[1] || "");
 					} else if (cmd === "\\rep") {
-						const count = args.length > 0 ? `{${args[0].trim()}}` : "{1}";
-						const bodyInner = args.length > 1 ? args[1] : "";
-						const innerLines = formatStatementStream(bodyInner, depth + 1, false);
-						lines.push(`${pad}\\rep${count}{`);
-						lines.push(...innerLines);
-						lines.push(`${pad}}`);
+						formatBlock(`\\rep{${args[0]?.trim() || "1"}}{`, args[1] || "");
 					} else if (cmd === "\\if") {
-						const cond = args.length > 0 ? `{ ${args[0].trim()} }` : "{ {0, =, 0} }";
-						const thenInner = args.length > 1 ? args[1] : "";
-						const thenLines = formatStatementStream(thenInner, depth + 1, false);
-						lines.push(`${pad}\\if${cond}{`);
-						lines.push(...thenLines);
-						if (args.length > 2) {
-							const elseLines = formatStatementStream(args[2], depth + 1, false);
-							lines.push(`${pad}}{`);
-							lines.push(...elseLines);
-						}
-						lines.push(`${pad}}`);
+						formatBlock(`\\if{ ${args[0]?.trim() || "{0, =, 0}"} }{`, args[1] || "", args[2]);
 					} else if (cmd === "\\guarded") {
-						const inv = args.length > 0 ? `{ ${args[0].trim()} }` : "{ {$err, =, 0} }";
-						const bodyInner = args.length > 1 ? args[1] : "";
-						const bodyLines = formatStatementStream(bodyInner, depth + 1, false);
-						lines.push(`${pad}\\guarded${decorator}${inv}{`);
-						lines.push(...bodyLines);
-						if (args.length > 2) {
-							const abortLines = formatStatementStream(args[2], depth + 1, false);
-							lines.push(`${pad}}{`);
-							lines.push(...abortLines);
-						}
-						lines.push(`${pad}}`);
+						formatBlock(`\\guarded${decorator}{ ${args[0]?.trim() || "{$err, =, 0}"} }{`, args[1] || "", args[2]);
 					} else if (cmd === "\\pixelrect") {
 						const dst = args.length > 0 ? `{${args[0].trim()}}` : "";
 						const rowsInner = args.length > 1 ? args[1] : "";

@@ -24,16 +24,10 @@ function renderDescWithLinks(rawText?: string): string {
 	if (!rawText) return "";
 	const parts = rawText.split(/\(See '([^']+)'\.\)/g);
 	if (parts.length === 1) return escapeHtml(rawText);
-	let html = "";
-	for (let i = 0; i < parts.length; i++) {
-		if (i % 2 === 1) {
-			const secName = parts[i];
-			html += `<a href="#" class="manual-xref-link" data-section="${escapeAttr(secName)}">(See '${escapeHtml(secName)}'.)</a>`;
-		} else {
-			html += escapeHtml(parts[i]);
-		}
-	}
-	return html;
+	return parts.map((part, i) => i % 2 === 1
+		? `<a href="#" class="manual-xref-link" data-section="${escapeAttr(part)}">(See '${escapeHtml(part)}'.)</a>`
+		: escapeHtml(part)
+	).join("");
 }
 
 export function initManualDrawer(): void {
@@ -243,12 +237,7 @@ function renderCard(item: ManualItem, cat: ManualCategory, catIdx: number, itemI
 
 	const metaParts: string[] = [];
 	if (item.aliases?.length) {
-		metaParts.push(`
-			<div class="manual-meta-row">
-				<span class="manual-meta-label">Aliases:</span>
-				${item.aliases.map(a => `<span class="manual-alias-badge">${escapeHtml(a)}</span>`).join("")}
-			</div>
-		`);
+		metaParts.push(`<span class="manual-meta-label">Aliases:</span>${item.aliases.map(a => `<span class="manual-alias-badge">${escapeHtml(a)}</span>`).join("")}`);
 	}
 	if (item.usageId) metaParts.push(`<span class="manual-usage-badge">HID: ${escapeHtml(item.usageId)}</span>`);
 	if (item.returns) metaParts.push(`<span class="manual-return-badge">→ ${escapeHtml(item.returns)}</span>`);
@@ -258,130 +247,51 @@ function renderCard(item: ManualItem, cat: ManualCategory, catIdx: number, itemI
 	if (item.aliases?.length && !item.fields) {
 		const canonical = item.snippet.replace(/^\\/, "").trim();
 		const allOptions = Array.from(new Set([canonical, ...item.aliases]));
-		formControls.push(`
-			<div class="manual-form-field">
-				<span class="manual-form-label">Variant:</span>
-				<select data-field="_alias" class="manual-alias-select">
-					${allOptions.map(a => `<option value="${escapeAttr(a)}">\\${escapeHtml(a)}</option>`).join("")}
-				</select>
-			</div>
-		`);
+		formControls.push(
+			`<div class="manual-form-field"><span class="manual-form-label">Variant:</span><select data-field="_alias" class="manual-alias-select">${allOptions.map(a => `<option value="${escapeAttr(a)}">\\${escapeHtml(a)}</option>`).join("")}</select></div>`
+		);
 	}
 
 	if (item.fields?.length) {
 		for (const f of item.fields) {
 			if (f.type === "select" && f.options) {
-				formControls.push(`
-					<div class="manual-form-field">
-						<span class="manual-form-label">${escapeHtml(f.name)}:</span>
-						<select data-field="${escapeAttr(f.name)}" class="manual-form-select">
-							${f.options.map(opt => `<option value="${escapeAttr(opt)}" ${opt === f.default ? "selected" : ""}>${escapeHtml(opt)}</option>`).join("")}
-						</select>
-					</div>
-				`);
+				formControls.push(
+					`<div class="manual-form-field"><span class="manual-form-label">${escapeHtml(f.name)}:</span><select data-field="${escapeAttr(f.name)}" class="manual-form-select">${f.options.map(opt => `<option value="${escapeAttr(opt)}" ${opt === f.default ? "selected" : ""}>${escapeHtml(opt)}</option>`).join("")}</select></div>`
+				);
 			} else {
 				const widthStyle = f.width ? `style="width:${escapeAttr(f.width)}"` : "";
-				formControls.push(`
-					<div class="manual-form-field">
-						<span class="manual-form-label">${escapeHtml(f.name)}:</span>
-						<input type="text" data-field="${escapeAttr(f.name)}" value="${escapeAttr(f.default)}" placeholder="${escapeAttr(f.placeholder || f.name)}" class="manual-form-input" ${widthStyle}>
-					</div>
-				`);
+				formControls.push(
+					`<div class="manual-form-field"><span class="manual-form-label">${escapeHtml(f.name)}:</span><input type="text" data-field="${escapeAttr(f.name)}" value="${escapeAttr(f.default)}" placeholder="${escapeAttr(f.placeholder || f.name)}" class="manual-form-input" ${widthStyle}></div>`
+				);
 			}
 		}
 	}
 
-	const assembleHtml = formControls.length ? `
-		<div class="manual-assemble-row">
-			<div class="manual-assemble-fields">${formControls.join("")}</div>
-			${renderInsertBtn(item.snippet, "Assemble &amp; insert at cursor")}
-		</div>
-	` : "";
+	const assembleHtml = formControls.length ? `<div class="manual-assemble-row"><div class="manual-assemble-fields">${formControls.join("")}</div>${renderInsertBtn(item.snippet, "Assemble &amp; insert at cursor")}</div>` : "";
 
-	let tableHtml = "";
-	if (item.table) {
-		tableHtml = `
-			<div class="manual-table-wrap">
-				<table class="manual-table">
-					<thead>
-						<tr>${item.table.headers.map(h => `<th>${escapeHtml(h)}</th>`).join("")}</tr>
-					</thead>
-					<tbody>
-						${item.table.rows.map(row => `<tr>${row.map(c => `<td>${escapeHtml(c)}</td>`).join("")}</tr>`).join("")}
-					</tbody>
-				</table>
-			</div>
-		`;
-	}
+	const tableHtml = item.table ? `<div class="manual-table-wrap"><table class="manual-table"><thead><tr>${item.table.headers.map(h => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${item.table.rows.map(row => `<tr>${row.map(c => `<td>${escapeHtml(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>` : "";
 
-	let notesHtml = "";
-	if (item.notes?.length) {
-		notesHtml = `
-			<ul class="manual-notes-list">
-				${item.notes.map(([tag, desc]) => `
-					<li class="manual-note-item">
-						<strong class="manual-note-tag">${escapeHtml(tag)}:</strong>
-						<span class="manual-note-desc">${escapeHtml(desc)}</span>
-					</li>
-				`).join("")}
-			</ul>
-		`;
-	}
+	const notesHtml = item.notes?.length ? `<ul class="manual-notes-list">${item.notes.map(([tag, desc]) => `<li class="manual-note-item"><strong class="manual-note-tag">${escapeHtml(tag)}:</strong><span class="manual-note-desc">${escapeHtml(desc)}</span></li>`).join("")}</ul>` : "";
 
-	const snippetHtml = (item.snippet && (item.multiline || isRecipe) && !isNorm) ? `
-		<pre class="manual-code-block">${escapeHtml(item.snippet)}</pre>
-	` : "";
+	const snippetHtml = (item.snippet && (item.multiline || isRecipe) && !isNorm) ? `<pre class="manual-code-block">${escapeHtml(item.snippet)}</pre>` : "";
 
-	let headlineHtml = "";
-	if (isRecipe) {
-		headlineHtml = `<span class="manual-badge">Recipe</span><strong class="manual-card-title">${escapeHtml(item.name)}</strong>`;
-	} else if (isNorm) {
-		headlineHtml = `<span class="manual-badge manual-badge-norm">Norm</span><strong class="manual-card-title">${escapeHtml(item.name)}</strong>`;
-	} else {
-		headlineHtml = `<code class="manual-cmd-code">${escapeHtml(displayBadge)}</code>`;
-	}
+	const headlineHtml = isRecipe
+		? `<span class="manual-badge">Recipe</span><strong class="manual-card-title">${escapeHtml(item.name)}</strong>`
+		: isNorm
+		? `<span class="manual-badge manual-badge-norm">Norm</span><strong class="manual-card-title">${escapeHtml(item.name)}</strong>`
+		: `<code class="manual-cmd-code">${escapeHtml(displayBadge)}</code>`;
 
 	const canInsert = Boolean(item.snippet && !isNorm);
 	const actionBtnHtml = (!assembleHtml && canInsert) ? renderInsertBtn(item.snippet) : "";
 
-	return `
-		<div class="${item.multiline ? "manual-item manual-item-multiline" : "manual-item"}" data-cat-index="${catIdx}" data-item-index="${itemIdx}" data-search="${escapeAttr(searchText)}">
-			<div class="manual-item-header">
-				<div class="manual-item-headline">${headlineHtml}</div>
-				<div class="manual-item-actions">${actionBtnHtml}</div>
-			</div>
-			<div class="manual-item-desc">${renderDescWithLinks(item.desc)}</div>
-			${metaHtml}
-			${assembleHtml}
-			${tableHtml}
-			${notesHtml}
-			${snippetHtml}
-		</div>
-	`;
+	return `<div class="${item.multiline ? "manual-item manual-item-multiline" : "manual-item"}" data-cat-index="${catIdx}" data-item-index="${itemIdx}" data-search="${escapeAttr(searchText)}"><div class="manual-item-header"><div class="manual-item-headline">${headlineHtml}</div><div class="manual-item-actions">${actionBtnHtml}</div></div><div class="manual-item-desc">${renderDescWithLinks(item.desc)}</div>${metaHtml}${assembleHtml}${tableHtml}${notesHtml}${snippetHtml}</div>`;
 }
 
 function renderManualContent(container: HTMLElement, collapsedList: string[] = []): void {
 	container.innerHTML = MANUAL_DATA.map((cat, catIdx) => {
 		const isCollapsed = collapsedList.includes(cat.name);
 		const itemsHtml = cat.items.map((item, itemIdx) => renderCard(item, cat, catIdx, itemIdx)).join("");
-		return `
-			<div class="manual-section${isCollapsed ? " collapsed" : ""}">
-				<div class="manual-section-header">
-					<div class="manual-section-title-wrapper">
-						<span class="manual-section-chevron">▾</span>
-						<span class="manual-section-name">${escapeHtml(cat.name)}</span>
-					</div>
-					<span class="manual-section-badge">${escapeHtml(cat.badge)}</span>
-				</div>
-				<div class="manual-item-list">
-					${cat.desc ? `
-						<div class="manual-section-intro">
-							<div class="manual-section-desc">${renderDescWithLinks(cat.desc)}</div>
-						</div>
-					` : ""}
-					${itemsHtml}
-				</div>
-			</div>
-		`;
+		const introHtml = cat.desc ? `<div class="manual-section-intro"><div class="manual-section-desc">${renderDescWithLinks(cat.desc)}</div></div>` : "";
+		return `<div class="manual-section${isCollapsed ? " collapsed" : ""}"><div class="manual-section-header"><div class="manual-section-title-wrapper"><span class="manual-section-chevron">▾</span><span class="manual-section-name">${escapeHtml(cat.name)}</span></div><span class="manual-section-badge">${escapeHtml(cat.badge)}</span></div><div class="manual-item-list">${introHtml}${itemsHtml}</div></div>`;
 	}).join("") + '<div class="manual-empty-search" style="display:none">No matching commands found.</div>';
 }

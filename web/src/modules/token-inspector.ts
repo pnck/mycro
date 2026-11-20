@@ -4,8 +4,37 @@ import {
 	detectToken,
 	checkBracketBalance,
 	detectStructuralScope,
+	scanBraces,
 	type DetectionResult
 } from "./token-detector";
+
+let inspectorEls: {
+	container: HTMLElement;
+	scope: HTMLElement | null;
+	bracket: HTMLElement | null;
+	context: HTMLElement | null;
+	token: HTMLElement | null;
+	count: HTMLElement | null;
+	body: HTMLElement | null;
+} | null = null;
+
+function getInspectorEls() {
+	if (!inspectorEls) {
+		const container = document.getElementById("manualLiveInspector");
+		if (container) {
+			inspectorEls = {
+				container,
+				scope: document.getElementById("inspectorScope"),
+				bracket: document.getElementById("inspectorBracketStatus"),
+				context: document.getElementById("inspectorContext"),
+				token: document.getElementById("inspectorToken"),
+				count: document.getElementById("inspectorMatchCount"),
+				body: document.getElementById("inspectorCandidatesBody")
+			};
+		}
+	}
+	return inspectorEls;
+}
 
 export function initTokenInspector(): void {
 	const editor = getMacroEditor();
@@ -14,8 +43,8 @@ export function initTokenInspector(): void {
 		return;
 	}
 
-	const container = document.getElementById("manualLiveInspector");
-	if (!container) return;
+	const els = getInspectorEls();
+	if (!els) return;
 
 	updateTokenInspector();
 
@@ -31,7 +60,7 @@ export function initTokenInspector(): void {
 	});
 
 	// Handle candidate chip clicks
-	container.addEventListener("click", (e: MouseEvent) => {
+	els.container.addEventListener("click", (e: MouseEvent) => {
 		const target = e.target as HTMLElement;
 		const chip = target.closest("[data-insert]") as HTMLElement | null;
 		if (!chip) return;
@@ -57,15 +86,8 @@ export function initTokenInspector(): void {
 }
 
 export function updateTokenInspector(): void {
-	const container = document.getElementById("manualLiveInspector");
-	const scopeEl = document.getElementById("inspectorScope");
-	const bracketEl = document.getElementById("inspectorBracketStatus");
-	const contextEl = document.getElementById("inspectorContext");
-	const tokenEl = document.getElementById("inspectorToken");
-	const countEl = document.getElementById("inspectorMatchCount");
-	const bodyEl = document.getElementById("inspectorCandidatesBody");
-
-	if (!container) return;
+	const els = getInspectorEls();
+	if (!els) return;
 
 	const editor = getMacroEditor();
 	if (!editor) return;
@@ -73,31 +95,34 @@ export function updateTokenInspector(): void {
 	const text = editor.value;
 	const cursor = editor.textarea.selectionStart ?? text.length;
 
+	// Single-pass lexical & structural scan for all inspector checks
+	const scan = scanBraces(text, cursor);
+
 	// 1. Bracket balance & depth check across entire document
-	const bracketResult = checkBracketBalance(text, cursor);
-	if (bracketEl) {
-		bracketEl.textContent = bracketResult.statusText;
-		bracketEl.className = `inspector-bracket-status bracket-${bracketResult.statusType}`;
-		bracketEl.title = `Bracket Balance: ${bracketResult.statusText}`;
+	const bracketResult = checkBracketBalance(text, cursor, scan);
+	if (els.bracket) {
+		els.bracket.textContent = bracketResult.statusText;
+		els.bracket.className = `inspector-bracket-status bracket-${bracketResult.statusType}`;
+		els.bracket.title = `Bracket Balance: ${bracketResult.statusText}`;
 	}
 
 	// 2. Structural Scope Breadcrumb detection at cursor
-	const scopeText = detectStructuralScope(text, cursor);
-	if (scopeEl) {
-		scopeEl.textContent = scopeText;
-		scopeEl.title = `Structural Syntax Scope: ${scopeText}`;
+	const scopeText = detectStructuralScope(text, cursor, scan);
+	if (els.scope) {
+		els.scope.textContent = scopeText;
+		els.scope.title = `Structural Syntax Scope: ${scopeText}`;
 	}
 
 	// 3. Lexical Token Detection & Candidates
-	const result = detectToken(text, cursor);
+	const result = detectToken(text, cursor, scan);
 
 	if (!result || result.matches.length === 0) {
-		container.classList.remove("active");
-		if (contextEl) contextEl.textContent = "Context: Text";
-		if (tokenEl) tokenEl.textContent = "Ready";
-		if (countEl) countEl.textContent = "";
-		if (bodyEl) {
-			bodyEl.innerHTML = `
+		els.container.classList.remove("active");
+		if (els.context) els.context.textContent = "Context: Text";
+		if (els.token) els.token.textContent = "Ready";
+		if (els.count) els.count.textContent = "";
+		if (els.body) {
+			els.body.innerHTML = `
 				<span class="inspector-idle-guide">
 					Live Inspector Ready: Type <code>\\</code> for commands/syntax, <code>$</code> for variables/slots, or edit inside <code>{...}</code>
 				</span>
@@ -106,13 +131,13 @@ export function updateTokenInspector(): void {
 		return;
 	}
 
-	container.classList.add("active");
-	if (contextEl) contextEl.textContent = `Context: ${result.context}`;
-	if (tokenEl) tokenEl.textContent = result.displayToken || result.rawToken;
-	if (countEl) countEl.textContent = `${result.matches.length} matches`;
+	els.container.classList.add("active");
+	if (els.context) els.context.textContent = `Context: ${result.context}`;
+	if (els.token) els.token.textContent = result.displayToken || result.rawToken;
+	if (els.count) els.count.textContent = `${result.matches.length} matches`;
 
-	if (bodyEl) {
-		bodyEl.innerHTML = result.matches.map(c => `
+	if (els.body) {
+		els.body.innerHTML = result.matches.map(c => `
 			<button type="button" class="inspector-chip" data-insert="${escapeAttr(c.insert)}" data-token-start="${c.tokenStart ?? result.tokenStart}" data-token-end="${c.tokenEnd ?? result.tokenEnd}" title="${escapeAttr(c.desc)}">
 				<span class="inspector-chip-kind kind-${c.kind}">${c.kind}</span>
 				<span class="inspector-chip-label">${escapeHtml(c.label)}</span>

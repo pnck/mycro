@@ -86,7 +86,7 @@ interface PendingTarget {
 	expectedArgs?: number;
 }
 
-interface ScanResult {
+export interface ScanResult {
 	cursorStack: BraceFrame[];
 	depthAtCursor: number;
 	stackAtEnd: BraceFrame[];
@@ -157,6 +157,25 @@ export function skipWhitespaceAndComments(text: string, fromIndex: number): numb
 	return idx;
 }
 
+const SIMPLE_CTX: Record<string, string> = {
+	"\\all": "\\all (Conjunction)",
+	"\\any": "\\any (Disjunction)",
+	"\\move": "\\move > Arg Pack {dx, dy}",
+	"\\row": "\\row > Pixel Pack",
+	"\\rgb": "\\rgb > Arg Pack {r, g, b}",
+	"\\typenum": "\\typenum (ref)",
+	"\\wait": "\\wait (slot)",
+	"\\use": "\\use (ns)"
+};
+
+const CALL_SIGS: Record<string, string> = {
+	"img.snap": "Arg Pack {x, y, w, h}",
+	"img.at": "Arg Pack {snap}{x, y}",
+	"img.diff": "Arg Pack {snap_a}{snap_b}{tol}",
+	"img.watch": "Arg Pack {name}{x, y}{interval, duration}",
+	"net.send": "Arg Pack {msg}"
+};
+
 export const STRUCTURAL_COMMANDS = new Set(
 	"\\rep \\if \\guarded \\def \\all \\any \\set \\add \\sub \\typenum \\click \\move \\mdown \\mup \\delay \\pace \\use \\call \\wait \\pixelrect \\row \\rgb \\kdown \\kup \\tap \\text \\endtext".split(" ")
 );
@@ -181,7 +200,7 @@ function isCondScope(f: BraceFrame | null): boolean {
  * Streamingly analyzes lexical syntax, tracks layout configuration (\#!syntax:),
  * and maintains structural brace frames and symbol tables in a single pass.
  */
-function scanBraces(text: string, cursor?: number): ScanResult {
+export function scanBraces(text: string, cursor?: number): ScanResult {
 	const cur = cursor !== undefined ? cursor : text.length;
 	const len = text.length;
 	const stack: BraceFrame[] = [];
@@ -409,6 +428,34 @@ function scanBraces(text: string, cursor?: number): ScanResult {
 			continue;
 		}
 
+		const checkTransition = (top: BraceFrame, allowBracket: boolean) => {
+			const req = getNextRequiredBlock(top.cmd, top.argIndex, top.isBracket, top.hasThrottle);
+			if (req) {
+				const gapStart = i + 1;
+				const nextNonWs = skipWhitespaceAndComments(text, gapStart);
+				const nextCh = nextNonWs < len ? text[nextNonWs] : null;
+				const isPresent = nextCh === "{" || (allowBracket && top.cmd === "\\def" && nextCh === "[");
+
+				if (!isPresent && !firstIncompleteStatement) {
+					firstIncompleteStatement = {
+						cmd: top.cmd,
+						missing: req.name,
+						line: top.line
+					};
+				}
+
+				if (cur >= gapStart && cur <= nextNonWs && !cursorTransition) {
+					cursorTransition = {
+						cmd: top.cmd,
+						awaiting: req.name,
+						gapStart,
+						gapEnd: nextNonWs,
+						line: top.line
+					};
+				}
+			}
+		};
+
 		// 10. Square bracket close ]
 		if (ch === "]") {
 			if (stack.length > 0 && stack[stack.length - 1].isBracket === true) {
@@ -426,32 +473,7 @@ function scanBraces(text: string, cursor?: number): ScanResult {
 					pendingTarget = { cmd: "\\guarded", stage: "pred", cmdStart: top.cmdStart, argIndex: 1, hasThrottle: true };
 				}
 
-				const req = getNextRequiredBlock(top.cmd, top.argIndex, top.isBracket, top.hasThrottle);
-				if (req) {
-					const gapStart = i + 1;
-					const nextNonWs = skipWhitespaceAndComments(text, gapStart);
-					const nextCh = nextNonWs < len ? text[nextNonWs] : null;
-					const isPresent = nextCh === "{";
-
-					if (!isPresent && !firstIncompleteStatement) {
-						firstIncompleteStatement = {
-							cmd: top.cmd,
-							missing: req.name,
-							line: top.line
-						};
-					}
-
-					if (cur >= gapStart && cur <= nextNonWs && !cursorTransition) {
-						cursorTransition = {
-							cmd: top.cmd,
-							awaiting: req.name,
-							gapStart,
-							gapEnd: nextNonWs,
-							line: top.line
-						};
-					}
-				}
-
+				checkTransition(top, false);
 				i++;
 				continue;
 			}
@@ -480,16 +502,6 @@ function scanBraces(text: string, cursor?: number): ScanResult {
 				callTarget = pendingTarget.callTarget || "";
 				hasThrottle = !!pendingTarget.hasThrottle;
 
-				const simpleCtx: Record<string, string> = {
-					"\\all": "\\all (Conjunction)",
-					"\\any": "\\any (Disjunction)",
-					"\\move": "\\move > Arg Pack {dx, dy}",
-					"\\row": "\\row > Pixel Pack",
-					"\\rgb": "\\rgb > Arg Pack {r, g, b}",
-					"\\typenum": "\\typenum (ref)",
-					"\\wait": "\\wait (slot)",
-					"\\use": "\\use (ns)"
-				};
 				if (cmd === "\\if") {
 					context = argIndex === 0 ? "\\if (Condition)" : (argIndex === 1 ? "\\if (Then-branch)" : "\\if (Else-branch)");
 				} else if (cmd === "\\guarded") {
@@ -510,7 +522,7 @@ function scanBraces(text: string, cursor?: number): ScanResult {
 				} else if (cmd === "\\call") {
 					context = argIndex === 0 ? "\\call (target)" : "\\call > Arg Pack";
 				} else {
-					context = simpleCtx[cmd] || cmd;
+					context = SIMPLE_CTX[cmd] || cmd;
 				}
 				pendingTarget = null;
 			} else {
@@ -622,31 +634,7 @@ function scanBraces(text: string, cursor?: number): ScanResult {
 						}
 					}
 
-					const req = getNextRequiredBlock(top.cmd, top.argIndex, top.isBracket, top.hasThrottle);
-					if (req) {
-						const gapStart = i + 1;
-						const nextNonWs = skipWhitespaceAndComments(text, gapStart);
-						const nextCh = nextNonWs < len ? text[nextNonWs] : null;
-						const isPresent = nextCh === "{" || (top.cmd === "\\def" && nextCh === "[");
-
-						if (!isPresent && !firstIncompleteStatement) {
-							firstIncompleteStatement = {
-								cmd: top.cmd,
-								missing: req.name,
-								line: top.line
-							};
-						}
-
-						if (cur >= gapStart && cur <= nextNonWs && !cursorTransition) {
-							cursorTransition = {
-								cmd: top.cmd,
-								awaiting: req.name,
-								gapStart,
-								gapEnd: nextNonWs,
-								line: top.line
-							};
-						}
-					}
+					checkTransition(top, true);
 				}
 			} else if (!firstUnmatchedClose) {
 				firstUnmatchedClose = { char: "}", line: currentLine };
@@ -680,8 +668,8 @@ function scanBraces(text: string, cursor?: number): ScanResult {
 /**
  * Checks whole-document bracket balance ({}, []) and returns active depth at cursor.
  */
-export function checkBracketBalance(text: string, cursor?: number): BracketCheckResult {
-	const scan = scanBraces(text, cursor);
+export function checkBracketBalance(text: string, cursor?: number, cachedScan?: ScanResult): BracketCheckResult {
+	const scan = cachedScan || scanBraces(text, cursor);
 
 	if (scan.syntaxError) {
 		return {
@@ -768,7 +756,7 @@ export function isInsideVerbatim(text: string, cursor: number): boolean {
 	return cursor < nextTextClose;
 }
 
-export function detectStructuralScope(text: string, cursor: number): string {
+export function detectStructuralScope(text: string, cursor: number, cachedScan?: ScanResult): string {
 	const lineStart = text.lastIndexOf("\n", cursor - 1) + 1;
 	const lineEnd = text.indexOf("\n", cursor);
 	const lineText = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
@@ -780,7 +768,7 @@ export function detectStructuralScope(text: string, cursor: number): string {
 		return "Scope: Verbatim Text (\\text)";
 	}
 
-	const scan = scanBraces(text, cursor);
+	const scan = cachedScan || scanBraces(text, cursor);
 	const stack = scan.cursorStack;
 
 	if (lineText.trimStart().startsWith("\\#")) {
@@ -819,14 +807,7 @@ function formatFrameScope(frame: BraceFrame, isLeaf: boolean): string {
 		if (frame.argIndex === 0) return "\\call (target)";
 		const target = frame.callTarget ? `{${frame.callTarget}}` : "";
 		if (!isLeaf) return `\\call${target}`;
-		const sigs: Record<string, string> = {
-			"img.snap": "Arg Pack {x, y, w, h}",
-			"img.at": "Arg Pack {snap}{x, y}",
-			"img.diff": "Arg Pack {snap_a}{snap_b}{tol}",
-			"img.watch": "Arg Pack {name}{x, y}{interval, duration}",
-			"net.send": "Arg Pack {msg}"
-		};
-		const sig = (frame.callTarget && sigs[frame.callTarget]) ? sigs[frame.callTarget] : "Arg Pack";
+		const sig = (frame.callTarget && CALL_SIGS[frame.callTarget]) ? CALL_SIGS[frame.callTarget] : "Arg Pack";
 		return `\\call${target} > ${sig}`;
 	}
 	if (frame.cmd === "\\pixelrect" && !isLeaf && frame.argIndex >= 1) {
@@ -889,7 +870,7 @@ function sliceTokenRange(
 	};
 }
 
-export function detectToken(text: string, cursor: number): DetectionResult | null {
+export function detectToken(text: string, cursor: number, cachedScan?: ScanResult): DetectionResult | null {
 	const lineStart = text.lastIndexOf("\n", cursor - 1) + 1;
 	const lineBefore = text.slice(lineStart, cursor);
 
@@ -950,7 +931,11 @@ export function detectToken(text: string, cursor: number): DetectionResult | nul
 	}
 
 	// Execute single-pass DFA to retrieve active scope, user macros, and user variables
-	const scan = scanBraces(text, cursor);
+	const scan = cachedScan || scanBraces(text, cursor);
+
+	// Helper for case-insensitive label prefix matching
+	const matchPrefix = (pool: InspectorCandidate[], prefix: string) =>
+		pool.filter(c => !prefix || c.label.toLowerCase().startsWith(prefix));
 
 	// 4. Variable / System Register / Slot ($ or ${)
 	const varMatch = lineBefore.match(/(?:\$|\$\{)([a-zA-Z0-9_.]*)$/);
@@ -978,8 +963,7 @@ export function detectToken(text: string, cursor: number): DetectionResult | nul
 			const commaIdx = content.indexOf(",");
 			if (commaIdx === -1) {
 				const { prefix, raw, tokenStart, tokenEnd } = sliceTokenRange(text, current.openIndex, cursor);
-				const matches = MOUSE_BUTTON_CANDIDATES.filter(b => !prefix || b.label.toLowerCase().startsWith(prefix));
-				return { context: "Mouse Button", rawToken: raw || "{btn}", tokenStart, tokenEnd, matches };
+				return { context: "Mouse Button", rawToken: raw || "{btn}", tokenStart, tokenEnd, matches: matchPrefix(MOUSE_BUTTON_CANDIDATES, prefix) };
 			}
 			const { raw, tokenStart, tokenEnd } = sliceTokenRange(text, current.openIndex + commaIdx + 1, cursor);
 			return { context: "Click Count", rawToken: raw || "{count}", tokenStart, tokenEnd, matches: [] };
@@ -988,22 +972,19 @@ export function detectToken(text: string, cursor: number): DetectionResult | nul
 		// 5b. Key holds & taps: \kdown, \kup, \tap
 		if (current.cmd === "\\kdown" || current.cmd === "\\kup" || current.cmd === "\\tap") {
 			const { prefix, raw, tokenStart, tokenEnd } = sliceTokenRange(text, current.openIndex, cursor, "+");
-			const matches = KEY_NAME_CANDIDATES.filter(k => !prefix || k.label.toLowerCase().startsWith(prefix));
-			return { context: "Key / Modifier", rawToken: raw || "{key}", tokenStart, tokenEnd, matches };
+			return { context: "Key / Modifier", rawToken: raw || "{key}", tokenStart, tokenEnd, matches: matchPrefix(KEY_NAME_CANDIDATES, prefix) };
 		}
 
 		// 5c. Namespace: \use
 		if (current.cmd === "\\use" && current.argIndex === 0) {
 			const { prefix, raw, tokenStart, tokenEnd } = sliceTokenRange(text, current.openIndex, cursor);
-			const matches = NAMESPACE_CANDIDATES.filter(n => !prefix || n.label.toLowerCase().startsWith(prefix));
-			return { context: "Namespace", rawToken: raw || "{ns}", tokenStart, tokenEnd, matches };
+			return { context: "Namespace", rawToken: raw || "{ns}", tokenStart, tokenEnd, matches: matchPrefix(NAMESPACE_CANDIDATES, prefix) };
 		}
 
 		// 5d. Extension call: \call
 		if (current.cmd === "\\call" && current.argIndex === 0) {
 			const { prefix, raw, tokenStart, tokenEnd } = sliceTokenRange(text, current.openIndex, cursor);
-			const matches = EXT_FUNCTION_CANDIDATES.filter(f => !prefix || f.label.toLowerCase().startsWith(prefix));
-			return { context: "Extension Call", rawToken: raw || "{ns.fn}", tokenStart, tokenEnd, matches };
+			return { context: "Extension Call", rawToken: raw || "{ns.fn}", tokenStart, tokenEnd, matches: matchPrefix(EXT_FUNCTION_CANDIDATES, prefix) };
 		}
 
 		// 5e. Predicate Triplet: {lhs, op, rhs} in \if, \guarded, \all, \any
