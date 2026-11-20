@@ -236,6 +236,12 @@ def _mem_now(ctx):
 
 class Ctx:
     def __init__(self, host, port, token, skip_slow=False, idle_secs=10, mem0=None):
+        try:
+            infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+            if infos:
+                host = infos[0][4][0]
+        except Exception:
+            pass
         self.host = host
         self.port = port
         self.token = token
@@ -280,10 +286,18 @@ def _ensure_provider(ctx):
     while True:
         tags, res = submit_tag_sequence(ctx, img_noprov, timeout=8)
         if tags == ["prov_ok"] and res is not None and res["payload"].get("state") == "done":
-            return
+            break
         if tags != ["noprov"] or time.monotonic() >= deadline:
             raise RuntimeError(f"provider registration failed: {tags}")
         time.sleep(0.05)
+
+    # Drain any lingering telemetry slot latch
+    c = ctx.client()
+    try:
+        c.call("macro.submit", {"code": "\\use{img}\\wait[0]{$slot.img.btn.val}"})
+        recv_result(c, timeout=2)
+    finally:
+        c.close()
 
 
 def _stop_provider(ctx):

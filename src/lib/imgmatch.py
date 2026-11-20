@@ -4,25 +4,13 @@ Dual-import: ulab.numpy on CircuitPython, numpy on CPython (unit tests
 only). The core was validated on-device by tests/device/bench_device.py
 (exact argmax on planted templates; 80x60/T=16 runs in ~570 ms).
 
-Luma: gray = (r*77 + g*150 + b*29) >> 8 — integer-only BT.601. The OBS
-script (obs/obs_mycro.py) and tests/device/fake_capture.py replicate
-this EXACTLY so grabbed templates and match frames share a color space.
+Input frames and templates are native gray8 bytes.
 """
 
 try:
     import ulab.numpy as np
 except ImportError:  # CPython unit tests
     import numpy as np
-
-
-def rgb_to_gray(data):
-    """bytes RGB888 -> bytes gray8 (integer BT.601, see module docstring)."""
-    out = bytearray(len(data) // 3)
-    j = 0
-    for i in range(0, len(data), 3):
-        out[j] = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8
-        j += 1
-    return bytes(out)
 
 
 def _flip(v):

@@ -75,12 +75,23 @@ class Client:
                     "payload": {"bytes": length}}
         return json.loads(payload.decode("utf-8"))
 
-    def recv_envelope(self):
+    def recv_envelope(self, timeout=None):
         """Next inbound envelope, including pushes buffered during calls.
         Binary-kind frames surface as a {"type": "<binary>"} placeholder."""
         if self.pending:
             return self.pending.pop(0)
-        return self._recv_wire()
+        orig_timeout = self.sock.gettimeout()
+        if timeout is not None:
+            self.sock.settimeout(timeout)
+        try:
+            return self._recv_wire()
+        except (socket.timeout, TimeoutError):
+            if timeout is not None:
+                return None
+            raise
+        finally:
+            if timeout is not None:
+                self.sock.settimeout(orig_timeout)
 
     def send_envelope(self, env):
         body = json.dumps(env).encode("utf-8")

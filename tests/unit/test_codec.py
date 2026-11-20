@@ -172,3 +172,16 @@ def test_split_chunk_rejects_short():
     from codec import CodecError, split_chunk
     with pytest.raises(CodecError):
         split_chunk(b"\x01\x02\x03")
+
+
+def test_pack_frame_matches_struct_le():
+    import struct
+    payload = b"test-payload"
+    frame = pack_frame(KIND_JSON, payload)
+    expected_hdr = struct.pack("<I", len(payload))
+    assert frame[:4] == expected_hdr
+
+    bin_frame = pack_frame(KIND_BINARY, payload)
+    expected_bin_hdr = struct.pack("<I", len(payload) | 0x80000000)
+    assert bin_frame[:4] == expected_bin_hdr
+

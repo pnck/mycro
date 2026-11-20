@@ -61,11 +61,3 @@ def test_rectangular_template():
     assert (x, y) == (5, 40)
     assert score >= 990
 
-
-def test_rgb_to_gray_bt601_integer():
-    # r=g=b=v must give v exactly; pure red follows the 77/256 weight
-    assert imgmatch.rgb_to_gray(bytes((10, 10, 10))) == bytes((10,))
-    assert imgmatch.rgb_to_gray(bytes((255, 0, 0))) == bytes((77 * 255 >> 8,))
-    assert imgmatch.rgb_to_gray(bytes((0, 255, 0))) == bytes((150 * 255 >> 8,))
-    assert imgmatch.rgb_to_gray(bytes((0, 0, 255))) == bytes((29 * 255 >> 8,))
-    assert len(imgmatch.rgb_to_gray(bytes(3 * 300))) == 300
