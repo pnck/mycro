@@ -225,7 +225,8 @@ class Runtime:
         return entries[fn_id][0] if 0 <= fn_id < len(entries) else None
 
     def register_signal(self, name):
-        self._signals[name] = asyncio.Event()
+        if name not in self._signals:
+            self._signals[name] = asyncio.Event()
 
     def unregister_signal(self, name):
         self._signals.pop(name, None)

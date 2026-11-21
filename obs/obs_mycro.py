@@ -46,6 +46,7 @@ PREVIEW_LEASE_TTL_S = 5.0
 RPC_RESPONSE_TIMEOUT_S = 5.0
 RPC_HANDSHAKE_TIMEOUT_S = 3.0
 WIRE_CONNECT_TIMEOUT_S = 3.0
+WIRE_IO_TIMEOUT_S = 1.0
 THREAD_POLL_INTERVAL_S = 0.05
 
 # Buffers, Bounds and Limits
@@ -881,11 +882,10 @@ class EphemeralHttpServer:
 # ==============================================================================
 
 class TelemetrySampler:
-    """Threaded high-frequency periodic sampler with synchronous unwatch ACK."""
+    """One reusable sampling worker per name with synchronous termination."""
 
     def __init__(self):
         self._watches: Dict[str, Dict[str, Any]] = {}
-        self._stopping: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     def start_watch(
@@ -896,91 +896,171 @@ class TelemetrySampler:
         sample_fn: Callable[[], int],
         on_sample: Callable[[str, int], None],
     ) -> int:
+        if interval_ms <= 0 or duration_ms <= 0:
+            raise ValueError("Telemetry interval and duration must be positive")
         clamped_interval = max(TELEMETRY_MIN_INTERVAL_MS, interval_ms)
-        self.stop_watch(name)
 
-        with self._lock:
-            prev = self._stopping.get(name)
-            if prev and prev["thread"].is_alive():
-                raise RuntimeError(f"Previous telemetry watch '{name}' still stopping")
+        while True:
+            with self._lock:
+                entry = self._watches.get(name)
 
-        stop_evt = threading.Event()
-        t = threading.Thread(
-            target=self._worker,
-            args=(name, clamped_interval, duration_ms, sample_fn, on_sample, stop_evt),
-            daemon=True,
-            name=f"mycro-telemetry-{name}",
-        )
+            if entry is not None:
+                # The configuration lock also serializes emissions. Updating it
+                # therefore drains any old push before the refresh is acknowledged.
+                with entry["lock"]:
+                    if entry["stop"].is_set():
+                        if entry["thread"].is_alive():
+                            raise RuntimeError(f"Previous telemetry watch '{name}' still stopping")
+                    elif entry["thread"].is_alive() and not entry["retiring"]:
+                        entry["generation"] += 1
+                        entry["interval_ms"] = clamped_interval
+                        entry["duration_ms"] = duration_ms
+                        entry["deadline"] = time.monotonic() + duration_ms / 1000.0
+                        entry["sample_fn"] = sample_fn
+                        entry["on_sample"] = on_sample
+                        entry["wake"].set()
+                        return clamped_interval
 
-        with self._lock:
-            self._watches[name] = {"thread": t, "stop": stop_evt}
-        t.start()
-        return clamped_interval
+            stop_evt = threading.Event()
+            wake_evt = threading.Event()
+            new_entry = {
+                "thread": None,
+                "stop": stop_evt,
+                "wake": wake_evt,
+                "lock": threading.Lock(),
+                "generation": 1,
+                "retiring": False,
+                "interval_ms": clamped_interval,
+                "duration_ms": duration_ms,
+                "deadline": time.monotonic() + duration_ms / 1000.0,
+                "sample_fn": sample_fn,
+                "on_sample": on_sample,
+            }
+            t = threading.Thread(
+                target=self._worker,
+                args=(name, new_entry),
+                daemon=True,
+                name=f"mycro-telemetry-{name}",
+            )
+            new_entry["thread"] = t
+
+            with self._lock:
+                current = self._watches.get(name)
+                if current is not None and current["thread"].is_alive():
+                    if current["stop"].is_set():
+                        raise RuntimeError(f"Previous telemetry watch '{name}' still stopping")
+                    if not current["retiring"]:
+                        # Another caller installed a live generation while this
+                        # entry was being prepared; retry against that generation.
+                        continue
+                self._watches[name] = new_entry
+                try:
+                    t.start()
+                except Exception:
+                    if self._watches.get(name) is new_entry:
+                        self._watches.pop(name, None)
+                    raise
+            return clamped_interval
 
     def stop_watch(self, name: str, timeout_sec: float = RPC_RESPONSE_TIMEOUT_S + 0.5) -> bool:
-        """Atomically halts sampling thread and synchronously blocks until terminated."""
+        """Blocks until the named worker terminates, or returns False on timeout."""
         with self._lock:
-            entry = self._watches.pop(name, None)
-            if entry:
-                self._stopping[name] = entry
-            else:
-                entry = self._stopping.get(name)
-        if not entry:
+            entry = self._watches.get(name)
+        if entry is None:
             return True
+
         entry["stop"].set()
+        entry["wake"].set()
         thread = entry["thread"]
         deadline = time.monotonic() + timeout_sec
         while thread.is_alive() and time.monotonic() < deadline:
             thread.join(timeout=THREAD_POLL_INTERVAL_S)
-        if not thread.is_alive():
-            with self._lock:
-                self._stopping.pop(name, None)
-            return True
-        return False
-
-    def stop_all(self, timeout_sec: float = WORKER_SHUTDOWN_TIMEOUT_S) -> None:
+        if thread.is_alive():
+            # Keep terminal workers registered so later stop calls and shutdown
+            # can continue joining them instead of losing a live producer.
+            return False
         with self._lock:
-            entries = list(self._watches.values()) + list(self._stopping.values())
+            if self._watches.get(name) is entry:
+                self._watches.pop(name, None)
+        return True
+
+    def stop_all(self, timeout_sec: float = WORKER_SHUTDOWN_TIMEOUT_S) -> bool:
+        with self._lock:
+            entries = list(self._watches.values())
         for entry in entries:
             entry["stop"].set()
-        with self._lock:
-            names = list(set(list(self._watches.keys()) + list(self._stopping.keys())))
-        for n in names:
-            self.stop_watch(n, timeout_sec=timeout_sec)
+            entry["wake"].set()
 
-    def _worker(
-        self,
-        name: str,
-        interval_ms: int,
-        duration_ms: int,
-        sample_fn: Callable[[], int],
-        on_sample: Callable[[str, int], None],
-        stop_evt: threading.Event,
-    ) -> None:
-        step_sec = interval_ms / 1000.0
-        deadline = time.monotonic() + (duration_ms / 1000.0)
+        deadline = time.monotonic() + timeout_sec
+        all_stopped = True
+        for entry in entries:
+            thread = entry["thread"]
+            while thread.is_alive() and time.monotonic() < deadline:
+                thread.join(timeout=THREAD_POLL_INTERVAL_S)
+            if thread.is_alive():
+                all_stopped = False
+        return all_stopped
+
+    def _worker(self, name: str, entry: Dict[str, Any]) -> None:
+        stop_evt = entry["stop"]
+        wake_evt = entry["wake"]
+        cfg_lock = entry["lock"]
         try:
             while not stop_evt.is_set():
-                if time.monotonic() >= deadline:
-                    break
-                try:
-                    val = sample_fn()
+                with cfg_lock:
+                    # Clear under the configuration lock so an update cannot be
+                    # lost between choosing a sleep and consuming its wakeup.
+                    wake_evt.clear()
                     if stop_evt.is_set():
                         break
-                    on_sample(name, val)
+                    generation = entry["generation"]
+                    interval_ms = entry["interval_ms"]
+                    deadline = entry["deadline"]
+                    sample_fn = entry["sample_fn"]
+                    on_sample = entry["on_sample"]
+                    if time.monotonic() >= deadline:
+                        entry["retiring"] = True
+                        break
+
+                try:
+                    val = sample_fn()
+                    with cfg_lock:
+                        if stop_evt.is_set() or generation != entry["generation"]:
+                            continue
+                        if time.monotonic() >= deadline:
+                            entry["retiring"] = True
+                            break
+                        # Refresh takes this same lock; unwatch joins the worker.
+                        # Neither can be acknowledged in the middle of an old push.
+                        on_sample(name, val)
                 except Exception as e:
-                    log_msg(LOG_WARNING, f"mycro: telemetry sample error [{name}]: {e}")
+                    with cfg_lock:
+                        stale = stop_evt.is_set() or generation != entry["generation"]
+                        if not stale:
+                            entry["retiring"] = True
+                    if stale:
+                        continue
+                    if time.monotonic() < deadline:
+                        log_msg(LOG_WARNING, f"mycro: telemetry sample error [{name}]: {e}")
                     break
-                if stop_evt.wait(step_sec):
-                    break
+
+                with cfg_lock:
+                    if stop_evt.is_set():
+                        break
+                    if generation != entry["generation"]:
+                        continue
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        entry["retiring"] = True
+                        break
+                    wait_s = min(interval_ms / 1000.0, remaining)
+                wake_evt.wait(wait_s)
         finally:
+            with cfg_lock:
+                entry["retiring"] = True
             with self._lock:
-                cur = self._watches.get(name)
-                if cur and cur.get("stop") is stop_evt:
+                if self._watches.get(name) is entry:
                     self._watches.pop(name, None)
-                cur_stop = self._stopping.get(name)
-                if cur_stop and cur_stop.get("stop") is stop_evt:
-                    self._stopping.pop(name, None)
 
 
 # ==============================================================================
@@ -1029,7 +1109,9 @@ class WireSession:
             pass
 
         s = socket.create_connection((target_host, self.port), timeout=timeout)
-        s.settimeout(None)
+        # Reads treat this as a poll quantum; writes must never block forever
+        # while holding the lock needed by unwatch and protocol error replies.
+        s.settimeout(WIRE_IO_TIMEOUT_S)
 
         # 37-byte Auth Prologue: AUTH_MAGIC(4) + PROTO_VERSION(1) + SHA256(32)
         digest = hashlib.sha256(self.token.encode("utf-8")).digest()
@@ -1067,7 +1149,12 @@ class WireSession:
         with self._write_lock:
             if not self.sock or self._closed:
                 raise ConnectionError("WireSession is disconnected")
-            self.sock.sendall(header + payload)
+            try:
+                self.sock.sendall(header + payload)
+            except Exception:
+                # A timeout after a partial write desynchronizes framing.
+                self.disconnect()
+                raise
 
     def send_chunks(self, stream_id: int, data: bytes) -> None:
         """Streams kind-1 binary chunks with little-endian <I and strictly flags=0."""
@@ -1083,7 +1170,11 @@ class WireSession:
                 prefix = struct.pack("<HH", stream_id, 0)  # flags MUST strictly be 0
                 chunk_payload = prefix + chunk_slice
                 header = struct.pack("<I", 0x80000000 | len(chunk_payload))
-                self.sock.sendall(header + chunk_payload)
+                try:
+                    self.sock.sendall(header + chunk_payload)
+                except Exception:
+                    self.disconnect()
+                    raise
 
     def recv_loop(self, stop_evt: threading.Event) -> None:
         """Main read loop dispatching incoming envelopes to the Action Router."""
@@ -1092,13 +1183,13 @@ class WireSession:
             if not s:
                 break
             try:
-                hdr_bytes = self._recv_exact(s, 4)
+                hdr_bytes = self._recv_exact(s, 4, stop_evt)
                 (h,) = struct.unpack("<I", hdr_bytes)
                 kind = h >> 31
                 length = h & 0x7FFFFFFF
                 if length > MAX_FRAME_PAYLOAD:
                     raise ConnectionError(f"Oversize TCP frame length: {length} bytes")
-                payload = self._recv_exact(s, length)
+                payload = self._recv_exact(s, length, stop_evt)
 
                 if kind == 0:
                     env = json.loads(payload.decode("utf-8"))
@@ -1109,10 +1200,15 @@ class WireSession:
         self.disconnect()
 
     @staticmethod
-    def _recv_exact(sock: socket.socket, n: int) -> bytes:
+    def _recv_exact(sock: socket.socket, n: int, stop_evt: threading.Event) -> bytes:
         buf = bytearray()
         while len(buf) < n:
-            chunk = sock.recv(n - len(buf))
+            if stop_evt.is_set():
+                raise ConnectionError("Receive stopped")
+            try:
+                chunk = sock.recv(n - len(buf))
+            except socket.timeout:
+                continue
             if not chunk:
                 raise ConnectionError("Peer disconnected")
             buf.extend(chunk)
@@ -1328,6 +1424,10 @@ class ProtoActionRouter:
                 "payload": {},
             })
         else:
+            # Wire writes are bounded. Report the single-watch failure while
+            # preserving healthy subscriptions on the same connection; an
+            # actual write failure still disconnects the desynchronized stream.
+            log_msg(LOG_WARNING, f"mycro: watch '{name}' failed to stop within deadline")
             self._send_error(rid, "timeout", f"Watch '{name}' failed to stop within deadline")
 
 
@@ -1533,11 +1633,12 @@ class ProviderWorker:
                 _update_status_property()
             finally:
                 self._connected_event.clear()
-                self.sampler.stop_all()
-                self.preview.stop()
+                # Break blocked capture and socket sends before joining samplers.
                 if self.wire:
                     self.wire.disconnect()
                 self.ws_client.disconnect()
+                self.sampler.stop_all()
+                self.preview.stop()
 
             # Determine reconnection behavior based on auto_connect
             if self.is_active and not self._stop_event.is_set():

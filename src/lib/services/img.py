@@ -59,6 +59,7 @@ _img_client = None
 _img_pending = None
 _img_req_id = 0
 _active_watches = {}
+_lease_wake = asyncio.Event()
 _stream_buf = None
 _img_ui = {"pending": False, "data": None, "err": None}
 
@@ -92,12 +93,64 @@ def _img_drop(c):
         for name in list(_active_watches):
             runtime.unregister_signal("img." + name)
         _active_watches.clear()
+        _lease_wake.set()
 
     ent = _img_pending
     if ent is not None and ent["client"] is c and not ent["done"]:
         ent["err"] = ent["err"] or "provider_lost"
         ent["done"] = True
         ent["event"].set()
+
+
+def _img_remove_watch(name, expected=None):
+    """Remove only the current generation; retain slot values and latches."""
+    current = _active_watches.get(name)
+    if expected is not None and current is not expected:
+        return False
+    if current is None:
+        if expected is None:
+            runtime.unregister_signal("img." + name)
+        return False
+    _active_watches.pop(name, None)
+    runtime.unregister_signal("img." + name)
+    _lease_wake.set()
+    return True
+
+
+def _img_expire_watches(now=None):
+    """Synchronously retire due generations without provider network I/O."""
+    if now is None:
+        now = time.monotonic()
+    expired = False
+    for name, entry in list(_active_watches.items()):
+        if entry["deadline"] <= now and _active_watches.get(name) is entry:
+            _active_watches.pop(name, None)
+            runtime.unregister_signal("img." + name)
+            expired = True
+    if expired:
+        _lease_wake.set()
+
+
+async def _img_lease_loop():
+    """Sleep until the nearest lease deadline or a configuration change."""
+    while True:
+        _lease_wake.clear()
+        _img_expire_watches()
+        nearest = None
+        for entry in _active_watches.values():
+            deadline = entry["deadline"]
+            if nearest is None or deadline < nearest:
+                nearest = deadline
+        if nearest is None:
+            await _lease_wake.wait()
+            continue
+        delay = nearest - time.monotonic()
+        if delay <= 0:
+            continue
+        try:
+            await asyncio.wait_for(_lease_wake.wait(), delay)
+        except _TimeoutError:
+            pass
 
 
 async def _img_request(type_, payload):
@@ -388,6 +441,16 @@ def _img_watch(name, x, y, interval_ms, duration_ms):
             return 0, ERR_NO_PROVIDER
         sig_name = "img." + name
         runtime.register_signal(sig_name)
+        entry = {
+            "x": x, "y": y, "interval_ms": interval_ms,
+            "deadline": time.monotonic() + duration_ms / 1000.0,
+            "client": c,
+            "pending": True,
+        }
+        # One record covers both pending and active states. Replacement is
+        # fail-closed: an ambiguous failed refresh cannot resurrect the old lease.
+        _active_watches[name] = entry
+        _lease_wake.set()
         try:
             payload, _ = await _img_request("img.watch", {
                 "name": name,
@@ -397,39 +460,56 @@ def _img_watch(name, x, y, interval_ms, duration_ms):
                 "duration_ms": duration_ms,
             })
         except ImgError as e:
-            if name not in _active_watches:
-                runtime.unregister_signal(sig_name)
+            _img_remove_watch(name, entry)
             return _img_failure(str(e))
-        _active_watches[name] = {
-            "x": x, "y": y, "interval_ms": interval_ms,
-            "deadline": time.monotonic() + duration_ms / 1000.0,
-        }
+
+        if _img_client is not c or not c.alive or not c.authed:
+            _img_remove_watch(name, entry)
+            return 0, ERR_NO_PROVIDER
+        if _active_watches.get(name) is not entry:
+            return 0, ERR_TIMEOUT
+        if time.monotonic() >= entry["deadline"]:
+            _img_remove_watch(name, entry)
+            return 0, ERR_TIMEOUT
+        entry["pending"] = False
         return 0, ERR_OK
 
     return run()
 
 
-def _img_unwatch(name):
+def _img_unwatch(name, expected=None):
     async def run():
-        sig_name = "img." + name
+        entry = _active_watches.get(name)
+        if expected is not None and entry is not expected:
+            return 0, ERR_OK
         c = _img_client
-        if c is not None and c.alive and c.authed:
-            try:
-                await _img_request("img.unwatch", {"name": name})
-            except Exception as e:
-                print("img.unwatch warning:", e)
-        _active_watches.pop(name, None)
-        runtime.unregister_signal(sig_name)
-        return 0, ERR_OK
+        err = ERR_OK
+        try:
+            if c is not None and c.alive and c.authed:
+                try:
+                    await _img_request("img.unwatch", {"name": name})
+                except Exception as e:
+                    print("img.unwatch warning:", e)
+                    _, err = _img_failure(str(e))
+        finally:
+            # Local cleanup is mandatory after ACK, timeout, disconnect, or
+            # cancellation. A failed remote stop remains bounded by its lease.
+            _img_remove_watch(name, entry)
+        return 0, err
 
     return run()
 
 
 async def _img_unwatch_all():
-    if not _active_watches:
-        return
-    for name in list(_active_watches):
-        await _img_unwatch(name)
+    watches = list(_active_watches.items())
+    for index, (name, entry) in enumerate(watches):
+        _, err = await _img_unwatch(name, entry)
+        if err in (ERR_TIMEOUT, ERR_NO_PROVIDER):
+            # The shared request channel cannot make progress. Do not multiply
+            # one network outage into one full RPC timeout per remaining name.
+            for stale_name, stale_entry in watches[index + 1:]:
+                _img_remove_watch(stale_name, stale_entry)
+            break
 
 
 async def arm_direct_preview():
@@ -508,6 +588,9 @@ class ImgProvider:
 
     async def unwatch_all(self):
         await _img_unwatch_all()
+
+    async def lease_loop(self):
+        await _img_lease_loop()
 
     async def arm_direct_preview(self):
         return await arm_direct_preview()

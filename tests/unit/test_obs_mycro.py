@@ -327,6 +327,184 @@ def test_telemetry_sampler_lifecycle():
     assert len(dispatched) == 0
 
 
+def test_telemetry_refresh_reuses_worker_and_discards_stale_capture():
+    sampler = TelemetrySampler()
+    old_started = threading.Event()
+    release_old = threading.Event()
+    new_sampled = threading.Event()
+    samples = []
+
+    def old_sample():
+        old_started.set()
+        release_old.wait(timeout=2.0)
+        return 1
+
+    def new_sample():
+        return 2
+
+    def new_emit(name, val):
+        samples.append(val)
+        new_sampled.set()
+
+    try:
+        sampler.start_watch("s1", 20, 1000, old_sample, lambda n, v: samples.append(v))
+        assert old_started.wait(timeout=1.0)
+        entry = sampler._watches["s1"]
+        thread = entry["thread"]
+
+        # Refresh must not wait for the old capture or replace the thread.
+        sampler.start_watch("s1", 20, 1000, new_sample, new_emit)
+        assert sampler._watches["s1"] is entry
+        assert entry["thread"] is thread
+        assert thread.is_alive()
+        assert not new_sampled.is_set()
+
+        release_old.set()
+        assert new_sampled.wait(timeout=1.0)
+        assert samples == [2]
+    finally:
+        release_old.set()
+        sampler.stop_all()
+
+
+def test_telemetry_refresh_drains_old_emission_before_returning():
+    sampler = TelemetrySampler()
+    emission_started = threading.Event()
+    release_emission = threading.Event()
+    refreshed = threading.Event()
+    order = []
+
+    def old_emit(name, val):
+        order.append("old-start")
+        emission_started.set()
+        release_emission.wait(timeout=2.0)
+        order.append("old-end")
+
+    try:
+        sampler.start_watch("s1", 20, 1000, lambda: 1, old_emit)
+        assert emission_started.wait(timeout=1.0)
+
+        def refresh():
+            sampler.start_watch("s1", 20, 1000, lambda: 2, lambda n, v: None)
+            order.append("refresh")
+            refreshed.set()
+
+        t = threading.Thread(target=refresh, daemon=True)
+        t.start()
+        time.sleep(0.03)
+        assert not refreshed.is_set()
+        release_emission.set()
+        assert refreshed.wait(timeout=1.0)
+        t.join(timeout=1.0)
+        assert order[:3] == ["old-start", "old-end", "refresh"]
+    finally:
+        release_emission.set()
+        sampler.stop_all()
+
+
+def test_telemetry_lease_expires_promptly_and_suppresses_late_capture():
+    sampler = TelemetrySampler()
+    capture_started = threading.Event()
+    release_capture = threading.Event()
+    samples = []
+
+    def slow_sample():
+        capture_started.set()
+        release_capture.wait(timeout=2.0)
+        return 1
+
+    try:
+        sampler.start_watch("lease", 1000, 30, slow_sample, lambda n, v: samples.append(v))
+        assert capture_started.wait(timeout=1.0)
+        entry = sampler._watches["lease"]
+        time.sleep(0.06)
+        release_capture.set()
+        entry["thread"].join(timeout=1.0)
+        assert not entry["thread"].is_alive()
+        assert "lease" not in sampler._watches
+        assert samples == []
+        assert sampler.stop_watch("lease") is True
+    finally:
+        release_capture.set()
+        sampler.stop_all()
+
+
+def test_telemetry_stop_timeout_keeps_terminal_worker_tracked():
+    sampler = TelemetrySampler()
+    capture_started = threading.Event()
+    release_capture = threading.Event()
+
+    def blocked_sample():
+        capture_started.set()
+        release_capture.wait(timeout=2.0)
+        return 1
+
+    try:
+        sampler.start_watch("blocked", 20, 1000, blocked_sample, lambda n, v: None)
+        assert capture_started.wait(timeout=1.0)
+        entry = sampler._watches["blocked"]
+        assert sampler.stop_watch("blocked", timeout_sec=0.01) is False
+        assert sampler._watches["blocked"] is entry
+        assert entry["stop"].is_set()
+        with pytest.raises(RuntimeError, match="still stopping"):
+            sampler.start_watch("blocked", 20, 1000, lambda: 2, lambda n, v: None)
+        release_capture.set()
+        assert sampler.stop_watch("blocked", timeout_sec=1.0) is True
+        assert "blocked" not in sampler._watches
+    finally:
+        release_capture.set()
+        sampler.stop_all()
+
+
+def test_telemetry_stop_timeout_covers_blocked_emission():
+    sampler = TelemetrySampler()
+    emission_started = threading.Event()
+    release_emission = threading.Event()
+
+    def blocked_emit(name, val):
+        emission_started.set()
+        release_emission.wait(timeout=2.0)
+
+    try:
+        sampler.start_watch("emit", 20, 1000, lambda: 1, blocked_emit)
+        assert emission_started.wait(timeout=1.0)
+        entry = sampler._watches["emit"]
+        started = time.monotonic()
+        assert sampler.stop_watch("emit", timeout_sec=0.01) is False
+        assert time.monotonic() - started < 0.5
+        assert entry["stop"].is_set()
+        release_emission.set()
+        assert sampler.stop_watch("emit", timeout_sec=1.0) is True
+    finally:
+        release_emission.set()
+        sampler.stop_all()
+
+
+def test_telemetry_refresh_replaces_retiring_worker_instead_of_reviving_it():
+    sampler = TelemetrySampler()
+
+    class ExitingThread:
+        def is_alive(self):
+            return True
+
+    old_thread = ExitingThread()
+    old_entry = {
+        "thread": old_thread,
+        "stop": threading.Event(),
+        "lock": threading.Lock(),
+        "retiring": True,
+    }
+    sampler._watches["s1"] = old_entry
+    try:
+        sampler.start_watch("s1", 20, 1000, lambda: 2, lambda n, v: None)
+        new_entry = sampler._watches["s1"]
+        assert new_entry is not old_entry
+        assert new_entry["thread"] is not old_thread
+        assert not new_entry["retiring"]
+    finally:
+        sampler.stop_all()
+
+
 # ==============================================================================
 # 4. WireSession Tests
 # ==============================================================================
@@ -368,6 +546,55 @@ def test_wire_session_framing_and_chunking():
     s_server.close()
 
 
+def test_wire_send_timeout_disconnects_desynchronized_stream():
+    class FailingSocket:
+        def __init__(self):
+            self.closed = False
+
+        def sendall(self, data):
+            raise socket.timeout("blocked write")
+
+        def shutdown(self, how):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    failing = FailingSocket()
+    wire = WireSession(host="127.0.0.1", port=7373)
+    wire.sock = failing
+    with pytest.raises(socket.timeout):
+        wire.send_envelope({"type": "event.push", "id": 0, "payload": {}})
+    assert wire.sock is None
+    assert wire._closed
+    assert failing.closed
+
+
+def test_wire_recv_exact_honors_stop_event_during_timeout():
+    recv_started = threading.Event()
+    stopped = threading.Event()
+
+    class IdleSocket:
+        def recv(self, n):
+            recv_started.set()
+            raise socket.timeout("idle")
+
+    stop_evt = threading.Event()
+
+    def receive():
+        with pytest.raises(ConnectionError, match="Receive stopped"):
+            WireSession._recv_exact(IdleSocket(), 4, stop_evt)
+        stopped.set()
+
+    thread = threading.Thread(target=receive, daemon=True)
+    thread.start()
+    assert recv_started.wait(timeout=1.0)
+    stop_evt.set()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
+    assert stopped.is_set()
+
+
 # ==============================================================================
 # 5. ProtoActionRouter Tests
 # ==============================================================================
@@ -379,6 +606,7 @@ class MockWire:
         self._action_handler = None
         self._connect_handler = None
         self._stream_id = 0
+        self.disconnected = False
 
     def set_action_handler(self, handler):
         self._action_handler = handler
@@ -392,6 +620,9 @@ class MockWire:
 
     def send_envelope(self, env):
         self.sent_envelopes.append(env)
+
+    def disconnect(self):
+        self.disconnected = True
 
     def send_chunks(self, sid, data):
         self.sent_chunks.append((sid, data))
@@ -449,7 +680,7 @@ def test_proto_action_router_dispatch_and_error_defense():
     assert rep_unwatch["type"] == "img.unwatch.ok"
     assert rep_unwatch["id"] == 50
 
-    # 6. Test img.unwatch timeout error
+    # 6. Unwatch timeout is localized to the named watch
     class StubTimingOutSampler(TelemetrySampler):
         def stop_watch(self, name: str, timeout_sec: float = 5.5) -> bool:
             return False
@@ -465,7 +696,7 @@ def test_proto_action_router_dispatch_and_error_defense():
     assert err_unwatch["type"] == "error"
     assert err_unwatch["id"] == 51
     assert err_unwatch["payload"]["code"] == "timeout"
-    assert "hung_watch" in err_unwatch["payload"]["message"]
+    assert not wire.disconnected
 
 
 # ==============================================================================

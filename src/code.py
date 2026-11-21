@@ -85,7 +85,7 @@ async def _main():
         http_server.start(ip, 80)
         if not TOKEN:
             print("WARNING: MYCRO_TOKEN not set in settings.toml — auth disabled (dev mode)")
-        await asyncio.gather(_http_loop(), raw_server.loop())
+        await asyncio.gather(_http_loop(), raw_server.loop(), img_provider.lease_loop())
     else:
         # Offline mode: keep USB/serial/HID fully functional.
         print("Edit settings.toml via CIRCUITPY drive, then reset to retry network services.")

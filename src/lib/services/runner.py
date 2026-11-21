@@ -28,6 +28,7 @@ class MacroRunner:
         self.img_provider = img_provider
         self.task = None
         self.state = {"state": "idle", "detail": "", "bytes": 0}
+        self._cleaning = False
 
     def set_raw_server(self, raw_server):
         self.raw_server = raw_server
@@ -50,7 +51,7 @@ class MacroRunner:
     def abort(self):
         self.macro.hid.keys_release_all()
         self.macro.hid.mouse_release(BTN_ALL)
-        if self.task and self.is_running():
+        if self.task and self.is_running() and not self._cleaning:
             self.task.cancel()
             return True
         return False
@@ -73,6 +74,7 @@ class MacroRunner:
         print("=" * 40)
 
         self.state.update(state="running", detail="", bytes=len(bytecode))
+        self._cleaning = False
         self.task = asyncio.create_task(self._run(bytecode))
         return len(bytecode), None
 
@@ -86,20 +88,32 @@ class MacroRunner:
 
     async def _run(self, bytecode):
         t0 = _now_ms()
+        outcome = "done"
+        detail = ""
+        cancelled = False
         try:
-            try:
-                await self.macro.execute(bytecode)
-                self.state["state"] = "done"
-            except asyncio.CancelledError:
-                self.state["state"] = "aborted"
-                self._broadcast_result(t0)
-                raise
-            except Exception as e:
-                self.state["state"] = "error"
-                self.state["detail"] = str(e)
-                print("Macro runtime error:", e)
-            self._broadcast_result(t0)
-        finally:
+            await self.macro.execute(bytecode)
+        except asyncio.CancelledError:
+            outcome = "aborted"
+            cancelled = True
+        except Exception as e:
+            outcome = "error"
+            detail = str(e)
+            print("Macro runtime error:", e)
+
+        # Keep the runner busy until every watch generation owned by this macro
+        # has been cleaned. Otherwise old cleanup can unwatch a new macro's name.
+        self._cleaning = True
+        try:
             if self.img_provider:
                 await self.img_provider.unwatch_all()
+        except Exception as e:
+            print("Macro cleanup error:", e)
+        finally:
             gc.collect()
+            self.state["state"] = outcome
+            self.state["detail"] = detail
+            self._cleaning = False
+            self._broadcast_result(t0)
+        if cancelled:
+            raise asyncio.CancelledError()

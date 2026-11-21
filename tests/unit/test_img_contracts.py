@@ -85,6 +85,7 @@ def _load_device_module():
         module._Client = Client
 
         runner = MacroRunner(module.macro)
+        module.runner = runner
         raw_server = RawServer(None, module.runtime, runner)
         img_provider = module.ImgProvider(module.runtime)
         img_provider.register_namespaces()
@@ -116,11 +117,19 @@ def reset_device_state():
     device.runtime.clear_consts()
     device._img_client = None
     device._img_pending = None
+    device._active_watches.clear()
+    for name in list(device.runtime._signals):
+        if name.startswith("img."):
+            device.runtime.unregister_signal(name)
     yield
     device.runtime.release_handles()
     device.runtime.clear_consts()
     device._img_client = None
     device._img_pending = None
+    device._active_watches.clear()
+    for name in list(device.runtime._signals):
+        if name.startswith("img."):
+            device.runtime.unregister_signal(name)
 
 
 def _run(coroutine):
@@ -596,6 +605,8 @@ def test_img_watch_unwatch_device_contracts():
         unw_env = device.codec.decode_envelope(unw_frame[4:])
         assert unw_env["type"] == "img.unwatch"
         assert unw_env["payload"] == {"name": "hp"}
+        assert "hp" in device._active_watches
+        assert device.runtime.has_signal("img.hp")
 
         device._img_resolve(client, {
             "type": "img.unwatch.ok", "v": 1, "ts": 0, "id": unw_env["id"],
@@ -607,6 +618,200 @@ def test_img_watch_unwatch_device_contracts():
         assert "hp" not in device._active_watches
 
     _run(watch_flow())
+
+
+def test_img_unwatch_failure_cleans_local_state_without_retry(monkeypatch):
+    from bytecode import ERR_TIMEOUT
+
+    client = FakeClient()
+    device._img_client = client
+    calls = []
+
+    async def timeout_request(type_, payload):
+        calls.append(payload["name"])
+        raise device.ImgError("timeout")
+
+    monkeypatch.setattr(device, "_img_request", timeout_request)
+
+    entry = {
+        "x": 1, "y": 2, "interval_ms": 100,
+        "deadline": device.time.monotonic() + 30,
+        "client": client, "pending": False,
+    }
+    device._active_watches["slow"] = entry
+    device.runtime.register_signal("img.slow")
+    assert _run(device._img_unwatch("slow")) == (0, ERR_TIMEOUT)
+    assert calls == ["slow"]
+    assert "slow" not in device._active_watches
+    assert not device.runtime.has_signal("img.slow")
+
+    calls.clear()
+    for name in ("one", "two", "three"):
+        device._active_watches[name] = {
+            "x": 1, "y": 2, "interval_ms": 100,
+            "deadline": device.time.monotonic() + 30,
+            "client": client, "pending": False,
+        }
+        device.runtime.register_signal("img." + name)
+
+    _run(device._img_unwatch_all())
+    assert calls == ["one"]
+    assert device._active_watches == {}
+    assert all(not device.runtime.has_signal("img." + name) for name in ("one", "two", "three"))
+
+
+def test_img_watch_refresh_and_lease_expiry_are_generation_safe():
+    from bytecode import ERR_OK
+
+    client = FakeClient()
+    device._img_client = client
+
+    async def scenario():
+        async def issue(x, duration):
+            task = asyncio.create_task(device._img_watch("s1", x, 2, 100, duration))
+            await asyncio.sleep(0)
+            env = device.codec.decode_envelope(client.sent.pop(0)[4:])
+            device._img_resolve(client, {
+                "type": "img.watch.ok", "v": 1, "ts": 0, "id": env["id"],
+                "payload": {"interval_ms": 100},
+            })
+            assert await task == (0, ERR_OK)
+            return env
+
+        env1 = await issue(1, 5000)
+        first = device._active_watches["s1"]
+        signal = device.runtime._signals["img.s1"]
+        env2 = await issue(3, 10000)
+        second = device._active_watches["s1"]
+
+        assert env1["type"] == env2["type"] == "img.watch"
+        assert second is not first
+        assert len(device._active_watches) == 1
+        assert second["x"] == 3 and not second["pending"]
+        assert second["deadline"] > first["deadline"]
+        assert device.runtime._signals["img.s1"] is signal
+
+        device.runtime.fire_signal("img.s1", {"val": 0x334455})
+        device._img_expire_watches(first["deadline"] + 0.001)
+        assert device._active_watches["s1"] is second
+        assert device.runtime.has_signal("img.s1")
+
+        device._img_expire_watches(second["deadline"])
+        assert "s1" not in device._active_watches
+        assert not device.runtime.has_signal("img.s1")
+        assert device.runtime.read_slot("img.s1", "val") == 0x334455
+        assert device.runtime.slot_pending("img.s1", "val") == 1
+        assert client.sent == []  # local expiry emits no network unwatch
+
+        late_push = {
+            "v": 1, "type": "event.push", "id": 0, "ts": 0,
+            "payload": {"name": "img.s1", "fields": {"val": 1}},
+        }
+        response = device.dispatcher.dispatch(late_push, device.proto_ctx)
+        assert response["type"] == "error"
+        assert response["payload"]["code"] == "unknown_signal"
+
+    _run(scenario())
+
+
+def test_img_watch_lease_loop_expires_without_provider_notification():
+    client = FakeClient()
+    device._img_client = client
+
+    async def scenario():
+        lease_task = asyncio.create_task(device._img_lease_loop())
+        try:
+            await asyncio.sleep(0)
+            watch_task = asyncio.create_task(device._img_watch("lease", 1, 2, 100, 20))
+            await asyncio.sleep(0)
+            env = device.codec.decode_envelope(client.sent.pop(0)[4:])
+            device._img_resolve(client, {
+                "type": "img.watch.ok", "v": 1, "ts": 0, "id": env["id"],
+                "payload": {"interval_ms": 100},
+            })
+            await watch_task
+            for _ in range(20):
+                if "lease" not in device._active_watches:
+                    break
+                await asyncio.sleep(0.005)
+            assert "lease" not in device._active_watches
+            assert not device.runtime.has_signal("img.lease")
+            assert client.sent == []
+        finally:
+            lease_task.cancel()
+            try:
+                await lease_task
+            except asyncio.CancelledError:
+                pass
+
+    _run(scenario())
+
+
+def test_img_watch_cancelled_before_ack_is_unwatched():
+    client = FakeClient()
+    device._img_client = client
+    m = device.macro
+    bc, err = m.compile(
+        r"\use{img}\call{img.watch}{pending}{1,2}{100ms,5s}"
+        r"\wait[5s]{$slot.img.pending.val}"
+    )
+    assert err is None
+
+    async def scenario():
+        task = asyncio.create_task(device._run(bc))
+        for _ in range(10):
+            if client.sent:
+                break
+            await asyncio.sleep(0)
+        watch_env = device.codec.decode_envelope(client.sent.pop(0)[4:])
+        assert watch_env["type"] == "img.watch"
+        assert device._active_watches["pending"]["pending"]
+
+        task.cancel()
+        unwatch_env = None
+        for _ in range(10):
+            await asyncio.sleep(0)
+            if client.sent:
+                unwatch_env = device.codec.decode_envelope(client.sent.pop(0)[4:])
+                break
+        assert unwatch_env["type"] == "img.unwatch"
+        assert unwatch_env["id"] != watch_env["id"]
+        device._img_resolve(client, {
+            "type": "img.unwatch.ok", "v": 1, "ts": 0, "id": unwatch_env["id"],
+            "payload": {},
+        })
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("cancelled macro did not propagate CancelledError")
+        assert "pending" not in device._active_watches
+        assert not device.runtime.has_signal("img.pending")
+
+    _run(scenario())
+
+
+def test_img_watch_ack_then_disconnect_does_not_resurrect_record():
+    from bytecode import ERR_NO_PROVIDER
+
+    client = FakeClient()
+    device._img_client = client
+
+    async def scenario():
+        task = asyncio.create_task(device._img_watch("drop", 1, 2, 100, 5000))
+        await asyncio.sleep(0)
+        env = device.codec.decode_envelope(client.sent.pop(0)[4:])
+        device._img_resolve(client, {
+            "type": "img.watch.ok", "v": 1, "ts": 0, "id": env["id"],
+            "payload": {"interval_ms": 100},
+        })
+        device._img_drop(client)
+        assert await task == (0, ERR_NO_PROVIDER)
+        assert "drop" not in device._active_watches
+        assert not device.runtime.has_signal("img.drop")
+
+    _run(scenario())
 
 
 def test_img_watch_slot_scalar_execution():
@@ -709,7 +914,7 @@ def test_img_watch_guard_abort_cleans_up_watches():
     client = FakeClient()
     device._img_client = client
 
-    m = device.Macro(device.hid, device.runtime)
+    m = device.macro
     # Guard invariant fails immediately inside the body
     dsl = (
         r"\#!syntax: free" "\n"
@@ -724,6 +929,7 @@ def test_img_watch_guard_abort_cleans_up_watches():
     assert err is None
 
     async def scenario():
+        device.runner.state["state"] = "running"
         task = asyncio.create_task(device._run(bc))
         await asyncio.sleep(0.01)
 
@@ -743,6 +949,7 @@ def test_img_watch_guard_abort_cleans_up_watches():
         unw_frame = client.sent.pop(0)
         unw_env = device.codec.decode_envelope(unw_frame[4:])
         assert unw_env["type"] == "img.unwatch"
+        assert device.runner.is_running()  # cleanup remains inside the busy state
 
         device._img_resolve(client, {
             "type": "img.unwatch.ok", "v": 1, "ts": 0, "id": unw_env["id"],
@@ -753,6 +960,7 @@ def test_img_watch_guard_abort_cleans_up_watches():
         # Verified cleaned up
         assert not device.runtime.has_signal("img.leak_test")
         assert "leak_test" not in device._active_watches
+        assert not device.runner.is_running()
 
     _run(scenario())
 

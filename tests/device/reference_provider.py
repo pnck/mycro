@@ -137,7 +137,9 @@ class ReferenceProvider:
         self._stop = threading.Event()
         self._thread = None
         self._lock = threading.Lock()
-        self._watches = {}  # name -> threading.Event
+        self._watch_lock = threading.Lock()
+        self._watches = {}  # name -> reusable worker entry
+        self._socket = None
 
     def set_frame(self, w, h, rgb):
         """The screen now shows this: (width, height, RGB888 bytes)."""
@@ -152,11 +154,163 @@ class ReferenceProvider:
 
     def stop(self):
         self._stop.set()
-        for w_stop in list(self._watches.values()):
-            w_stop.set()
-        self._watches.clear()
+        s = self._socket
+        if s is not None:
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            s.close()
+        self._stop_all_watches()
         if self._thread is not None:
             self._thread.join(timeout=3)
+
+    def _start_watch(self, s, name, x, y, interval_ms, duration_ms, on_accept):
+        effective_interval = max(interval_ms, 20)
+
+        def sample():
+            w, h, rgb = self._frame
+            if not (0 <= x < w and 0 <= y < h):
+                raise ValueError("point outside frame bounds")
+            idx = (y * w + x) * 3
+            return (rgb[idx] << 16) | (rgb[idx + 1] << 8) | rgb[idx + 2]
+
+        def emit(w_name, val):
+            self._send_env(s, "event.push", 0, {
+                "name": "img." + w_name,
+                "fields": {"val": val},
+            })
+
+        while True:
+            with self._watch_lock:
+                entry = self._watches.get(name)
+            if entry is not None:
+                with entry["lock"]:
+                    if entry["stop"].is_set():
+                        if entry["thread"].is_alive():
+                            raise RuntimeError(f"watch '{name}' still stopping")
+                    elif entry["thread"].is_alive() and not entry["retiring"]:
+                        entry["generation"] += 1
+                        entry["interval_ms"] = effective_interval
+                        entry["deadline"] = time.monotonic() + duration_ms / 1000.0
+                        entry["sample_fn"] = sample
+                        entry["on_sample"] = emit
+                        entry["wake"].set()
+                        on_accept(effective_interval)
+                        return effective_interval
+
+            new_entry = {
+                "thread": None,
+                "stop": threading.Event(),
+                "wake": threading.Event(),
+                "lock": threading.Lock(),
+                "generation": 1,
+                "retiring": False,
+                "interval_ms": effective_interval,
+                "deadline": time.monotonic() + duration_ms / 1000.0,
+                "sample_fn": sample,
+                "on_sample": emit,
+            }
+            thread = threading.Thread(
+                target=self._watch_loop,
+                args=(name, new_entry),
+                daemon=True,
+            )
+            new_entry["thread"] = thread
+            with self._watch_lock:
+                current = self._watches.get(name)
+                if current is not None and current["thread"].is_alive():
+                    if current["stop"].is_set():
+                        raise RuntimeError(f"watch '{name}' still stopping")
+                    if not current["retiring"]:
+                        continue
+                self._watches[name] = new_entry
+                on_accept(effective_interval)
+                thread.start()
+            return effective_interval
+
+    def _stop_watch(self, name, timeout_sec=5.5):
+        with self._watch_lock:
+            entry = self._watches.get(name)
+        if entry is None:
+            return True
+        entry["stop"].set()
+        entry["wake"].set()
+        thread = entry["thread"]
+        deadline = time.monotonic() + timeout_sec
+        while thread.is_alive() and time.monotonic() < deadline:
+            thread.join(timeout=0.05)
+        if thread.is_alive():
+            return False
+        with self._watch_lock:
+            if self._watches.get(name) is entry:
+                self._watches.pop(name, None)
+        return True
+
+    def _stop_all_watches(self, timeout_sec=3.0):
+        with self._watch_lock:
+            entries = list(self._watches.values())
+        for entry in entries:
+            entry["stop"].set()
+            entry["wake"].set()
+        deadline = time.monotonic() + timeout_sec
+        for entry in entries:
+            thread = entry["thread"]
+            while thread.is_alive() and time.monotonic() < deadline:
+                thread.join(timeout=0.05)
+
+    def _watch_loop(self, name, entry):
+        stop_evt = entry["stop"]
+        wake_evt = entry["wake"]
+        cfg_lock = entry["lock"]
+        try:
+            while not stop_evt.is_set():
+                with cfg_lock:
+                    wake_evt.clear()
+                    if stop_evt.is_set():
+                        break
+                    generation = entry["generation"]
+                    interval_ms = entry["interval_ms"]
+                    deadline = entry["deadline"]
+                    sample_fn = entry["sample_fn"]
+                    on_sample = entry["on_sample"]
+                    if time.monotonic() >= deadline:
+                        entry["retiring"] = True
+                        break
+                try:
+                    val = sample_fn()
+                    with cfg_lock:
+                        if stop_evt.is_set() or generation != entry["generation"]:
+                            continue
+                        if time.monotonic() >= deadline:
+                            entry["retiring"] = True
+                            break
+                        on_sample(name, val)
+                except Exception:
+                    with cfg_lock:
+                        stale = stop_evt.is_set() or generation != entry["generation"]
+                        if not stale:
+                            entry["retiring"] = True
+                    if stale:
+                        continue
+                    break
+                with cfg_lock:
+                    if stop_evt.is_set():
+                        break
+                    if generation != entry["generation"]:
+                        continue
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        entry["retiring"] = True
+                        break
+                    wait_s = min(interval_ms / 1000.0, remaining)
+                wake_evt.wait(wait_s)
+        finally:
+            with cfg_lock:
+                entry["retiring"] = True
+            with self._watch_lock:
+                if self._watches.get(name) is entry:
+                    self._watches.pop(name, None)
 
     # --- protocol (mirrors obs/obs_mycro.py) ---
 
@@ -169,6 +323,7 @@ class ReferenceProvider:
 
     def _serve(self):
         s = socket.create_connection((self.host, self.port), timeout=5)
+        self._socket = s
         try:
             s.settimeout(1.0)
             digest = hashlib.sha256(self.token.encode()).digest()
@@ -231,48 +386,23 @@ class ReferenceProvider:
                         self._send_env(s, "error", rid,
                                        {"code": "out_of_bounds", "message": "point outside frame bounds"})
                         continue
-                    prev_stop = self._watches.pop(name, None)
-                    if prev_stop:
-                        prev_stop.set()
-                    effective_interval = max(interval_ms, 20)
-                    watch_stop = threading.Event()
-                    self._watches[name] = watch_stop
-
-                    def _watch_loop(w_name, wx, wy, w_interval, w_duration, w_stop):
-                        deadline = time.monotonic() + w_duration / 1000.0
-                        period_s = w_interval / 1000.0
-                        while not self._stop.is_set() and not w_stop.is_set():
-                            if time.monotonic() >= deadline:
-                                break
-                            w_w0, w_h0, w_rgb = self._frame
-                            if 0 <= wx < w_w0 and 0 <= wy < w_h0:
-                                idx = (wy * w_w0 + wx) * 3
-                                val = (w_rgb[idx] << 16) | (w_rgb[idx + 1] << 8) | w_rgb[idx + 2]
-                                try:
-                                    self._send_env(s, "event.push", 0, {
-                                        "name": "img." + w_name,
-                                        "fields": {"val": val},
-                                    })
-                                except Exception:
-                                    break
-                            if w_stop.wait(period_s):
-                                break
-                        self._watches.pop(w_name, None)
-
-                    self._send_env(s, "img.watch.ok", rid, {"interval_ms": effective_interval})
-                    threading.Thread(
-                        target=_watch_loop,
-                        args=(name, x, y, effective_interval, duration_ms, watch_stop),
-                        daemon=True
-                    ).start()
+                    effective_interval = self._start_watch(
+                        s, name, x, y, interval_ms, duration_ms,
+                        lambda effective: self._send_env(
+                            s, "img.watch.ok", rid, {"interval_ms": effective}
+                        ),
+                    )
                     continue
 
                 if t == "img.unwatch":
                     name = p.get("name")
-                    watch_stop = self._watches.pop(name, None)
-                    if watch_stop:
-                        watch_stop.set()
-                    self._send_env(s, "img.unwatch.ok", rid, {})
+                    if self._stop_watch(name):
+                        self._send_env(s, "img.unwatch.ok", rid, {})
+                    else:
+                        self._send_env(s, "error", rid, {
+                            "code": "timeout",
+                            "message": f"watch '{name}' failed to stop within deadline",
+                        })
                     continue
 
                 if t != "img.frame":
@@ -351,6 +481,9 @@ class ReferenceProvider:
                                    {"code": "field", "message": str(e)})
         finally:
             s.close()
+            self._stop_all_watches()
+            if self._socket is s:
+                self._socket = None
 
     def _preview_worker(self, s_listen, w_frame, h_frame, rgb_frame, exp_sig, exp_nonce):
         deadline = time.monotonic() + 5.0

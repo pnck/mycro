@@ -76,6 +76,13 @@ def _recv_json(sock):
         raise AssertionError("unexpected binary frame")
 
 
+def _recv_response(sock, rid):
+    while True:
+        env = _recv_json(sock)
+        if env.get("id") == rid:
+            return env
+
+
 def _recv_stream(sock):
     kind, payload = _recv_frame(sock)
     assert kind == 0
@@ -283,11 +290,53 @@ def test_reference_provider_watch_unwatch_lifecycle():
 
         # 4. Unwatch
         p._send_env(device_sock, "img.unwatch", 4, {"name": "test"})
-        reply = _recv_json(device_sock)
+        reply = _recv_response(device_sock, 4)
         assert reply["type"] == "img.unwatch.ok"
     finally:
         device_sock.close()
         p._stop.set()
+        thread.join(timeout=3)
+        rp.socket.create_connection = original_create_connection
+    assert not thread.is_alive()
+
+
+def test_reference_provider_duplicate_watch_reuses_worker_and_unwatch_is_final():
+    provider_sock, device_sock = socket.socketpair()
+    device_sock.settimeout(2)
+    original_create_connection = rp.socket.create_connection
+    rp.socket.create_connection = lambda *args, **kwargs: provider_sock
+    p = rp.ReferenceProvider("127.0.0.1", 7373, "")
+    thread = threading.Thread(target=p._run, daemon=True)
+    try:
+        thread.start()
+        _recv_exact(device_sock, len(rp.AUTH_MAGIC) + 33)
+        assert _recv_json(device_sock)["type"] == "img.hello"
+
+        p._send_env(device_sock, "img.watch", 10, {
+            "name": "s1", "x": 10, "y": 8, "interval_ms": 30, "duration_ms": 1000,
+        })
+        assert _recv_response(device_sock, 10)["type"] == "img.watch.ok"
+        entry = p._watches["s1"]
+        worker = entry["thread"]
+
+        p._send_env(device_sock, "img.watch", 11, {
+            "name": "s1", "x": 11, "y": 8, "interval_ms": 40, "duration_ms": 2000,
+        })
+        assert _recv_response(device_sock, 11)["type"] == "img.watch.ok"
+        assert p._watches["s1"] is entry
+        assert entry["thread"] is worker
+        assert len(p._watches) == 1
+
+        p._send_env(device_sock, "img.unwatch", 12, {"name": "s1"})
+        assert _recv_response(device_sock, 12)["type"] == "img.unwatch.ok"
+        assert not worker.is_alive()
+        assert "s1" not in p._watches
+        device_sock.settimeout(0.12)
+        with pytest.raises(socket.timeout):
+            _recv_json(device_sock)
+    finally:
+        device_sock.close()
+        p.stop()
         thread.join(timeout=3)
         rp.socket.create_connection = original_create_connection
     assert not thread.is_alive()

@@ -948,6 +948,50 @@ def test_vision(ctx):
             raise AssertionError(f"telemetry flow failed: {tags}")
         details.append("telemetry ok")
 
+        # 7b. Duplicate watch refreshes the lease; natural expiry retires both sides
+        lease_watch = (
+            "\\#!syntax: free\n"
+            "\\use{img}\\use{net}\n"
+            "\\call{img.watch}{lease_watch}{10,8}{50ms,200ms}\n"
+            "\\call{img.watch}{lease_watch}{10,8}{50ms,800ms}\n"
+            "\\delay{300ms}\n"
+            "\\wait[0]{$slot.img.lease_watch.val}\n"
+            "\\wait[1s]{$slot.img.lease_watch.val}\n"
+            "\\if{ {$timeout, =, 0} }{\\call{net.send}{watch_refresh_ok}}"
+            "{\\call{net.send}{watch_refresh_failed}}\n"
+            "\\delay{850ms}\n"
+            "\\call{net.send}{watch_lease_expired}\n"
+            "\\delay{300ms}\n"
+        )
+        c = ctx.client()
+        lease_res = None
+        try:
+            c.call("macro.submit", {"code": lease_watch})
+            refreshed = recv_until(
+                c, lambda e: e.get("type") == "net.msg", timeout=5
+            )
+            if not refreshed or refreshed["payload"].get("tag") != "watch_refresh_ok":
+                raise AssertionError(f"duplicate watch lease refresh failed: {refreshed}")
+            expired = recv_tag(c, "watch_lease_expired", timeout=5)
+            if not expired:
+                raise AssertionError("watch lease expiry checkpoint missing")
+            late = c.call("event.push", {
+                "name": "img.lease_watch", "fields": {"val": 0},
+            })
+            if not (late.get("type") == "error"
+                    and late.get("payload", {}).get("code") == "unknown_signal"):
+                raise AssertionError(f"expired watch still admits pushes: {late}")
+            _, lease_res = collect_tag_sequence(c, timeout=5)
+            if not (lease_res and lease_res["payload"]["state"] == "done"):
+                raise AssertionError(f"lease macro did not finish: {lease_res}")
+            if "lease_watch" in ctx.provider._watches:
+                raise AssertionError("provider retained expired lease worker")
+        finally:
+            if lease_res is None:
+                abort_and_drain(c)
+            c.close()
+        details.append("watch refresh + lease expiry ok")
+
         # 8. Direct preview /img/capture and HMAC security
         def req_preview(method):
             req = urllib.request.Request(f"http://{ctx.host}/img/capture", method=method)
