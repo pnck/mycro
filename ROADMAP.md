@@ -77,6 +77,12 @@ The zero-install authoring, telemetry, and diagnostics environment served direct
 
 The next phase of MYCRO advances the boundary between host environments and microcontroller execution:
 
+- **DSL v5**:
+  - Real-time execution logs in Web Studio with bounded delivery and no interference with hardware timing.
+  - Compile-time repetition through `\expand{N}{<BLOCK>}`, while keeping the emitted runtime program flat.
+  - Monotonic checkpoints and elapsed-time reads for profiling, deadlines, and hardware timing logic.
+  - Structured interruption and transfer for direct hardware state-machine exits.
+  - Resumable program chaining with persistent external slot and peripheral state, plus direct loading and saving of executable bytecode.
 - **Host-Device Interoperability & Vision Feedback**:
   - Advancing bidirectional perception mechanisms between the host operating environment and MYCRO (including closed-loop visual feedback and image recognition workflows).
   - Streamlining low-latency telemetry channels for reactive event delivery.
