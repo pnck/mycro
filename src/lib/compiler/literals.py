@@ -310,7 +310,7 @@ class LiteralMixin:
         name = self._read_braces()
         if name is None:
             raise MacroError("pixelrect requires {name}", pos)
-        name = name.strip().lower()
+        name = name.strip()
         self._validate_var_name(name, pos)
 
         self._skip_absorbed_whitespace()

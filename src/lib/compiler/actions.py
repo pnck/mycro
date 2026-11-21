@@ -184,7 +184,7 @@ class ActionsMixin:
         name = self._read_braces()
         if name is None:
             raise MacroError("set requires {name}", self._pos)
-        name = name.strip().lower()
+        name = name.strip()
         self._validate_var_name(name, pos)
 
         arg = self._read_braces()
@@ -210,7 +210,7 @@ class ActionsMixin:
         name = self._read_braces()
         if name is None:
             raise MacroError("add requires {name}", self._pos)
-        name = name.strip().lower()
+        name = name.strip()
         if "." in name:
             raise MacroError("add: cannot modify a signal slot", pos)
         if name in ("ret", "timeout", "err"):
@@ -233,7 +233,7 @@ class ActionsMixin:
         name = self._read_braces()
         if name is None:
             raise MacroError("sub requires {name}", self._pos)
-        name = name.strip().lower()
+        name = name.strip()
         if "." in name:
             raise MacroError("sub: cannot modify a signal slot", pos)
         if name in ("ret", "timeout", "err"):

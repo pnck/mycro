@@ -114,6 +114,38 @@ def test_reg_allocation_order():
     ])
 
 
+def test_identifier_case_sensitivity_and_allocation():
+    compile_ok("\\set{AA}{1}\\if{{$AA,=,1}}{}")
+    compile_ok("\\set{A_A}{1}\\if{{$A_A,=,1}}{}")
+    compile_ok("\\set{A_1A}{1}\\if{{$A_1A,=,1}}{}")
+    assert "Undefined variable" in compile_err("\\set{AA}{1}\\if{{$aa,=,1}}{}")
+    assert "Undefined variable" in compile_err("\\set{aa}{1}\\if{{$AA,=,1}}{}")
+    assert "Undefined variable" in compile_err("\\set{AA}{1}\\if{{$Aa,=,1}}{}")
+
+    m = Macro(MockHID())
+    bc, err = m.compile(
+        "\\set{AA}{2}\\add{AA}{1}\\sub{AA}{1}"
+        "\\set{aa}{9}\\if{{$AA,=,2}}{}"
+    )
+    assert err is None
+    assert bc is not None
+    assert m.compiler._vars["AA"] != m.compiler._vars["aa"]
+
+    from runtime import Runtime
+
+    rt = Runtime()
+    rt.register_ns("img", {})
+    m = Macro(MockHID(), rt)
+    bc, err = m.compile(
+        "\\use{img}"
+        "\\pixelrect{AA}{\\row{0}}"
+        "\\pixelrect{aa}{\\row{0}}"
+    )
+    assert err is None
+    assert bc is not None
+    assert m.compiler._vars["AA"] != m.compiler._vars["aa"]
+
+
 # --- typed operand lowering ---
 
 def test_typed_move():
