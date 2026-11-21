@@ -133,12 +133,16 @@ def test_capture_engine_source_resolution_and_retry(monkeypatch):
     monkeypatch.setattr(ObsWsConfig, "get_configured_script_source", classmethod(lambda cls: ""))
     screenshot_attempts = [0]
     connect_count = [0]
+    call_deadlines = []
+    connect_deadlines = []
 
     class MockWs:
-        def connect(self, timeout=3.0):
+        def connect(self, timeout=3.0, deadline=None):
             connect_count[0] += 1
+            connect_deadlines.append(deadline)
 
-        def call(self, req_type, data=None):
+        def call(self, req_type, data=None, deadline=None):
+            call_deadlines.append((req_type, deadline))
             if req_type == "GetCurrentProgramScene":
                 return {"currentProgramSceneName": "GameplayScene"}
             if req_type == "GetSourceScreenshot":
@@ -153,18 +157,42 @@ def test_capture_engine_source_resolution_and_retry(monkeypatch):
 
     ws = MockWs()
     ce = CaptureEngine(ws_client=ws, default_source="")
-    assert ce.resolve_source() == "GameplayScene"
+    resolve_deadline = time.monotonic() + 5
+    assert ce.resolve_source(deadline=resolve_deadline) == "GameplayScene"
+    assert all(deadline == resolve_deadline for _, deadline in call_deadlines)
 
     # Screenshot retry: transport error triggers exactly 1 reconnect attempt
-    res = ce._fetch_screenshot_bytes("bmp")
+    fetch_deadline = time.monotonic() + 5
+    res = ce._fetch_screenshot_bytes("bmp", deadline=fetch_deadline)
     assert res.startswith(b"BM")
     assert connect_count[0] == 1
+    screenshot_deadlines = [d for req, d in call_deadlines if req == "GetSourceScreenshot"]
+    assert screenshot_deadlines == [fetch_deadline, fetch_deadline]
+    assert connect_deadlines == [fetch_deadline]
 
     # Screenshot business error: MUST NOT attempt reconnect
     ce_biz = CaptureEngine(ws_client=ws, default_source="InvalidScene")
     with pytest.raises(ObsWsBusinessError):
         ce_biz._fetch_screenshot_bytes("bmp")
     assert connect_count[0] == 1
+
+
+def test_capture_retry_does_not_start_after_deadline():
+    class ExpiredWs:
+        def __init__(self):
+            self.reconnects = 0
+
+        def call(self, req_type, data=None, deadline=None):
+            raise ObsWsTransportError("expired")
+
+        def connect(self, timeout=3.0, deadline=None):
+            self.reconnects += 1
+
+    ws = ExpiredWs()
+    ce = CaptureEngine(ws_client=ws, default_source="scene")
+    with pytest.raises(ObsWsTransportError):
+        ce._fetch_screenshot_bytes("bmp", deadline=time.monotonic() - 1)
+    assert ws.reconnects == 0
 
 
 # ==============================================================================
@@ -327,14 +355,12 @@ def test_telemetry_sampler_lifecycle():
     assert len(dispatched) == 0
 
 
-def test_unwatch_stop_budget_reserves_device_response_time():
+def test_telemetry_stop_uses_bounded_join_within_device_budget():
     assert 0 < obs_mycro.UNWATCH_STOP_TIMEOUT_S < obs_mycro.DEVICE_EXT_TIMEOUT_MS / 1000.0
     assert obs_mycro.UNWATCH_STOP_TIMEOUT_S == (
         obs_mycro.DEVICE_EXT_TIMEOUT_MS / 1000.0 - obs_mycro.WIRE_IO_TIMEOUT_S
     )
 
-
-def test_telemetry_stop_uses_single_bounded_join():
     sampler = TelemetrySampler()
 
     class FakeThread:
@@ -361,7 +387,7 @@ def test_telemetry_stop_uses_single_bounded_join():
     assert 0 <= thread.join_calls[0] <= 1.0
 
 
-def test_telemetry_refresh_reuses_worker_and_discards_stale_capture():
+def test_telemetry_refresh_lifecycle_reuse_and_retirement():
     sampler = TelemetrySampler()
     old_started = threading.Event()
     release_old = threading.Event()
@@ -396,6 +422,25 @@ def test_telemetry_refresh_reuses_worker_and_discards_stale_capture():
         release_old.set()
         assert new_sampled.wait(timeout=1.0)
         assert samples == [2]
+        assert sampler.stop_watch("s1", timeout_sec=1.0) is True
+
+        class ExitingThread:
+            def is_alive(self):
+                return True
+
+        old_thread = ExitingThread()
+        old_entry = {
+            "thread": old_thread,
+            "stop": threading.Event(),
+            "lock": threading.Lock(),
+            "retiring": True,
+        }
+        sampler._watches["s1"] = old_entry
+        sampler.start_watch("s1", 20, 1000, lambda: 2, lambda n, v: None)
+        new_entry = sampler._watches["s1"]
+        assert new_entry is not old_entry
+        assert new_entry["thread"] is not old_thread
+        assert not new_entry["retiring"]
     finally:
         release_old.set()
         sampler.stop_all()
@@ -463,79 +508,41 @@ def test_telemetry_lease_expires_promptly_and_suppresses_late_capture():
         sampler.stop_all()
 
 
-def test_telemetry_stop_timeout_keeps_terminal_worker_tracked():
+@pytest.mark.parametrize("block_target", ["sample", "emit"])
+def test_telemetry_stop_timeout_when_worker_blocked(block_target):
     sampler = TelemetrySampler()
-    capture_started = threading.Event()
-    release_capture = threading.Event()
+    blocked_started = threading.Event()
+    release_blocked = threading.Event()
 
     def blocked_sample():
-        capture_started.set()
-        release_capture.wait(timeout=2.0)
+        blocked_started.set()
+        release_blocked.wait(timeout=2.0)
         return 1
 
+    def blocked_emit(name, val):
+        blocked_started.set()
+        release_blocked.wait(timeout=2.0)
+
+    sample_fn = blocked_sample if block_target == "sample" else lambda: 1
+    on_sample = blocked_emit if block_target == "emit" else lambda n, v: None
+
     try:
-        sampler.start_watch("blocked", 20, 1000, blocked_sample, lambda n, v: None)
-        assert capture_started.wait(timeout=1.0)
+        sampler.start_watch("blocked", 20, 1000, sample_fn, on_sample)
+        assert blocked_started.wait(timeout=1.0)
         entry = sampler._watches["blocked"]
+        started = time.monotonic()
         assert sampler.stop_watch("blocked", timeout_sec=0.01) is False
+        assert time.monotonic() - started < 0.5
         assert sampler._watches["blocked"] is entry
         assert entry["stop"].is_set()
-        with pytest.raises(RuntimeError, match="still stopping"):
-            sampler.start_watch("blocked", 20, 1000, lambda: 2, lambda n, v: None)
-        release_capture.set()
+        if block_target == "sample":
+            with pytest.raises(RuntimeError, match="still stopping"):
+                sampler.start_watch("blocked", 20, 1000, lambda: 2, lambda n, v: None)
+        release_blocked.set()
         assert sampler.stop_watch("blocked", timeout_sec=1.0) is True
         assert "blocked" not in sampler._watches
     finally:
-        release_capture.set()
-        sampler.stop_all()
-
-
-def test_telemetry_stop_timeout_covers_blocked_emission():
-    sampler = TelemetrySampler()
-    emission_started = threading.Event()
-    release_emission = threading.Event()
-
-    def blocked_emit(name, val):
-        emission_started.set()
-        release_emission.wait(timeout=2.0)
-
-    try:
-        sampler.start_watch("emit", 20, 1000, lambda: 1, blocked_emit)
-        assert emission_started.wait(timeout=1.0)
-        entry = sampler._watches["emit"]
-        started = time.monotonic()
-        assert sampler.stop_watch("emit", timeout_sec=0.01) is False
-        assert time.monotonic() - started < 0.5
-        assert entry["stop"].is_set()
-        release_emission.set()
-        assert sampler.stop_watch("emit", timeout_sec=1.0) is True
-    finally:
-        release_emission.set()
-        sampler.stop_all()
-
-
-def test_telemetry_refresh_replaces_retiring_worker_instead_of_reviving_it():
-    sampler = TelemetrySampler()
-
-    class ExitingThread:
-        def is_alive(self):
-            return True
-
-    old_thread = ExitingThread()
-    old_entry = {
-        "thread": old_thread,
-        "stop": threading.Event(),
-        "lock": threading.Lock(),
-        "retiring": True,
-    }
-    sampler._watches["s1"] = old_entry
-    try:
-        sampler.start_watch("s1", 20, 1000, lambda: 2, lambda n, v: None)
-        new_entry = sampler._watches["s1"]
-        assert new_entry is not old_entry
-        assert new_entry["thread"] is not old_thread
-        assert not new_entry["retiring"]
-    finally:
+        release_blocked.set()
         sampler.stop_all()
 
 
@@ -588,6 +595,9 @@ def test_wire_send_timeout_disconnects_desynchronized_stream():
         def sendall(self, data):
             raise socket.timeout("blocked write")
 
+        def settimeout(self, value):
+            pass
+
         def shutdown(self, how):
             pass
 
@@ -629,6 +639,27 @@ def test_wire_recv_exact_honors_stop_event_during_timeout():
     assert stopped.is_set()
 
 
+def test_obs_rpc_deadline_includes_lock_wait():
+    client = ObsWsClient()
+    client._lock.acquire()
+    errors = []
+
+    def call_with_deadline():
+        try:
+            client.call("GetVideoSettings", deadline=time.monotonic() + 0.02)
+        except Exception as e:
+            errors.append(e)
+
+    thread = threading.Thread(target=call_with_deadline, daemon=True)
+    thread.start()
+    thread.join(timeout=1.0)
+    client._lock.release()
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], ObsWsTransportError)
+    assert "waiting for another call" in str(errors[0])
+
+
 # ==============================================================================
 # 5. ProtoActionRouter Tests
 # ==============================================================================
@@ -637,6 +668,8 @@ class MockWire:
     def __init__(self):
         self.sent_envelopes = []
         self.sent_chunks = []
+        self.envelope_deadlines = []
+        self.chunk_deadlines = []
         self._action_handler = None
         self._connect_handler = None
         self._stream_id = 0
@@ -652,14 +685,16 @@ class MockWire:
         self._stream_id += 1
         return self._stream_id
 
-    def send_envelope(self, env):
+    def send_envelope(self, env, deadline=None):
         self.sent_envelopes.append(env)
+        self.envelope_deadlines.append(deadline)
 
     def disconnect(self):
         self.disconnected = True
 
-    def send_chunks(self, sid, data):
+    def send_chunks(self, sid, data, deadline=None):
         self.sent_chunks.append((sid, data))
+        self.chunk_deadlines.append(deadline)
 
 
 def test_proto_action_router_dispatch_and_error_defense():
@@ -667,7 +702,7 @@ def test_proto_action_router_dispatch_and_error_defense():
     bmp_bytes = make_test_bmp(4, 3, pixels)
 
     class StubCapture:
-        def get_raw_bmp(self):
+        def get_raw_bmp(self, deadline=None):
             return memoryview(bmp_bytes)
         def parse_bmp_header(self, mv):
             return (54, 4, 3, 12)
@@ -731,6 +766,30 @@ def test_proto_action_router_dispatch_and_error_defense():
     assert err_unwatch["id"] == 51
     assert err_unwatch["payload"]["code"] == "timeout"
     assert not wire.disconnected
+
+
+def test_router_frame_reserves_wire_response_from_request_deadline():
+    bmp = make_test_bmp(1, 1, {(0, 0): (1, 2, 3)})
+
+    class Capture:
+        deadline = None
+
+        def get_raw_bmp(self, deadline=None):
+            self.deadline = deadline
+            return memoryview(bmp)
+
+        def parse_bmp_header(self, mv):
+            return (54, 1, 1, 4)
+
+        def extract_points(self, mv, points):
+            return [0x010203]
+
+    capture = Capture()
+    wire = MockWire()
+    router = ProtoActionRouter(capture=capture, preview=None, sampler=TelemetrySampler(), wire=wire)
+    router.dispatch_action({"type": "img.frame", "id": 55, "payload": {"points": [[0, 0]]}})
+    response_deadline = wire.envelope_deadlines[-1]
+    assert capture.deadline == response_deadline - obs_mycro.WIRE_IO_TIMEOUT_S
 
 
 @pytest.mark.parametrize("missing", ["interval_ms", "duration_ms"])
@@ -914,3 +973,68 @@ def test_obs_ws_identify_event_subscriptions_zero(monkeypatch):
     d = received_identify.get("d", {})
     assert d.get("rpcVersion") == 1
     assert d.get("eventSubscriptions") == 0
+
+
+def test_provider_worker_shutdown_deadline_and_idempotence(monkeypatch):
+    worker = obs_mycro.ProviderWorker()
+
+    class FakeThread:
+        def __init__(self):
+            self.join_timeouts = []
+            self.alive = True
+
+        def join(self, timeout):
+            self.join_timeouts.append(timeout)
+
+        def is_alive(self):
+            return self.alive
+
+    class StopBudget:
+        def __init__(self):
+            self.timeouts = []
+
+        def stop_all(self, timeout_sec):
+            self.timeouts.append(timeout_sec)
+
+        def stop(self, timeout_sec):
+            self.timeouts.append(timeout_sec)
+
+    thread = FakeThread()
+    sampler = StopBudget()
+    preview = StopBudget()
+    worker._thread = thread
+    worker.sampler = sampler
+    worker.preview = preview
+    times = iter([
+        100.0, 100.0, 100.5, 100.5,
+        101.0, 101.0, 101.0,
+        103.0, 103.0, 103.0,
+        103.0, 103.0, 103.0,
+    ])
+    monkeypatch.setattr(obs_mycro.time, "monotonic", lambda: next(times))
+
+    worker.stop()
+    assert worker._shutdown_deadline == 102.0
+    assert thread.join_timeouts == [2.0]
+    assert sampler.timeouts == [1.5]
+    assert preview.timeouts == [1.5]
+
+    worker.stop()
+    assert worker._shutdown_deadline == 102.0
+    assert thread.join_timeouts == [2.0, 1.0]
+    assert sampler.timeouts == [1.5, 1.0]
+    assert preview.timeouts == [1.5, 1.0]
+
+    worker.stop()
+    assert worker._shutdown_deadline == 102.0
+    assert thread.join_timeouts == [2.0, 1.0, 0]
+    assert sampler.timeouts == [1.5, 1.0, 0]
+    assert preview.timeouts == [1.5, 1.0, 0]
+
+    thread.alive = False
+    worker.stop()
+    assert worker._thread is None
+    assert worker._shutdown_deadline is None
+    assert thread.join_timeouts == [2.0, 1.0, 0, 0]
+    assert sampler.timeouts == [1.5, 1.0, 0, 0]
+    assert preview.timeouts == [1.5, 1.0, 0, 0]

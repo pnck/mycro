@@ -52,7 +52,8 @@ UI_CONNECT_LATCH_S = 1.2
 # Mirror of spec/vm.md EXT_TIMEOUT_MS. Reserve one bounded wire write for the
 # unwatch response instead of extending the requester's deadline arbitrarily.
 DEVICE_EXT_TIMEOUT_MS = 5000
-UNWATCH_STOP_TIMEOUT_S = DEVICE_EXT_TIMEOUT_MS / 1000.0 - WIRE_IO_TIMEOUT_S
+DEVICE_WORK_TIMEOUT_S = DEVICE_EXT_TIMEOUT_MS / 1000.0 - WIRE_IO_TIMEOUT_S
+UNWATCH_STOP_TIMEOUT_S = DEVICE_WORK_TIMEOUT_S
 
 # Buffers, Bounds and Limits
 MAX_CHUNK_PAYLOAD = 8188  # 8192 bytes protocol cap minus 4-byte (<HH) stream header
@@ -91,6 +92,13 @@ def log_msg(level: int, msg: str) -> None:
         obs.script_log(level, msg)
     else:
         print(f"[MYCRO-OBS] {msg}")
+
+
+def _remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Operation deadline expired")
+    return remaining
 
 
 # ==============================================================================
@@ -201,12 +209,14 @@ class ObsWsClient:
         self._sock_lock = threading.Lock()
         self._req_counter = 0
 
-    def connect(self, timeout: float = RPC_HANDSHAKE_TIMEOUT_S) -> None:
+    def connect(self, timeout: float = RPC_HANDSHAKE_TIMEOUT_S, deadline: Optional[float] = None) -> None:
         """Establishes TCP connection, performs RFC 6455 handshake, and authenticates."""
+        if deadline is None:
+            deadline = time.monotonic() + timeout
         self.disconnect()
         try:
-            s = socket.create_connection((self.host, self.port), timeout=timeout)
-            s.settimeout(timeout)
+            s = socket.create_connection((self.host, self.port), timeout=min(timeout, _remaining(deadline)))
+            s.settimeout(_remaining(deadline))
             rf = s.makefile("rb", buffering=IO_BUFFER_SIZE)
             with self._sock_lock:
                 self.sock = s
@@ -226,9 +236,11 @@ class ObsWsClient:
                 f"Sec-WebSocket-Key: {sec_key}\r\n"
                 f"Sec-WebSocket-Version: 13\r\n\r\n"
             )
+            s.settimeout(_remaining(deadline))
             s.sendall(req.encode("ascii"))
 
             # Stream-parse HTTP status line and headers line-by-line
+            s.settimeout(_remaining(deadline))
             status_line = rf.readline(MAX_HTTP_HEADER_BYTES)
             if not status_line:
                 raise ObsWsTransportError("Server closed connection during WebSocket handshake")
@@ -238,6 +250,7 @@ class ObsWsClient:
             headers: Dict[str, str] = {}
             total_header_bytes = len(status_line)
             while True:
+                s.settimeout(_remaining(deadline))
                 line = rf.readline(MAX_HTTP_HEADER_BYTES)
                 if not line:
                     raise ObsWsTransportError("Unexpected EOF while reading HTTP upgrade headers")
@@ -259,7 +272,7 @@ class ObsWsClient:
                 raise ObsWsTransportError("Invalid Sec-WebSocket-Accept returned from server")
 
             # obs-websocket v5 Identify negotiation
-            hello_env = self._recv_frame_json()
+            hello_env = self._recv_frame_json(deadline)
             if hello_env.get("op") != 0:
                 raise ObsWsTransportError(f"Expected op:0 (Hello), got {hello_env}")
 
@@ -281,8 +294,8 @@ class ObsWsClient:
                 ).decode("ascii")
                 identify_d["authentication"] = auth_hash
 
-            self._send_frame_json({"op": 1, "d": identify_d})
-            ident_env = self._recv_frame_json()
+            self._send_frame_json({"op": 1, "d": identify_d}, deadline)
+            ident_env = self._recv_frame_json(deadline)
             if ident_env.get("op") != 2:
                 raise ObsWsTransportError(f"Authentication failed: {ident_env}")
 
@@ -314,14 +327,23 @@ class ObsWsClient:
             except Exception:
                 pass
 
-    def call(self, request_type: str, request_data: Optional[dict] = None) -> dict:
-        """Sends an op:6 Request and awaits op:7 RequestResponse under strict deadline.
+    def call(
+        self,
+        request_type: str,
+        request_data: Optional[dict] = None,
+        deadline: Optional[float] = None,
+    ) -> dict:
+        """Run one RPC inside the caller's absolute deadline, including queueing."""
+        if deadline is None:
+            deadline = time.monotonic() + RPC_RESPONSE_TIMEOUT_S
+        try:
+            acquired = self._lock.acquire(timeout=_remaining(deadline))
+        except TimeoutError as e:
+            raise ObsWsTransportError(f"OBS RPC call '{request_type}' expired before queueing") from e
+        if not acquired:
+            raise ObsWsTransportError(f"OBS RPC call '{request_type}' expired waiting for another call")
 
-        Raises:
-            ObsWsBusinessError: If OBS returns requestStatus.result == false (connection preserved).
-            ObsWsTransportError: On timeout, framing corruption, EOF, or socket failure (connection closed).
-        """
-        with self._lock:
+        try:
             with self._sock_lock:
                 s = self.sock
                 rf = self.rfile
@@ -337,16 +359,10 @@ class ObsWsClient:
                         "requestId": req_id,
                         "requestData": request_data or {},
                     }
-                })
+                }, deadline)
 
-                # Enforce RPC-level deadline
-                deadline = time.monotonic() + RPC_RESPONSE_TIMEOUT_S
                 while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise TimeoutError(f"OBS RPC call '{request_type}' timed out after {RPC_RESPONSE_TIMEOUT_S}s")
-                    s.settimeout(remaining)
-                    env = self._recv_frame_json()
+                    env = self._recv_frame_json(deadline)
                     op = env.get("op")
                     if op == 7:  # RequestResponse
                         d = env.get("d", {})
@@ -365,8 +381,10 @@ class ObsWsClient:
                 # Transport-level failure: socket closed to prevent desync
                 self.disconnect()
                 raise ObsWsTransportError(f"Transport error during OBS RPC call '{request_type}': {e}") from e
+        finally:
+            self._lock.release()
 
-    def _send_frame(self, opcode: int, payload: bytes) -> None:
+    def _send_frame(self, opcode: int, payload: bytes, deadline: Optional[float] = None) -> None:
         """Packs and sends a client-to-server masked RFC 6455 frame."""
         with self._sock_lock:
             s = self.sock
@@ -386,41 +404,46 @@ class ObsWsClient:
             hdr = struct.pack("!BBQ", 0x80 | (opcode & 0x0F), b1, length) + mask
 
         masked_payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        if deadline is not None:
+            s.settimeout(_remaining(deadline))
         s.sendall(hdr + masked_payload)
 
-    def _send_frame_json(self, data: dict) -> None:
+    def _send_frame_json(self, data: dict, deadline: Optional[float] = None) -> None:
         raw = json.dumps(data, separators=(",", ":")).encode("utf-8")
-        self._send_frame(opcode=1, payload=raw)
+        self._send_frame(opcode=1, payload=raw, deadline=deadline)
 
-    def _recv_exact(self, n: int) -> bytes:
+    def _recv_exact(self, n: int, deadline: Optional[float] = None) -> bytes:
         with self._sock_lock:
             rf = self.rfile
+            s = self.sock
         if not rf:
             raise ObsWsTransportError("Stream not open")
+        if deadline is not None:
+            s.settimeout(_remaining(deadline))
         data = rf.read(n)
         if len(data) < n:
             raise ObsWsTransportError("Unexpected EOF reading WebSocket stream")
         return data
 
-    def _recv_frame(self) -> Tuple[int, bytes]:
+    def _recv_frame(self, deadline: Optional[float] = None) -> Tuple[int, bytes]:
         """Reads one complete RFC 6455 message, echoing Pings and joining fragments."""
         msg_payload = bytearray()
         initial_opcode = -1
 
         while True:
-            b0, b1 = struct.unpack("!BB", self._recv_exact(2))
+            b0, b1 = struct.unpack("!BB", self._recv_exact(2, deadline))
             fin = (b0 & 0x80) != 0
             opcode = b0 & 0x0F
             masked = (b1 & 0x80) != 0
             payload_len = b1 & 0x7F
 
             if payload_len == 126:
-                payload_len = struct.unpack("!H", self._recv_exact(2))[0]
+                payload_len = struct.unpack("!H", self._recv_exact(2, deadline))[0]
             elif payload_len == 127:
-                payload_len = struct.unpack("!Q", self._recv_exact(8))[0]
+                payload_len = struct.unpack("!Q", self._recv_exact(8, deadline))[0]
 
-            mask = self._recv_exact(4) if masked else b""
-            raw_payload = self._recv_exact(payload_len)
+            mask = self._recv_exact(4, deadline) if masked else b""
+            raw_payload = self._recv_exact(payload_len, deadline)
             if masked:
                 payload = bytes(b ^ mask[i % 4] for i, b in enumerate(raw_payload))
             else:
@@ -433,7 +456,7 @@ class ObsWsClient:
                         f"Malformed RFC 6455 control frame: opcode={opcode}, fin={fin}, len={payload_len}"
                     )
                 if opcode == 0x9:  # Ping: echo exact payload back in Pong
-                    self._send_frame(opcode=0xA, payload=payload)
+                    self._send_frame(opcode=0xA, payload=payload, deadline=deadline)
                     continue
                 if opcode == 0xA:  # Pong: ignore
                     continue
@@ -448,8 +471,8 @@ class ObsWsClient:
             if fin:
                 return initial_opcode, bytes(msg_payload)
 
-    def _recv_frame_json(self) -> dict:
-        opcode, payload = self._recv_frame()
+    def _recv_frame_json(self, deadline: Optional[float] = None) -> dict:
+        opcode, payload = self._recv_frame(deadline)
         if opcode != 1:  # Text frame
             raise ObsWsTransportError(f"Expected text frame (opcode 1), got {opcode}")
         try:
@@ -472,7 +495,7 @@ class CaptureEngine:
     def update_source(self, source_name: str) -> None:
         self.source_name = source_name
 
-    def resolve_source(self) -> str:
+    def resolve_source(self, deadline: Optional[float] = None) -> str:
         """Resolves target capture source.
 
         Priority order:
@@ -483,6 +506,8 @@ class CaptureEngine:
         5. First available screen/display capture input from GetInputList
         6. Active Program Scene or cached scene name
         """
+        if deadline is None:
+            deadline = time.monotonic() + RPC_RESPONSE_TIMEOUT_S
         if self.source_name:
             return self.source_name
 
@@ -496,10 +521,10 @@ class CaptureEngine:
             try:
                 scene_name = _cached_scene_name
                 if not scene_name:
-                    resp = self.ws.call("GetCurrentProgramScene")
+                    resp = self.ws.call("GetCurrentProgramScene", deadline=deadline)
                     scene_name = resp.get("currentProgramSceneName") or resp.get("sceneName", "")
                 if scene_name:
-                    items = self.ws.call("GetSceneItemList", {"sceneName": scene_name}).get("sceneItems", [])
+                    items = self.ws.call("GetSceneItemList", {"sceneName": scene_name}, deadline=deadline).get("sceneItems", [])
                     for it in items:
                         if not it.get("sceneItemEnabled", True):
                             continue
@@ -513,7 +538,7 @@ class CaptureEngine:
                 pass
 
             try:
-                inputs = self.ws.call("GetInputList").get("inputs", [])
+                inputs = self.ws.call("GetInputList", deadline=deadline).get("inputs", [])
                 for inp in inputs:
                     kind_lower = str(inp.get("inputKind", "")).lower()
                     if any(k in kind_lower for k in ("screen", "display", "window", "monitor")):
@@ -532,7 +557,7 @@ class CaptureEngine:
 
         return ""
 
-    def get_dimensions(self) -> Tuple[int, int]:
+    def get_dimensions(self, deadline: Optional[float] = None) -> Tuple[int, int]:
         """Returns (width, height) with 0ms overhead, never taking a screenshot."""
         target = self.source_name or _cached_scene_name
         if obs is not None and target:
@@ -546,7 +571,7 @@ class CaptureEngine:
                 finally:
                     obs.obs_source_release(source)
         try:
-            settings = self.ws.call("GetVideoSettings")
+            settings = self.ws.call("GetVideoSettings", deadline=deadline)
             return int(settings.get("baseWidth", 1920)), int(settings.get("baseHeight", 1080))
         except Exception:
             return 1920, 1080
@@ -557,8 +582,11 @@ class CaptureEngine:
         source_name: str = "",
         width: int = -1,
         height: int = -1,
+        deadline: Optional[float] = None,
     ) -> bytes:
-        source = source_name or self.resolve_source()
+        if deadline is None:
+            deadline = time.monotonic() + RPC_RESPONSE_TIMEOUT_S
+        source = source_name or self.resolve_source(deadline)
         if not source:
             raise ValueError("No capture source or active scene available in OBS")
         req_data: Dict[str, Any] = {
@@ -570,22 +598,32 @@ class CaptureEngine:
             req_data["imageHeight"] = height
 
         try:
-            resp = self.ws.call("GetSourceScreenshot", req_data)
+            resp = self.ws.call("GetSourceScreenshot", req_data, deadline=deadline)
         except ObsWsTransportError:
-            self.ws.connect(timeout=RPC_HANDSHAKE_TIMEOUT_S)
-            resp = self.ws.call("GetSourceScreenshot", req_data)
+            if time.monotonic() >= deadline:
+                raise
+            self.ws.connect(timeout=min(RPC_HANDSHAKE_TIMEOUT_S, _remaining(deadline)), deadline=deadline)
+            resp = self.ws.call("GetSourceScreenshot", req_data, deadline=deadline)
         uri = resp.get("imageData", "")
         comma = uri.find(",")
         raw_b64 = uri[comma + 1:] if comma != -1 else uri
         return base64.b64decode(raw_b64)
 
-    def get_raw_bmp(self, source_name: str = "", width: int = -1, height: int = -1) -> memoryview:
+    def get_raw_bmp(
+        self,
+        source_name: str = "",
+        width: int = -1,
+        height: int = -1,
+        deadline: Optional[float] = None,
+    ) -> memoryview:
         """Fetches uncompressed BMP via WebSocket in-memory with optional GPU scaling."""
-        return memoryview(self._fetch_screenshot_bytes("bmp", source_name=source_name, width=width, height=height))
+        return memoryview(self._fetch_screenshot_bytes(
+            "bmp", source_name=source_name, width=width, height=height, deadline=deadline,
+        ))
 
-    def get_raw_png(self, source_name: str = "") -> bytes:
+    def get_raw_png(self, source_name: str = "", deadline: Optional[float] = None) -> bytes:
         """Fetches pure-memory PNG bytes for direct browser preview."""
-        return self._fetch_screenshot_bytes("png", source_name=source_name)
+        return self._fetch_screenshot_bytes("png", source_name=source_name, deadline=deadline)
 
     @staticmethod
     def parse_bmp_header(bmp: memoryview) -> Tuple[int, int, int, int]:
@@ -677,9 +715,15 @@ class EphemeralHttpServer:
         nonce: str,
         data_producer: Callable[[], bytes],
         ttl_sec: float = PREVIEW_LEASE_TTL_S,
+        start_deadline: Optional[float] = None,
     ) -> int:
         """Starts an asyncio ephemeral HTTP server on 0.0.0.0:0 in a background thread."""
-        self.stop()
+        start_timeout = ttl_sec
+        if start_deadline is not None:
+            start_timeout = min(ttl_sec, max(0, start_deadline - time.monotonic()))
+        self.stop(timeout_sec=start_timeout if start_deadline is not None else WORKER_SHUTDOWN_TIMEOUT_S)
+        if self._thread and self._thread.is_alive():
+            raise RuntimeError("Previous preview server did not stop before replacement")
 
         port_holder: List[int] = []
         started_event = threading.Event()
@@ -713,9 +757,13 @@ class EphemeralHttpServer:
         self._thread = threading.Thread(target=_thread_target, daemon=True, name="mycro-ephemeral-async")
         self._thread.start()
 
-        if not started_event.wait(timeout=ttl_sec) or not port_holder:
+        wait_timeout = start_timeout
+        if start_deadline is not None:
+            wait_timeout = min(ttl_sec, max(0, start_deadline - time.monotonic()))
+        if not started_event.wait(timeout=wait_timeout) or not port_holder:
             self._stop_requested.set()
-            self.stop()
+            stop_timeout = start_timeout if start_deadline is None else max(0, start_deadline - time.monotonic())
+            self.stop(timeout_sec=stop_timeout)
             raise RuntimeError("Failed to start ephemeral HTTP server within its lease")
         return port_holder[0]
 
@@ -741,8 +789,16 @@ class EphemeralHttpServer:
         shutdown_event = asyncio.Event()
         self._shutdown_event = shutdown_event
         served = False
+        client_tasks = set()
+        loop = asyncio.get_running_loop()
+        lease_deadline = loop.time() + ttl_sec
 
-        async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+            task = asyncio.create_task(_process_client(reader, writer))
+            client_tasks.add(task)
+            task.add_done_callback(client_tasks.discard)
+
+        async def _process_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
             nonlocal served
             try:
                 req_data = bytearray()
@@ -854,7 +910,7 @@ class EphemeralHttpServer:
             wait_shutdown_task = asyncio.create_task(shutdown_event.wait())
             _, pending = await asyncio.wait(
                 [serve_task, wait_close_task, wait_shutdown_task],
-                timeout=ttl_sec,
+                timeout=max(0, lease_deadline - loop.time()),
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for p in pending:
@@ -865,17 +921,35 @@ class EphemeralHttpServer:
             server.close()
             await server.wait_closed()
             self._server = None
+            if close_after_serve.is_set() and not shutdown_event.is_set() and client_tasks:
+                # A fulfilled lease stops new accepts, not requests already in
+                # flight. Let them finish their 200/410 responses within the
+                # same lease; TTL or external shutdown still cancels immediately.
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*client_tasks),
+                        max(0, lease_deadline - loop.time()),
+                    )
+                except asyncio.TimeoutError:
+                    pass
+            for task in client_tasks:
+                task.cancel()
+            if client_tasks:
+                await asyncio.gather(*client_tasks, return_exceptions=True)
 
-    def stop(self) -> None:
+    def stop(self, timeout_sec: float = WORKER_SHUTDOWN_TIMEOUT_S) -> None:
+        deadline = time.monotonic() + timeout_sec
         with self._lock:
             self._stop_requested.set()
             loop = self._loop
             sht = self._shutdown_event
             if loop and loop.is_running() and sht:
                 loop.call_soon_threadsafe(sht.set)
-            if self._thread and self._thread.is_alive():
-                self._thread.join(timeout=WORKER_SHUTDOWN_TIMEOUT_S)
-            self._thread = None
+            thread = self._thread
+            if thread and thread.is_alive():
+                thread.join(timeout=max(0, deadline - time.monotonic()))
+            if thread and not thread.is_alive():
+                self._thread = None
             self._loop = None
             self._server = None
             self._shutdown_event = None
@@ -1139,7 +1213,27 @@ class WireSession:
             except Exception:
                 pass
 
-    def send_envelope(self, env: dict) -> None:
+    def _write_parts(self, parts, deadline: Optional[float]) -> None:
+        if deadline is None:
+            deadline = time.monotonic() + WIRE_IO_TIMEOUT_S
+        acquired = self._write_lock.acquire(timeout=_remaining(deadline))
+        if not acquired:
+            self.disconnect()
+            raise TimeoutError("Wire write deadline expired waiting for another writer")
+        try:
+            if not self.sock or self._closed:
+                raise ConnectionError("WireSession is disconnected")
+            for part in parts:
+                self.sock.settimeout(_remaining(deadline))
+                self.sock.sendall(part)
+        except Exception:
+            # A timeout after a partial write desynchronizes framing.
+            self.disconnect()
+            raise
+        finally:
+            self._write_lock.release()
+
+    def send_envelope(self, env: dict, deadline: Optional[float] = None) -> None:
         """Sends a kind-0 JSON envelope enforcing little-endian <I header and metadata."""
         env = dict(env)
         env["v"] = PROTO_VERSION
@@ -1148,35 +1242,23 @@ class WireSession:
 
         payload = json.dumps(env, separators=(",", ":")).encode("utf-8")
         header = struct.pack("<I", len(payload))
-        with self._write_lock:
-            if not self.sock or self._closed:
-                raise ConnectionError("WireSession is disconnected")
-            try:
-                self.sock.sendall(header + payload)
-            except Exception:
-                # A timeout after a partial write desynchronizes framing.
-                self.disconnect()
-                raise
+        self._write_parts((header + payload,), deadline)
 
-    def send_chunks(self, stream_id: int, data: bytes) -> None:
+    def send_chunks(self, stream_id: int, data: bytes, deadline: Optional[float] = None) -> None:
         """Streams kind-1 binary chunks with little-endian <I and strictly flags=0."""
         total_len = len(data)
         num_chunks = (total_len + MAX_CHUNK_PAYLOAD - 1) // MAX_CHUNK_PAYLOAD if total_len > 0 else 1
 
-        with self._write_lock:
-            if not self.sock or self._closed:
-                raise ConnectionError("WireSession is disconnected")
+        def parts():
             for idx in range(num_chunks):
                 start = idx * MAX_CHUNK_PAYLOAD
                 chunk_slice = data[start:start + MAX_CHUNK_PAYLOAD]
                 prefix = struct.pack("<HH", stream_id, 0)  # flags MUST strictly be 0
                 chunk_payload = prefix + chunk_slice
                 header = struct.pack("<I", 0x80000000 | len(chunk_payload))
-                try:
-                    self.sock.sendall(header + chunk_payload)
-                except Exception:
-                    self.disconnect()
-                    raise
+                yield header + chunk_payload
+
+        self._write_parts(parts(), deadline)
 
     def recv_loop(self, stop_evt: threading.Event) -> None:
         """Main read loop dispatching incoming envelopes to the Action Router."""
@@ -1260,14 +1342,14 @@ class ProtoActionRouter:
             "payload": {"caps": ["frame", "direct_preview"]},
         })
 
-    def _send_error(self, rid: int, code: str, message: str) -> None:
+    def _send_error(self, rid: int, code: str, message: str, deadline: Optional[float] = None) -> None:
         """Sends standardized protocol error envelope if request id is non-zero."""
         if rid != 0:
             self.wire.send_envelope({
                 "type": "error",
                 "id": rid,
                 "payload": {"code": code, "message": message},
-            })
+            }, deadline=deadline)
 
     def dispatch_action(self, env: dict) -> None:
         verb = env.get("type", "")
@@ -1280,11 +1362,12 @@ class ProtoActionRouter:
 
         handler = self._routes.get(verb)
         if handler:
+            request_deadline = time.monotonic() + DEVICE_EXT_TIMEOUT_MS / 1000.0
             try:
-                handler(rid, payload)
+                handler(rid, payload, request_deadline)
             except Exception as e:
                 log_msg(LOG_WARNING, f"mycro: action '{verb}' failed: {e}")
-                self._send_error(rid, "capture_failed", str(e))
+                self._send_error(rid, "capture_failed", str(e), deadline=request_deadline)
         else:
             self._send_error(rid, "unknown_type", f"Unhandled verb: {verb}")
 
@@ -1297,6 +1380,7 @@ class ProtoActionRouter:
         w: int,
         h: int,
         fmt: str,
+        deadline: float,
     ) -> None:
         sid = self.wire.next_stream_id()
         chunks = (len(data) + MAX_CHUNK_PAYLOAD - 1) // MAX_CHUNK_PAYLOAD if data else 1
@@ -1313,10 +1397,10 @@ class ProtoActionRouter:
                 "bytes": len(data),
                 "chunks": chunks,
             },
-        })
-        self.wire.send_chunks(sid, data)
+        }, deadline=deadline)
+        self.wire.send_chunks(sid, data, deadline=deadline)
 
-    def _handle_frame(self, rid: int, p: dict) -> None:
+    def _handle_frame(self, rid: int, p: dict, deadline: float) -> None:
         if self.capture is None:
             self._send_error(rid, "capture_failed", "Capture engine is not available")
             return
@@ -1341,14 +1425,14 @@ class ProtoActionRouter:
                 if not isinstance(pt, (list, tuple)) or len(pt) != 2 or not isinstance(pt[0], int) or not isinstance(pt[1], int):
                     self._send_error(rid, "field", f"Invalid point {pt}: must be (int, int)")
                     return
-            bmp = self.capture.get_raw_bmp()
+            bmp = self.capture.get_raw_bmp(deadline=deadline - WIRE_IO_TIMEOUT_S)
             _, src_w, src_h, _ = self.capture.parse_bmp_header(bmp)
             colors = self.capture.extract_points(bmp, pts)
             self.wire.send_envelope({
                 "type": "img.frame.ok",
                 "id": rid,
                 "payload": {"width": src_w, "height": abs(src_h), "colors": colors},
-            })
+            }, deadline=deadline)
         elif has_rect:
             r = p["rect"]
             if not isinstance(r, dict):
@@ -1362,30 +1446,31 @@ class ProtoActionRouter:
             if rw <= 0 or rh <= 0 or rw > MAX_RECT_EDGE or rh > MAX_RECT_EDGE:
                 self._send_error(rid, "field", f"Rect edge exceeds {MAX_RECT_EDGE}")
                 return
-            bmp = self.capture.get_raw_bmp()
+            bmp = self.capture.get_raw_bmp(deadline=deadline - WIRE_IO_TIMEOUT_S)
             _, src_w, src_h, _ = self.capture.parse_bmp_header(bmp)
             raw_rgb = self.capture.extract_rect(bmp, r)
-            self._send_stream_reply(rid, raw_rgb, src_w, abs(src_h), rw, rh, "rgb8")
+            self._send_stream_reply(rid, raw_rgb, src_w, abs(src_h), rw, rh, "rgb8", deadline)
 
-    def _handle_preview(self, rid: int, p: dict) -> None:
+    def _handle_preview(self, rid: int, p: dict, deadline: float) -> None:
         if self.capture is None or self.preview is None:
             self._send_error(rid, "capture_failed", "Capture or preview engine is not available")
             return
         nonce = p.get("nonce", "")
-        w, h = self.capture.get_dimensions()
+        w, h = self.capture.get_dimensions(deadline=deadline - WIRE_IO_TIMEOUT_S)
         port = self.preview.serve(
             token=self.wire.token,
             nonce=nonce,
             data_producer=self.capture.get_raw_png,
             ttl_sec=PREVIEW_LEASE_TTL_S,
+            start_deadline=deadline - WIRE_IO_TIMEOUT_S,
         )
         self.wire.send_envelope({
             "type": "img.arm_preview.ok",
             "id": rid,
             "payload": {"port": port, "width": w, "height": h},
-        })
+        }, deadline=deadline)
 
-    def _handle_watch(self, rid: int, p: dict) -> None:
+    def _handle_watch(self, rid: int, p: dict, deadline: float) -> None:
         if self.capture is None:
             self._send_error(rid, "capture_failed", "Capture engine is not available")
             return
@@ -1396,7 +1481,8 @@ class ProtoActionRouter:
         x, y = p["x"], p["y"]
 
         def do_sample() -> int:
-            bmp = self.capture.get_raw_bmp()
+            sample_deadline = time.monotonic() + UNWATCH_STOP_TIMEOUT_S
+            bmp = self.capture.get_raw_bmp(deadline=sample_deadline)
             return self.capture.extract_points(bmp, [(x, y)])[0]
 
         def on_sample(s_name: str, val: int):
@@ -1417,23 +1503,24 @@ class ProtoActionRouter:
             "type": "img.watch.ok",
             "id": rid,
             "payload": {"interval_ms": eff_interval},
-        })
+        }, deadline=deadline)
 
-    def _handle_unwatch(self, rid: int, p: dict) -> None:
+    def _handle_unwatch(self, rid: int, p: dict, deadline: float) -> None:
         name = p.get("name", "")
-        stopped = self.sampler.stop_watch(name)
+        stop_timeout = max(0, deadline - WIRE_IO_TIMEOUT_S - time.monotonic())
+        stopped = self.sampler.stop_watch(name, timeout_sec=stop_timeout)
         if stopped:
             self.wire.send_envelope({
                 "type": "img.unwatch.ok",
                 "id": rid,
                 "payload": {},
-            })
+            }, deadline=deadline)
         else:
             # Wire writes are bounded. Report the single-watch failure while
             # preserving healthy subscriptions on the same connection; an
             # actual write failure still disconnects the desynchronized stream.
             log_msg(LOG_WARNING, f"mycro: watch '{name}' failed to stop within deadline")
-            self._send_error(rid, "timeout", f"Watch '{name}' failed to stop within deadline")
+            self._send_error(rid, "timeout", f"Watch '{name}' failed to stop within deadline", deadline=deadline)
 
 
 # ==============================================================================
@@ -1478,6 +1565,7 @@ class ProviderWorker:
         self._wake_event = threading.Event()
         self._connected_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._shutdown_deadline: Optional[float] = None
 
     def is_connected(self) -> bool:
         return bool(self.wire and self.wire.sock and not self.wire._closed)
@@ -1552,18 +1640,26 @@ class ProviderWorker:
         self._thread.start()
 
     def stop(self) -> None:
+        deadline = self._shutdown_deadline
+        if deadline is None:
+            deadline = time.monotonic() + WORKER_SHUTDOWN_TIMEOUT_S
+            self._shutdown_deadline = deadline
         self._stop_event.set()
         self._wake_event.set()
         self._connected_event.clear()
-        if self.wire:
-            self.wire.disconnect()
-        self.ws_client.disconnect()
-        if self._thread:
-            self._thread.join(timeout=WORKER_SHUTDOWN_TIMEOUT_S)
-            if not self._thread.is_alive():
-                self._thread = None
-        self.sampler.stop_all()
-        self.preview.stop()
+        try:
+            if self.wire:
+                self.wire.disconnect()
+            self.ws_client.disconnect()
+            if self._thread:
+                self._thread.join(timeout=max(0, deadline - time.monotonic()))
+                if not self._thread.is_alive():
+                    self._thread = None
+            self.sampler.stop_all(timeout_sec=max(0, deadline - time.monotonic()))
+            self.preview.stop(timeout_sec=max(0, deadline - time.monotonic()))
+        finally:
+            if self._thread is None or not self._thread.is_alive():
+                self._shutdown_deadline = None
 
     def update_config(self, host: str, port: int, token: str, source: str, auto_connect: bool) -> None:
         net_changed = (
@@ -1638,12 +1734,17 @@ class ProviderWorker:
                 _update_status_property()
             finally:
                 self._connected_event.clear()
+                cleanup_deadline = self._shutdown_deadline
+                if cleanup_deadline is None:
+                    cleanup_deadline = time.monotonic() + WORKER_SHUTDOWN_TIMEOUT_S
                 # Break blocked capture and socket sends before joining samplers.
                 if self.wire:
                     self.wire.disconnect()
                 self.ws_client.disconnect()
-                self.sampler.stop_all()
-                self.preview.stop()
+                self.sampler.stop_all(timeout_sec=max(0, cleanup_deadline - time.monotonic()))
+                self.preview.stop(timeout_sec=max(0, cleanup_deadline - time.monotonic()))
+                if self._shutdown_deadline is cleanup_deadline:
+                    self._shutdown_deadline = None
 
             # Determine reconnection behavior based on auto_connect
             if self.is_active and not self._stop_event.is_set():
