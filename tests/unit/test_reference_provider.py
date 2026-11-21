@@ -53,6 +53,10 @@ def test_provider_default_frame_is_gradient():
     assert (w, h) == (80, 60) and rgb == rp.frame_default()
 
 
+def test_reference_unwatch_budget_matches_protocol_response_budget():
+    assert rp.UNWATCH_STOP_TIMEOUT_S == rp.DEVICE_EXT_TIMEOUT_MS / 1000.0 - rp.WIRE_IO_TIMEOUT_S
+
+
 def _recv_exact(sock, n):
     data = bytearray()
     while len(data) < n:

@@ -21,7 +21,8 @@ from keymap import BTN_ALL
 DEFAULT_RAW_PORT = 7373
 MAX_CLIENTS = 2       # authed raw clients; extras are rejected at auth time
 OUTBOX_CAP = 32       # per-client queued push frames; beyond this the peer is not reading
-AUTH_DEADLINE_S = 5   # a connection must complete the auth prologue within this
+AUTH_TIMEOUT_S = 5      # a connection must complete the auth prologue within this
+RAW_IDLE_POLL_S = 0.01  # sleep only when a round-robin pass made no progress
 
 
 def get_raw_port():
@@ -72,7 +73,7 @@ def _recv(conn, nbytes):
 class Client:
     """Encapsulates a connected raw protocol peer."""
 
-    def __init__(self, conn, addr):
+    def __init__(self, conn, addr, auth_timeout_s=AUTH_TIMEOUT_S):
         self.conn = conn
         self.addr = addr
         self.inbuf = bytearray()
@@ -80,7 +81,7 @@ class Client:
         self.outbox = []
         self.authed = False
         self.alive = True
-        self.deadline = time.monotonic() + AUTH_DEADLINE_S
+        self.deadline = time.monotonic() + auth_timeout_s
         self.img_stream_seen = False
 
     def enqueue(self, frame):
@@ -115,12 +116,15 @@ class ProtoContext:
 class RawServer:
     """Protocol v1 TCP raw message channel server."""
 
-    def __init__(self, pool, runtime, macro_runner, token=None, port=None):
+    def __init__(self, pool, runtime, macro_runner, token=None, port=None,
+                 auth_timeout_s=AUTH_TIMEOUT_S, idle_poll_s=RAW_IDLE_POLL_S):
         self.pool = pool
         self.runtime = runtime
         self.macro_runner = macro_runner
         self.token = token
         self.port = port or get_raw_port()
+        self.auth_timeout_s = auth_timeout_s
+        self.idle_poll_s = idle_poll_s
         self.clients = []
         self.dispatcher = proto.Dispatcher()
         self.proto_ctx = ProtoContext(runtime, macro_runner)
@@ -252,7 +256,7 @@ class RawServer:
                     except OSError:
                         break
                     conn.settimeout(0)
-                    client = Client(conn, addr)
+                    client = Client(conn, addr, auth_timeout_s=self.auth_timeout_s)
                     self.clients.append(client)
                     print("raw conn from", addr)
                     busy = True
@@ -276,7 +280,7 @@ class RawServer:
                             pass
                         busy = True
 
-                await asyncio.sleep(0 if busy else 0.01)
+                await asyncio.sleep(0 if busy else self.idle_poll_s)
         except Exception as e:
             print("raw server disabled:", e)
             traceback.print_exception(e)

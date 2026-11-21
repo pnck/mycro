@@ -327,6 +327,40 @@ def test_telemetry_sampler_lifecycle():
     assert len(dispatched) == 0
 
 
+def test_unwatch_stop_budget_reserves_device_response_time():
+    assert 0 < obs_mycro.UNWATCH_STOP_TIMEOUT_S < obs_mycro.DEVICE_EXT_TIMEOUT_MS / 1000.0
+    assert obs_mycro.UNWATCH_STOP_TIMEOUT_S == (
+        obs_mycro.DEVICE_EXT_TIMEOUT_MS / 1000.0 - obs_mycro.WIRE_IO_TIMEOUT_S
+    )
+
+
+def test_telemetry_stop_uses_single_bounded_join():
+    sampler = TelemetrySampler()
+
+    class FakeThread:
+        def __init__(self):
+            self.alive = True
+            self.join_calls = []
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self, timeout):
+            self.join_calls.append(timeout)
+            self.alive = False
+
+    thread = FakeThread()
+    entry = {
+        "thread": thread,
+        "stop": threading.Event(),
+        "wake": threading.Event(),
+    }
+    sampler._watches["once"] = entry
+    assert sampler.stop_watch("once", timeout_sec=1.0) is True
+    assert len(thread.join_calls) == 1
+    assert 0 <= thread.join_calls[0] <= 1.0
+
+
 def test_telemetry_refresh_reuses_worker_and_discards_stale_capture():
     sampler = TelemetrySampler()
     old_started = threading.Event()
@@ -682,7 +716,7 @@ def test_proto_action_router_dispatch_and_error_defense():
 
     # 6. Unwatch timeout is localized to the named watch
     class StubTimingOutSampler(TelemetrySampler):
-        def stop_watch(self, name: str, timeout_sec: float = 5.5) -> bool:
+        def stop_watch(self, name: str, timeout_sec: float = obs_mycro.UNWATCH_STOP_TIMEOUT_S) -> bool:
             return False
 
     router_timeout = ProtoActionRouter(
@@ -697,6 +731,22 @@ def test_proto_action_router_dispatch_and_error_defense():
     assert err_unwatch["id"] == 51
     assert err_unwatch["payload"]["code"] == "timeout"
     assert not wire.disconnected
+
+
+@pytest.mark.parametrize("missing", ["interval_ms", "duration_ms"])
+def test_router_watch_requires_explicit_timing_fields(missing):
+    wire = MockWire()
+    router = ProtoActionRouter(capture=object(), preview=None, sampler=TelemetrySampler(), wire=wire)
+    payload = {
+        "name": "s1", "x": 0, "y": 0,
+        "interval_ms": 20, "duration_ms": 1000,
+    }
+    payload.pop(missing)
+    router.dispatch_action({"type": "img.watch", "id": 60, "payload": payload})
+    response = wire.sent_envelopes[-1]
+    assert response["type"] == "error"
+    assert response["payload"]["code"] == "field"
+    assert response["id"] == 60
 
 
 # ==============================================================================

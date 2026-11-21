@@ -122,3 +122,46 @@ def test_macro_runner_and_proto_context():
     asyncio.run(_test())
 
 
+def test_wifi_retry_delay_only_between_attempts(monkeypatch):
+    import asyncio
+    import types
+    from services import network as network_module
+
+    class FailingRadio:
+        def __init__(self):
+            self.timeouts = []
+
+        def connect(self, ssid, password, timeout=None):
+            self.timeouts.append(timeout)
+            raise OSError("offline")
+
+    radio = FailingRadio()
+    monkeypatch.setattr(network_module, "wifi", types.SimpleNamespace(radio=radio))
+    sleeps = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(network_module.asyncio, "sleep", fake_sleep)
+    connected, ip = asyncio.run(network_module.wifi_connect(
+        "ssid", "password", attempts=3,
+        attempt_timeout_s=0.4, retry_delay_s=0.2,
+    ))
+    assert not connected and ip is None
+    assert radio.timeouts == [0.4, 0.4, 0.4]
+    assert sleeps == [0.2, 0.2]
+
+
+def test_raw_server_timing_parameters_are_injectable(monkeypatch):
+    from services import raw as raw_module
+
+    monkeypatch.setattr(raw_module.time, "monotonic", lambda: 100.0)
+    client = raw_module.Client(object(), ("127.0.0.1", 1234), auth_timeout_s=0.25)
+    assert client.deadline == 100.25
+
+    server = raw_module.RawServer(
+        None, None, None,
+        auth_timeout_s=0.5, idle_poll_s=0.02,
+    )
+    assert server.auth_timeout_s == 0.5
+    assert server.idle_poll_s == 0.02

@@ -198,7 +198,9 @@ async def _stream_result(total, chunk_count, wire_chunks, client=None, wire_sid=
 
 
 def test_img_timeout_uses_profile_value():
-    assert device.IMG_TIMEOUT_S == 5
+    from bytecode import EXT_TIMEOUT_MS
+
+    assert device.IMG_TIMEOUT_S == EXT_TIMEOUT_MS / 1000.0
 
 
 @pytest.mark.parametrize("code, expected", [

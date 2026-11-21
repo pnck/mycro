@@ -442,7 +442,7 @@ def test_raw(ctx):
     if not ctx.skip_slow:
         s = socket.create_connection((ctx.host, ctx.port), timeout=5)
         s.sendall(auth_header(ctx.token)[:10])
-        time.sleep(6)  # AUTH_DEADLINE_S is 5
+        time.sleep(6)  # AUTH_TIMEOUT_S is 5
         try:
             s.sendall(auth_header(ctx.token)[10:])
             slow_closed = expect_closed(s)

@@ -18,7 +18,7 @@ except AttributeError:
 
 import codec
 import proto
-from runtime import Runtime
+from runtime import Runtime, ASYNCIO_WAIT_CHUNK_MS
 from bytecode import (
     ERR_OK,
     ERR_GENERIC,
@@ -28,12 +28,13 @@ from bytecode import (
     ERR_HANDLE_INVALID,
     ERR_RESOURCE_EXHAUSTED,
     ERR_TIMEOUT,
+    EXT_TIMEOUT_MS,
     RECT_MAX_EDGE,
 )
 
 SNAP_MAX_EDGE = RECT_MAX_EDGE  # 128 (128x128 RGB = 48KB)
 IMG_STREAM_MAX = SNAP_MAX_EDGE * SNAP_MAX_EDGE * 3  # 49152
-IMG_TIMEOUT_S = 5
+IMG_TIMEOUT_S = EXT_TIMEOUT_MS / 1000.0
 
 
 class ImgError(Exception):
@@ -148,7 +149,10 @@ async def _img_lease_loop():
         if delay <= 0:
             continue
         try:
-            await asyncio.wait_for(_lease_wake.wait(), delay)
+            await asyncio.wait_for(
+                _lease_wake.wait(),
+                min(delay, ASYNCIO_WAIT_CHUNK_MS / 1000.0),
+            )
         except _TimeoutError:
             pass
 

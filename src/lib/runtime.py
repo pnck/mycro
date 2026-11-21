@@ -27,6 +27,8 @@ REG_RET = 0xFF
 REG_TIMEOUT = 0xFE
 REG_ERR = 0xFD
 MAX_SLOTS = 256
+# Conservative CircuitPython asyncio tick-overflow workaround for long waits.
+ASYNCIO_WAIT_CHUNK_MS = 268_400_000
 
 # Standard error codes (spec/runtime.md §3.0)
 ERR_OK = 0
@@ -360,7 +362,7 @@ class Runtime:
         try:
             rem = timeout_ms
             while rem > 0:
-                cur = min(rem, 268400000)
+                cur = min(rem, ASYNCIO_WAIT_CHUNK_MS)
                 try:
                     await asyncio.wait_for(ev.wait(), cur / 1000.0)
                     break
@@ -482,17 +484,3 @@ class Runtime:
         if value not in self._reg_handles.values():
             return None
         return e["data"]
-
-    async def wait_signal(self, name, timeout_ms=0):
-        """Wait for the NEXT fire of `name` after entry (legacy wrapper)."""
-        ev = self._signals.get(name)
-        if ev is None:
-            ev = asyncio.Event()
-            self._signals[name] = ev
-        ev.clear()
-        if timeout_ms > 0:
-            try:
-                await asyncio.wait_for(ev.wait(), timeout_ms / 1000.0)
-            except _TimeoutError:
-                pass
-        return ev.is_set()

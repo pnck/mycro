@@ -85,7 +85,7 @@ def init_mdns(radio, hostname_raw="mycro"):
         return None, label, domain
 
 
-async def wifi_connect(ssid, password, attempts=3, timeout=15):
+async def wifi_connect(ssid, password, attempts=3, attempt_timeout_s=15.0, retry_delay_s=3.0):
     """Connect WiFi at runtime. Returns (is_connected, ip_address).
 
     Any failure leaves the device fully usable over USB (MSC / serial / HID).
@@ -103,7 +103,7 @@ async def wifi_connect(ssid, password, attempts=3, timeout=15):
         try:
             print(f"Connecting WiFi '{ssid}' (attempt {attempt}/{attempts})...")
             try:
-                wifi.radio.connect(ssid, password, timeout=timeout)
+                wifi.radio.connect(ssid, password, timeout=attempt_timeout_s)
             except TypeError:
                 wifi.radio.connect(ssid, password)  # older firmware without timeout kwarg
 
@@ -119,7 +119,8 @@ async def wifi_connect(ssid, password, attempts=3, timeout=15):
             return True, ip
         except Exception as e:
             print("WiFi connect failed:", e)
-            await asyncio.sleep(3)
+            if attempt < attempts:
+                await asyncio.sleep(retry_delay_s)
 
     print("WiFi unavailable — offline mode (USB/serial/HID only)")
     return False, None

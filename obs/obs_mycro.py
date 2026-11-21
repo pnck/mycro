@@ -47,7 +47,12 @@ RPC_RESPONSE_TIMEOUT_S = 5.0
 RPC_HANDSHAKE_TIMEOUT_S = 3.0
 WIRE_CONNECT_TIMEOUT_S = 3.0
 WIRE_IO_TIMEOUT_S = 1.0
-THREAD_POLL_INTERVAL_S = 0.05
+UI_CONNECT_LATCH_S = 1.2
+
+# Mirror of spec/vm.md EXT_TIMEOUT_MS. Reserve one bounded wire write for the
+# unwatch response instead of extending the requester's deadline arbitrarily.
+DEVICE_EXT_TIMEOUT_MS = 5000
+UNWATCH_STOP_TIMEOUT_S = DEVICE_EXT_TIMEOUT_MS / 1000.0 - WIRE_IO_TIMEOUT_S
 
 # Buffers, Bounds and Limits
 MAX_CHUNK_PAYLOAD = 8188  # 8192 bytes protocol cap minus 4-byte (<HH) stream header
@@ -57,7 +62,6 @@ MAX_RECT_EDGE = 128
 MAX_HTTP_HEADER_BYTES = 4096
 IO_BUFFER_SIZE = 65536
 TELEMETRY_MIN_INTERVAL_MS = 20
-TELEMETRY_DEFAULT_DURATION_MS = 5000
 
 # Log levels
 LOG_INFO = 1
@@ -709,10 +713,10 @@ class EphemeralHttpServer:
         self._thread = threading.Thread(target=_thread_target, daemon=True, name="mycro-ephemeral-async")
         self._thread.start()
 
-        if not started_event.wait(timeout=RPC_HANDSHAKE_TIMEOUT_S) or not port_holder:
+        if not started_event.wait(timeout=ttl_sec) or not port_holder:
             self._stop_requested.set()
             self.stop()
-            raise RuntimeError("Failed to start ephemeral HTTP server within timeout")
+            raise RuntimeError("Failed to start ephemeral HTTP server within its lease")
         return port_holder[0]
 
     async def _serve_async(
@@ -962,7 +966,7 @@ class TelemetrySampler:
                     raise
             return clamped_interval
 
-    def stop_watch(self, name: str, timeout_sec: float = RPC_RESPONSE_TIMEOUT_S + 0.5) -> bool:
+    def stop_watch(self, name: str, timeout_sec: float = UNWATCH_STOP_TIMEOUT_S) -> bool:
         """Blocks until the named worker terminates, or returns False on timeout."""
         with self._lock:
             entry = self._watches.get(name)
@@ -973,8 +977,7 @@ class TelemetrySampler:
         entry["wake"].set()
         thread = entry["thread"]
         deadline = time.monotonic() + timeout_sec
-        while thread.is_alive() and time.monotonic() < deadline:
-            thread.join(timeout=THREAD_POLL_INTERVAL_S)
+        thread.join(timeout=max(0, deadline - time.monotonic()))
         if thread.is_alive():
             # Keep terminal workers registered so later stop calls and shutdown
             # can continue joining them instead of losing a live producer.
@@ -995,8 +998,7 @@ class TelemetrySampler:
         all_stopped = True
         for entry in entries:
             thread = entry["thread"]
-            while thread.is_alive() and time.monotonic() < deadline:
-                thread.join(timeout=THREAD_POLL_INTERVAL_S)
+            thread.join(timeout=max(0, deadline - time.monotonic()))
             if thread.is_alive():
                 all_stopped = False
         return all_stopped
@@ -1387,6 +1389,9 @@ class ProtoActionRouter:
         if self.capture is None:
             self._send_error(rid, "capture_failed", "Capture engine is not available")
             return
+        if "interval_ms" not in p or "duration_ms" not in p:
+            self._send_error(rid, "field", "img.watch requires interval_ms and duration_ms")
+            return
         name = p["name"]
         x, y = p["x"], p["y"]
 
@@ -1403,8 +1408,8 @@ class ProtoActionRouter:
 
         eff_interval = self.sampler.start_watch(
             name=name,
-            interval_ms=p.get("interval_ms", TELEMETRY_MIN_INTERVAL_MS),
-            duration_ms=p.get("duration_ms", TELEMETRY_DEFAULT_DURATION_MS),
+            interval_ms=p["interval_ms"],
+            duration_ms=p["duration_ms"],
             sample_fn=do_sample,
             on_sample=on_sample,
         )
@@ -1416,7 +1421,7 @@ class ProtoActionRouter:
 
     def _handle_unwatch(self, rid: int, p: dict) -> None:
         name = p.get("name", "")
-        stopped = self.sampler.stop_watch(name, timeout_sec=RPC_RESPONSE_TIMEOUT_S + 0.5)
+        stopped = self.sampler.stop_watch(name)
         if stopped:
             self.wire.send_envelope({
                 "type": "img.unwatch.ok",
@@ -1509,7 +1514,7 @@ class ProviderWorker:
             return f"{base} (Source: {label} {w}x{h})"
         return f"{base} (Source: '{target}')"
 
-    def connect_manual(self, wait_timeout: float = 1.2) -> bool:
+    def connect_manual(self, wait_timeout: float = UI_CONNECT_LATCH_S) -> bool:
         host = self.device_host or DEFAULT_DEVICE_HOST
         self.device_host = host
         if self.is_connected():
@@ -1585,14 +1590,14 @@ class ProviderWorker:
         while not self._stop_event.is_set():
             if not self.is_active:
                 self._connected_event.clear()
-                self._wake_event.wait(timeout=1.0)
+                self._wake_event.wait()
                 self._wake_event.clear()
                 continue
 
             if not self.device_host:
                 self.status_text = "Error: No device host configured"
                 _update_status_property()
-                self._wake_event.wait(timeout=WORKER_RECONNECT_INTERVAL_S)
+                self._wake_event.wait()
                 self._wake_event.clear()
                 continue
 
@@ -1674,7 +1679,7 @@ def on_toggle_connect_clicked(props, prop) -> bool:
     if _worker.is_connected():
         _worker.disconnect_manual()
     else:
-        _worker.connect_manual(wait_timeout=1.2)
+        _worker.connect_manual()
     new_label = "Disconnect" if _worker.is_connected() else "Connect"
     if hasattr(obs, "obs_property_set_description"):
         obs.obs_property_set_description(prop, new_label)

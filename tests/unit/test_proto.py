@@ -209,8 +209,8 @@ def test_event_push_actually_wakes_waiter():
     ctx = FakeCtx()
 
     async def scenario():
-        task = asyncio.create_task(ctx.runtime.wait_signal("net.msg", 1000))
-        await asyncio.sleep(0)  # let the waiter clear any stale latch + park
+        task = asyncio.create_task(ctx.runtime.wait_slot("net.msg", "x", 1000))
+        await asyncio.sleep(0)  # let the waiter register and park
         dispatch(ctx, "event.push", {"name": "net.msg", "fields": {"x": 1}})
         return await task
 

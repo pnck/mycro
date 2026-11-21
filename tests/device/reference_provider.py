@@ -34,6 +34,9 @@ CHUNK_RAW = 8192 - 4  # binary frame payload minus u16 stream_id + u16 flags
 MAX_POINTS = 256
 MAX_RECT_EDGE = 128
 IMG_STREAM_MAX = 48 * 1024
+DEVICE_EXT_TIMEOUT_MS = 5000
+WIRE_IO_TIMEOUT_S = 1.0
+UNWATCH_STOP_TIMEOUT_S = DEVICE_EXT_TIMEOUT_MS / 1000.0 - WIRE_IO_TIMEOUT_S
 
 W, H = 80, 60
 BIG_W, BIG_H = 1920, 1080
@@ -229,7 +232,7 @@ class ReferenceProvider:
                 thread.start()
             return effective_interval
 
-    def _stop_watch(self, name, timeout_sec=5.5):
+    def _stop_watch(self, name, timeout_sec=UNWATCH_STOP_TIMEOUT_S):
         with self._watch_lock:
             entry = self._watches.get(name)
         if entry is None:
@@ -238,8 +241,7 @@ class ReferenceProvider:
         entry["wake"].set()
         thread = entry["thread"]
         deadline = time.monotonic() + timeout_sec
-        while thread.is_alive() and time.monotonic() < deadline:
-            thread.join(timeout=0.05)
+        thread.join(timeout=max(0, deadline - time.monotonic()))
         if thread.is_alive():
             return False
         with self._watch_lock:
@@ -256,8 +258,7 @@ class ReferenceProvider:
         deadline = time.monotonic() + timeout_sec
         for entry in entries:
             thread = entry["thread"]
-            while thread.is_alive() and time.monotonic() < deadline:
-                thread.join(timeout=0.05)
+            thread.join(timeout=max(0, deadline - time.monotonic()))
 
     def _watch_loop(self, name, entry):
         stop_evt = entry["stop"]
@@ -325,7 +326,7 @@ class ReferenceProvider:
         s = socket.create_connection((self.host, self.port), timeout=5)
         self._socket = s
         try:
-            s.settimeout(1.0)
+            s.settimeout(WIRE_IO_TIMEOUT_S)
             digest = hashlib.sha256(self.token.encode()).digest()
             s.sendall(AUTH_MAGIC + bytes((PROTO_VERSION,)) + digest)
             self._send_env(s, "img.hello", 0, {"caps": ["frame", "direct_preview"]})

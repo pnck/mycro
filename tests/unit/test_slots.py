@@ -17,6 +17,7 @@ from macro import (
     DEFAULT_WAIT_TIMEOUT_MS, OP_READSLOT, OP_ADD, OP_SET, OP_SLEEP
 )
 import keymap
+import runtime as runtime_module
 from runtime import Runtime
 from proto import Dispatcher
 
@@ -430,3 +431,17 @@ def test_slot_multi_operand_execution():
     assert ("kp", keymap.F1) in hid.events
 
 
+def test_wait_slot_chunks_long_timeouts_with_platform_limit(monkeypatch):
+    rt = Runtime()
+    monkeypatch.setattr(runtime_module, "ASYNCIO_WAIT_CHUNK_MS", 100)
+    waits = []
+
+    async def expire(awaitable, timeout):
+        waits.append(timeout)
+        awaitable.close()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(runtime_module.asyncio, "wait_for", expire)
+    assert asyncio.run(rt.wait_slot("go", "val", 250)) is False
+    assert waits == [0.1, 0.1, 0.05]
+    assert rt._waiters[("go", "val")] == []
